@@ -1,14 +1,22 @@
 #pragma once
 #include "../../third_party/miniaudio/miniaudio.h"
 #include "GraphCompiler.h"
+#include "SpscAudioRingBuffer.h"
+#include <array>
+#include <condition_variable>
 #include <string>
 #include <memory>
+#include <mutex>
 #include <atomic>
+#include <thread>
 #include <unordered_map>
 
 namespace isac {
 
 constexpr int MAX_ENGINE_BLOCK_FRAMES = 8192; // 防御 PipeWire 大帧数回调
+constexpr std::size_t PCM_RING_BUFFER_FRAMES = 96000; // 2 秒 @ 48 kHz
+constexpr std::size_t PCM_PREBUFFER_FRAMES = 24000;   // 启动前预缓冲 500 ms
+constexpr std::size_t DECODER_CHUNK_FRAMES = 2048;
 
 // 内部源节点：代表当前正在播放的音乐解码器 (0输入, 2输出: Out L, Out R)
 class DecoderSourceNode : public IAudioNode {
@@ -55,6 +63,9 @@ public:
     void seekToSeconds(double seconds);
     double currentPositionSeconds() const;
     double totalDurationSeconds() const;
+    ma_uint64 underrunFrames() const noexcept {
+        return m_underrunFrames.load(std::memory_order_acquire);
+    }
 
     // 图拓扑操作接口
     NodeId addNode(std::shared_ptr<IAudioNode> node);
@@ -77,11 +88,17 @@ public:
 
 private:
     static void dataCallback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount);
-    void renderAudio(float* pInterleavedOutput, uint32_t frameCount, uint32_t channels);
+    void renderAudio(float* pInterleavedOutput, uint32_t frameCount, uint32_t channels) noexcept;
+    void decoderLoop();
+    void stopDecoderThread();
+    void notifyDecoder();
+    void markDecoderReady();
 
     ma_decoder m_decoder{};
     ma_device m_device{};
     std::atomic<bool> m_decoderLoaded{false};
+    bool m_decoderInitialized = false;
+    bool m_deviceInitialized = false;
 
     NodeId m_nextNodeId = 1;
     std::unordered_map<NodeId, std::shared_ptr<IAudioNode>> m_nodes;
@@ -93,18 +110,30 @@ private:
     std::shared_ptr<IAudioNode> m_addNode;
     std::shared_ptr<IAudioNode> m_equalizerNode;
 
-    std::atomic<std::shared_ptr<ExecutionPlan>> m_activePlan{nullptr};
-    // Keeps retired plans alive until the control thread observes that the
-    // audio callback no longer holds its local shared_ptr.
-    std::vector<std::shared_ptr<ExecutionPlan>> m_planHistory;
-    std::vector<float> m_tempInterleaved;
+    std::atomic<ExecutionPlan*> m_activePlan{nullptr};
+    // rebuildGraph() stops the device before replacing this owner, so the
+    // callback can use a raw plan pointer without refcounting or reclamation.
+    std::shared_ptr<ExecutionPlan> m_activePlanOwner;
+    SpscAudioRingBuffer m_pcmRing{PCM_RING_BUFFER_FRAMES, 2};
+    std::array<float, DECODER_CHUNK_FRAMES * 2> m_decodeBuffer{};
+    std::thread m_decoderThread;
+    std::atomic<bool> m_decoderStop{false};
+    std::atomic<bool> m_decoderReady{false};
+    std::atomic<bool> m_decoderFailed{false};
+    std::atomic<bool> m_decoderEof{false};
+    std::mutex m_decoderMutex;
+    std::condition_variable m_decoderWake;
+    std::condition_variable m_decoderReadyCondition;
+    std::condition_variable m_seekCondition;
 
-    // Control-thread requests are consumed by the audio callback. The decoder
-    // itself is only touched by the audio thread while the device is running.
+    // Control-thread requests are consumed by the decoder thread. The decoder
+    // and all file I/O stay off the real-time audio callback.
     std::atomic<bool> m_seekPending{false};
     std::atomic<ma_uint64> m_pendingSeekFrame{0};
+    std::atomic<bool> m_seekCompleted{false};
     std::atomic<ma_uint64> m_renderedFrame{0};
     std::atomic<ma_uint64> m_totalFrames{0};
+    std::atomic<ma_uint64> m_underrunFrames{0};
 };
 
 } // namespace isac

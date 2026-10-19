@@ -34,6 +34,13 @@ struct ExecutionPlan {
             step.outBus.resize(outCh, maxFrames, sampleRate);
         }
     }
+
+    void clearBuffers(int frames) noexcept {
+        for (auto& step : steps) {
+            step.inBus.clearFrames(frames);
+            step.outBus.clearFrames(frames);
+        }
+    }
 };
 
 class GraphCompiler {

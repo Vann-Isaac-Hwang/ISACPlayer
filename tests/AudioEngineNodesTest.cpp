@@ -1,5 +1,6 @@
 #include "engine/graph/AudioBuffer.h"
 #include "engine/graph/AudioEngine.h"
+#include "engine/graph/SpscAudioRingBuffer.h"
 #include "engine/nodes/BiquadEqualizerNode.h"
 #include "engine/nodes/MultiplyNode.h"
 
@@ -124,6 +125,44 @@ void testNodeRemoval()
     expect(!engine.removeNode(sinkId), "sink endpoint must not be removable");
 }
 
+void testSpscAudioRingBuffer()
+{
+    isac::SpscAudioRingBuffer ring(4, 2);
+    const float firstBlock[] = {
+        1.0f, 10.0f,
+        2.0f, 20.0f,
+        3.0f, 30.0f
+    };
+    expect(ring.write(firstBlock, 3) == 3,
+           "ring buffer must accept available producer frames");
+
+    double left[4]{};
+    double right[4]{};
+    double* channels[] = {left, right};
+    expect(ring.readPlanar(channels, 2) == 2,
+           "ring buffer must return requested readable frames");
+    expectNear(left[0], 1.0, 0.0, "ring buffer left channel must preserve order");
+    expectNear(left[1], 2.0, 0.0, "ring buffer left channel must preserve order");
+    expectNear(right[0], 10.0, 0.0, "ring buffer right channel must preserve order");
+    expectNear(right[1], 20.0, 0.0, "ring buffer right channel must preserve order");
+
+    const float secondBlock[] = {
+        4.0f, 40.0f,
+        5.0f, 50.0f,
+        6.0f, 60.0f
+    };
+    expect(ring.write(secondBlock, 3) == 3,
+           "ring buffer must wrap at the physical end");
+    expect(ring.readPlanar(channels, 4) == 4,
+           "ring buffer must read wrapped frames in order");
+    expectNear(left[0], 3.0, 0.0, "wrapped left channel frame 1");
+    expectNear(left[1], 4.0, 0.0, "wrapped left channel frame 2");
+    expectNear(left[2], 5.0, 0.0, "wrapped left channel frame 3");
+    expectNear(left[3], 6.0, 0.0, "wrapped left channel frame 4");
+    expectNear(right[0], 30.0, 0.0, "wrapped right channel frame 1");
+    expectNear(right[3], 60.0, 0.0, "wrapped right channel frame 4");
+}
+
 } // namespace
 
 int main()
@@ -133,6 +172,7 @@ int main()
     testBiquadPeak();
     testAtomicParameterUpdate();
     testNodeRemoval();
+    testSpscAudioRingBuffer();
     std::cout << "isac_engine_tests: all tests passed\n";
     return EXIT_SUCCESS;
 }

@@ -26,6 +26,13 @@ public:
         std::fill(m_storage.begin(), m_storage.end(), AudioSample{0.0});
     }
 
+    void clearFrames(int frames) noexcept {
+        const int count = std::clamp(frames, 0, m_numFrames);
+        for (int channelIndex = 0; channelIndex < m_numChannels; ++channelIndex) {
+            std::fill_n(channel(channelIndex), count, AudioSample{0.0});
+        }
+    }
+
     AudioSample* channel(int ch) {
         const int safeCh = std::clamp(ch, 0, m_numChannels - 1);
         return m_storage.data() + static_cast<size_t>(safeCh) * m_numFrames;

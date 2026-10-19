@@ -26,6 +26,7 @@ add_library(isac_engine STATIC
     src/engine/graph/IAudioNode.h
     src/engine/graph/GraphCompiler.h
     src/engine/graph/GraphCompiler.cpp
+    src/engine/graph/SpscAudioRingBuffer.h
     src/engine/graph/AudioEngine.h
     src/engine/graph/AudioEngine.cpp
 )
@@ -106,6 +107,7 @@ if(BUILD_TESTING)
     )
     target_include_directories(isac_engine_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/plugin_sdk/include
     )
     target_link_libraries(isac_engine_tests PRIVATE isac_engine)
     add_test(NAME isac_engine_tests COMMAND isac_engine_tests)
