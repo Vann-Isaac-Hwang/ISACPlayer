@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "swap-channels",
+  "name": "左右声道互换",
+  "connections": [
+    { "from": "source", "output": 0, "to": "gain", "input": 0 },
+    { "from": "source", "output": 1, "to": "gain", "input": 1 },
+    { "from": "gain", "output": 0, "to": "eq", "input": 0 },
+    { "from": "gain", "output": 1, "to": "eq", "input": 1 },
+    { "from": "eq", "output": 0, "to": "sink", "input": 1 },
+    { "from": "eq", "output": 1, "to": "sink", "input": 0 }
+  ]
+}

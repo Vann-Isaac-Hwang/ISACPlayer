@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "./ui_mainwindow.h"
 #include "ui/inspector/NodeInspectorWidget.h"
+#include "ui/patchbay/DspPresetCatalog.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -215,10 +216,24 @@ MainWindow::MainWindow(QWidget *parent)
     patchLayout->setSpacing(12);
 
     auto* patchHeader = new QHBoxLayout();
-    auto* patchTitle = new QLabel("DSP 音频流拓扑实验室 (Coppwr Patchbay)", this);
-    patchTitle->setStyleSheet("font-size: 22px; font-weight: bold; color: white;");
-    auto* lblPatchStatus = new QLabel("提示：左键从橙色针脚拉线至蓝色针脚，右键点击连线拆除", this);
-    lblPatchStatus->setStyleSheet("color: #9499A6; font-size: 13px;");
+    auto* outputRow = new QHBoxLayout();
+    auto* patchStatusRow = new QHBoxLayout();
+    auto* patchTitle = new QLabel("音频路由", this);
+    patchTitle->setStyleSheet("font-size: 20px; font-weight: bold; color: white;");
+    auto* presetSelector = new QComboBox(this);
+    presetSelector->setMinimumWidth(180);
+    presetSelector->setToolTip("选择 DSP 路由配置");
+    presetSelector->setStyleSheet(
+        "QComboBox { background: #1E2028; color: #EAEAEA; "
+        "border: 1px solid #343846; border-radius: 5px; padding: 6px 8px; }");
+    auto* clearConnectionsButton = new QPushButton("清空连线", this);
+    clearConnectionsButton->setToolTip("移除画布上的全部连线");
+    clearConnectionsButton->setStyleSheet(
+        "QPushButton { background: #252834; color: #E0E4F0; "
+        "border: 1px solid #343846; border-radius: 5px; padding: 6px 10px; }");
+    auto* lblPatchStatus = new QLabel(this);
+    lblPatchStatus->setMinimumWidth(80);
+    lblPatchStatus->setStyleSheet("color: #9499A6; font-size: 12px;");
     auto* outputSelector = new QComboBox(this);
     outputSelector->setMinimumWidth(190);
     outputSelector->setToolTip("播放音频使用的输出设备");
@@ -234,10 +249,16 @@ MainWindow::MainWindow(QWidget *parent)
     outputStatus->setStyleSheet("color: #9499A6; font-size: 12px;");
     patchHeader->addWidget(patchTitle);
     patchHeader->addStretch();
-    patchHeader->addWidget(new QLabel("音频输出", this));
-    patchHeader->addWidget(outputSelector);
-    patchHeader->addWidget(refreshOutputsButton);
-    patchHeader->addWidget(lblPatchStatus);
+    patchHeader->addWidget(new QLabel("配置", this));
+    patchHeader->addWidget(presetSelector);
+    patchHeader->addWidget(clearConnectionsButton);
+    outputRow->addWidget(new QLabel("音频输出", this));
+    outputRow->addWidget(outputSelector);
+    outputRow->addWidget(refreshOutputsButton);
+    outputRow->addStretch();
+    patchStatusRow->addWidget(outputStatus);
+    patchStatusRow->addStretch();
+    patchStatusRow->addWidget(lblPatchStatus);
 
     m_patchbayView = new isac::ui::PatchbayView(m_audioEngine, this);
     m_patchbayView->setStyleSheet("border: 1px solid #2B2F3C; border-radius: 12px;");
@@ -352,31 +373,10 @@ MainWindow::MainWindow(QWidget *parent)
                 inspector->clearNode();
             });
 
-    auto* presetRow = new QHBoxLayout();
-    QString presetBtnStyle = R"(
-        QPushButton {
-            background-color: #252834; color: #E0E4F0; border: 1px solid #343846;
-            border-radius: 6px; padding: 7px 14px; font-weight: bold;
-        }
-        QPushButton:hover { background-color: #FA2D48; border-color: #FA2D48; color: white; }
-    )";
-    auto* btnStereo    = new QPushButton("预设1: 标准立体声", this);
-    auto* btnSwapLR    = new QPushButton("预设2: 左右声道反接", this);
-    auto* btnMonoRight = new QPushButton("预设3: 加法器混音 -> 仅右耳", this);
-    auto* btnClear     = new QPushButton("清空所有连线", this);
-    btnStereo->setStyleSheet(presetBtnStyle);
-    btnSwapLR->setStyleSheet(presetBtnStyle);
-    btnMonoRight->setStyleSheet(presetBtnStyle);
-    btnClear->setStyleSheet(presetBtnStyle);
-    presetRow->addWidget(btnStereo);
-    presetRow->addWidget(btnSwapLR);
-    presetRow->addWidget(btnMonoRight);
-    presetRow->addWidget(btnClear);
-    presetRow->addStretch();
-
     patchLayout->addLayout(patchHeader);
+    patchLayout->addLayout(outputRow);
+    patchLayout->addLayout(patchStatusRow);
     patchLayout->addWidget(m_patchbayView, 1);
-    patchLayout->addLayout(presetRow);
 
     m_stackedWidget->addWidget(m_libraryPage);
     m_stackedWidget->addWidget(patchbayContainer);
@@ -432,8 +432,9 @@ MainWindow::MainWindow(QWidget *parent)
             }
         }
         if (status.isEmpty()) {
-            status = QStringLiteral("%1 个设备")
-                         .arg(std::max(0, outputSelector->count() - 1));
+            status = QStringLiteral("%1 个设备 | 引擎请求 %2 kHz")
+                         .arg(std::max(0, outputSelector->count() - 1))
+                         .arg(m_audioEngine.outputSampleRate() / 1000.0, 0, 'g', 4);
         }
         outputStatus->setText(status);
     };
@@ -469,8 +470,9 @@ MainWindow::MainWindow(QWidget *parent)
         QSettings settings;
         settings.setValue(QStringLiteral("audio/outputDeviceId"), id);
         outputStatus->setText(
-            QStringLiteral("当前输出：%1（立体声）")
-                .arg(QString::fromStdString(selected->name)));
+            QStringLiteral("当前输出：%1（立体声，DSP 请求 %2 kHz）")
+                .arg(QString::fromStdString(selected->name))
+                .arg(m_audioEngine.outputSampleRate() / 1000.0, 0, 'g', 4));
     });
 
     upperLayout->addWidget(sidebar);
@@ -721,99 +723,91 @@ MainWindow::MainWindow(QWidget *parent)
 #endif
     });
 
-    // 节点画布预设按钮
+    // Preset files are copied once into the user's writable config directory.
     connect(m_patchbayView->patchbayScene(), &isac::ui::PatchbayScene::topologyChanged,
             this, [lblPatchStatus](const QString& msg) { lblPatchStatus->setText(msg); });
 
-    connect(btnStereo, &QPushButton::clicked, this, [this, lblPatchStatus]() {
-        auto src = m_audioEngine.sourceNodeId();
-        const auto gainNode = m_audioEngine.gainNode();
-        const auto eqNode = m_audioEngine.equalizerNode();
-        if (!gainNode || !eqNode) {
-            lblPatchStatus->setText("预设无法应用：Gain 或 EQ 插件未加载");
+    const QString presetDirectory = QDir(
+        QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation))
+            .filePath(QStringLiteral("dsp-presets"));
+    presetSelector->setToolTip(
+        QStringLiteral("DSP 配置目录：%1").arg(presetDirectory));
+    QString presetError;
+    if (!isac::ui::DspPresetCatalog::installBuiltIns(
+            presetDirectory, &presetError)) {
+        lblPatchStatus->setText(
+            QStringLiteral("内置配置安装失败：%1").arg(presetError));
+    }
+    const auto presets =
+        isac::ui::DspPresetCatalog::load(presetDirectory, &presetError);
+    presetSelector->addItem(QStringLiteral("选择路由配置"));
+    for (const auto& preset : presets) {
+        presetSelector->addItem(preset.name, preset.id);
+    }
+    if (!presetError.isEmpty()) {
+        lblPatchStatus->setText(
+            QStringLiteral("部分配置无法读取：%1").arg(presetError));
+    }
+
+    connect(presetSelector, QOverload<int>::of(&QComboBox::activated),
+            this, [this, presetSelector, lblPatchStatus, presets]() {
+        const QString selectedId = presetSelector->currentData().toString();
+        const auto selectedPreset = std::find_if(
+            presets.begin(), presets.end(),
+            [&selectedId](const isac::ui::DspPreset& preset) {
+                return preset.id == selectedId;
+            });
+        if (selectedPreset == presets.end()) {
             return;
         }
-        auto mul = gainNode->id();
-        auto eq = eqNode->id();
-        auto snk = m_audioEngine.sinkNodeId();
-        if (!m_audioEngine.hasNode(mul) || !m_audioEngine.hasNode(eq)) {
-            lblPatchStatus->setText("预设无法应用：增益或 EQ 模块已被删除");
+
+        QHash<QString, isac::NodeId> roleNodes{
+            {QStringLiteral("source"), m_audioEngine.sourceNodeId()},
+            {QStringLiteral("sink"), m_audioEngine.sinkNodeId()}
+        };
+        if (const auto node = m_audioEngine.gainNode()) {
+            roleNodes.insert(QStringLiteral("gain"), node->id());
+        }
+        if (const auto node = m_audioEngine.addNodePtr()) {
+            roleNodes.insert(QStringLiteral("adder"), node->id());
+        }
+        if (const auto node = m_audioEngine.equalizerNode()) {
+            roleNodes.insert(QStringLiteral("eq"), node->id());
+        }
+
+        QString error;
+        if (!isac::ui::DspPresetCatalog::apply(
+                *selectedPreset, m_audioEngine, roleNodes, &error)) {
+            lblPatchStatus->setText(
+                QStringLiteral("配置未应用：%1").arg(error));
             return;
         }
-        m_audioEngine.clearConnections();
-        m_audioEngine.connect(src, 0, mul, 0);
-        m_audioEngine.connect(src, 1, mul, 1);
-        m_audioEngine.connect(mul, 0, eq, 0);
-        m_audioEngine.connect(mul, 1, eq, 1);
-        m_audioEngine.connect(eq, 0, snk, 0);
-        m_audioEngine.connect(eq, 1, snk, 1);
-        m_audioEngine.rebuildGraph();
         m_patchbayView->patchbayScene()->syncFromEngine();
+        lblPatchStatus->setText(
+            QStringLiteral("已加载配置：%1").arg(selectedPreset->name));
     });
-    connect(btnSwapLR, &QPushButton::clicked, this, [this, lblPatchStatus]() {
-        auto src = m_audioEngine.sourceNodeId();
-        const auto gainNode = m_audioEngine.gainNode();
-        const auto eqNode = m_audioEngine.equalizerNode();
-        if (!gainNode || !eqNode) {
-            lblPatchStatus->setText("预设无法应用：Gain 或 EQ 插件未加载");
-            return;
-        }
-        auto mul = gainNode->id();
-        auto eq = eqNode->id();
-        auto snk = m_audioEngine.sinkNodeId();
-        if (!m_audioEngine.hasNode(mul) || !m_audioEngine.hasNode(eq)) {
-            lblPatchStatus->setText("预设无法应用：增益或 EQ 模块已被删除");
-            return;
-        }
+
+    connect(clearConnectionsButton, &QPushButton::clicked, this, [this, lblPatchStatus]() {
         m_audioEngine.clearConnections();
-        m_audioEngine.connect(src, 0, mul, 0);
-        m_audioEngine.connect(src, 1, mul, 1);
-        m_audioEngine.connect(mul, 0, eq, 0);
-        m_audioEngine.connect(mul, 1, eq, 1);
-        m_audioEngine.connect(eq, 0, snk, 1);
-        m_audioEngine.connect(eq, 1, snk, 0);
-        m_audioEngine.rebuildGraph();
-        m_patchbayView->patchbayScene()->syncFromEngine();
-    });
-    connect(btnMonoRight, &QPushButton::clicked, this, [this, lblPatchStatus]() {
-        auto src = m_audioEngine.sourceNodeId();
-        const auto gainNode = m_audioEngine.gainNode();
-        const auto addNode = m_audioEngine.addNodePtr();
-        const auto eqNode = m_audioEngine.equalizerNode();
-        if (!gainNode || !addNode || !eqNode) {
-            lblPatchStatus->setText("预设无法应用：依赖插件未加载");
+        if (!m_audioEngine.rebuildGraph()) {
+            lblPatchStatus->setText("清空连线后图编译失败");
             return;
         }
-        auto mul = gainNode->id();
-        auto add = addNode->id();
-        auto eq = eqNode->id();
-        auto snk = m_audioEngine.sinkNodeId();
-        if (!m_audioEngine.hasNode(mul) || !m_audioEngine.hasNode(add) ||
-            !m_audioEngine.hasNode(eq)) {
-            lblPatchStatus->setText("预设无法应用：依赖模块已被删除");
-            return;
-        }
-        m_audioEngine.clearConnections();
-        m_audioEngine.connect(src, 0, mul, 0);
-        m_audioEngine.connect(src, 1, mul, 1);
-        m_audioEngine.connect(mul, 0, add, 0);
-        m_audioEngine.connect(mul, 1, add, 1);
-        m_audioEngine.connect(add, 0, eq, 0);
-        m_audioEngine.connect(add, 0, eq, 1);
-        m_audioEngine.connect(eq, 0, snk, 1);
-        m_audioEngine.connect(eq, 1, snk, 0);
-        m_audioEngine.rebuildGraph();
         m_patchbayView->patchbayScene()->syncFromEngine();
-    });
-    connect(btnClear, &QPushButton::clicked, this, [this]() {
-        m_audioEngine.clearConnections();
-        m_audioEngine.rebuildGraph();
-        m_patchbayView->patchbayScene()->syncFromEngine();
+        lblPatchStatus->setText("连线已清空");
     });
 
     // 进度条刷新定时器 (每 200ms 同步一次底层解码器帧游标)
     m_progressTimer = new QTimer(this);
-    connect(m_progressTimer, &QTimer::timeout, this, [this]() {
+    connect(m_progressTimer, &QTimer::timeout, this, [this, outputStatus]() {
+        const auto selectedOutput = m_audioEngine.selectedOutputDevice();
+        const QString outputName = selectedOutput
+            ? QString::fromStdString(selectedOutput->name)
+            : QStringLiteral("系统默认");
+        outputStatus->setText(
+            QStringLiteral("%1 | DSP 请求 %2 kHz")
+                .arg(outputName)
+                .arg(m_audioEngine.outputSampleRate() / 1000.0, 0, 'g', 4));
         if (m_audioEngine.isPlaying()) {
             const double position = m_audioEngine.currentPositionSeconds();
             const double duration = m_audioEngine.totalDurationSeconds();

@@ -25,8 +25,8 @@ struct AudioOutputDevice {
 };
 
 constexpr int MAX_ENGINE_BLOCK_FRAMES = 8192; // 防御 PipeWire 大帧数回调
-constexpr std::size_t PCM_RING_BUFFER_FRAMES = 96000; // 2 秒 @ 48 kHz
-constexpr std::size_t PCM_PREBUFFER_FRAMES = 24000;   // 启动前预缓冲 500 ms
+constexpr std::uint32_t MAX_PLAYBACK_SAMPLE_RATE = 768000;
+constexpr std::uint32_t PCM_PREBUFFER_MILLISECONDS = 250;
 constexpr std::size_t DECODER_CHUNK_FRAMES = 2048;
 
 // 内部源节点：代表当前正在播放的音乐解码器 (0输入, 2输出: Out L, Out R)
@@ -69,6 +69,7 @@ public:
     ~AudioEngine();
 
     bool loadAndPlay(const std::string& filePath, std::string* error = nullptr);
+    std::uint32_t outputSampleRate() const noexcept { return m_outputSampleRate; }
     std::vector<AudioOutputDevice> availableOutputDevices();
     bool selectOutputDevice(const AudioOutputDevice& device,
                             std::string& error);
@@ -119,6 +120,8 @@ private:
     ma_decoder m_decoder{};
     ma_device m_device{};
     std::optional<AudioOutputDevice> m_selectedOutputDevice;
+    std::uint32_t m_outputSampleRate = 48000;
+    double m_fadeDurationSeconds = 2.0;
     std::atomic<bool> m_decoderLoaded{false};
     bool m_decoderInitialized = false;
     bool m_deviceInitialized = false;
@@ -137,7 +140,7 @@ private:
     // rebuildGraph() stops the device before replacing this owner, so the
     // callback can use a raw plan pointer without refcounting or reclamation.
     std::shared_ptr<ExecutionPlan> m_activePlanOwner;
-    SpscAudioRingBuffer m_pcmRing{PCM_RING_BUFFER_FRAMES, 2};
+    SpscAudioRingBuffer m_pcmRing{48000, 2};
     std::array<float, DECODER_CHUNK_FRAMES * 2> m_decodeBuffer{};
     std::thread m_decoderThread;
     std::atomic<bool> m_decoderStop{false};

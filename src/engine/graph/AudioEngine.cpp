@@ -163,8 +163,8 @@ bool AudioEngine::initializePlaybackDevice(std::string& error)
         ma_device_config_init(ma_device_type_playback);
     deviceConfig.playback.format = ma_format_f32;
     deviceConfig.playback.channels = 2;
-    deviceConfig.sampleRate = 48000;
-    deviceConfig.periodSizeInFrames = 512;
+    deviceConfig.sampleRate = m_outputSampleRate;
+    deviceConfig.periodSizeInMilliseconds = 10;
     deviceConfig.periods = 3;
     deviceConfig.dataCallback = dataCallback;
     deviceConfig.pUserData = this;
@@ -251,7 +251,8 @@ bool AudioEngine::disconnect(NodeId src, PortIndex srcPort, NodeId dst, PortInde
 
 bool AudioEngine::rebuildGraph() {
     auto newPlan = GraphCompiler::compile(
-        m_nodes, m_connections, m_sinkNode->id(), MAX_ENGINE_BLOCK_FRAMES, 48000);
+        m_nodes, m_connections, m_sinkNode->id(), MAX_ENGINE_BLOCK_FRAMES,
+        m_outputSampleRate);
     if (!newPlan) return false;
 
     const bool wasPlaying = m_deviceInitialized && ma_device_is_started(&m_device);
@@ -360,8 +361,10 @@ void AudioEngine::setFadeDurationSeconds(double seconds) noexcept
         return;
     }
     const double clampedSeconds = std::clamp(seconds, 0.05, 30.0);
+    m_fadeDurationSeconds = clampedSeconds;
     m_fadeDurationFrames.store(
-        static_cast<ma_uint64>(clampedSeconds * 48000.0),
+        static_cast<ma_uint64>(
+            clampedSeconds * static_cast<double>(m_outputSampleRate)),
         std::memory_order_relaxed);
 }
 
@@ -393,7 +396,9 @@ void AudioEngine::decoderLoop()
         if (m_decoderEof.load(std::memory_order_acquire) ||
             m_pcmRing.writableFrames() == 0) {
             if (!readyForDevice &&
-                (m_pcmRing.readableFrames() >= PCM_PREBUFFER_FRAMES ||
+                (m_pcmRing.readableFrames() >=
+                     static_cast<std::size_t>(m_outputSampleRate) *
+                         PCM_PREBUFFER_MILLISECONDS / 1000 ||
                  m_decoderEof.load(std::memory_order_acquire))) {
                 markDecoderReady();
                 readyForDevice = true;
@@ -432,7 +437,9 @@ void AudioEngine::decoderLoop()
         }
 
         if (!readyForDevice &&
-            (m_pcmRing.readableFrames() >= PCM_PREBUFFER_FRAMES ||
+            (m_pcmRing.readableFrames() >=
+                 static_cast<std::size_t>(m_outputSampleRate) *
+                     PCM_PREBUFFER_MILLISECONDS / 1000 ||
              m_decoderEof.load(std::memory_order_acquire))) {
             markDecoderReady();
             readyForDevice = true;
@@ -473,7 +480,8 @@ bool AudioEngine::loadAndPlay(const std::string& filePath, std::string* error) {
         m_decoderInitialized = false;
     }
 
-    ma_decoder_config decoderConfig = ma_decoder_config_init(ma_format_f32, 2, 48000);
+    ma_decoder_config decoderConfig =
+        ma_decoder_config_init(ma_format_f32, 2, 0);
     const ma_result decoderResult =
         ma_decoder_init_file(filePath.c_str(), &decoderConfig, &m_decoder);
     if (decoderResult != MA_SUCCESS) {
@@ -484,6 +492,32 @@ bool AudioEngine::loadAndPlay(const std::string& filePath, std::string* error) {
         return false;
     }
     m_decoderInitialized = true;
+    ma_uint32 decodedChannels = 0;
+    if (ma_decoder_get_data_format(
+            &m_decoder, nullptr, &decodedChannels, &m_outputSampleRate,
+            nullptr, 0) != MA_SUCCESS ||
+        m_outputSampleRate == 0 ||
+        m_outputSampleRate > MAX_PLAYBACK_SAMPLE_RATE) {
+        if (error) {
+            *error = "The source sample rate is not supported (maximum 768 kHz)";
+        }
+        ma_decoder_uninit(&m_decoder);
+        m_decoderInitialized = false;
+        return false;
+    }
+    m_fadeDurationFrames.store(
+        static_cast<ma_uint64>(
+            m_fadeDurationSeconds * static_cast<double>(m_outputSampleRate)),
+        std::memory_order_relaxed);
+    m_pcmRing.reconfigure(m_outputSampleRate, 2);
+    if (!rebuildGraph()) {
+        if (error) {
+            *error = "Unable to prepare the DSP graph for the source sample rate";
+        }
+        ma_decoder_uninit(&m_decoder);
+        m_decoderInitialized = false;
+        return false;
+    }
     ma_uint64 totalFrames = 0;
     ma_decoder_get_length_in_pcm_frames(&m_decoder, &totalFrames);
     m_totalFrames.store(totalFrames, std::memory_order_release);
@@ -564,7 +598,8 @@ bool AudioEngine::isPlaybackComplete() const noexcept
 void AudioEngine::seekToSeconds(double seconds) {
     if (!m_decoderLoaded.load() || !m_decoderInitialized) return;
     const double safeSeconds = std::isfinite(seconds) ? std::max(0.0, seconds) : 0.0;
-    const auto requestedFrame = static_cast<ma_uint64>(safeSeconds * 48000.0);
+    const auto requestedFrame = static_cast<ma_uint64>(
+        safeSeconds * static_cast<double>(m_outputSampleRate));
     const auto targetFrame = std::min(requestedFrame, m_totalFrames.load(std::memory_order_acquire));
 
     const bool wasPlaying = m_deviceInitialized && ma_device_is_started(&m_device);
@@ -600,12 +635,14 @@ void AudioEngine::seekToSeconds(double seconds) {
 
 double AudioEngine::currentPositionSeconds() const {
     if (!m_decoderLoaded.load()) return 0.0;
-    return static_cast<double>(m_renderedFrame.load(std::memory_order_acquire)) / 48000.0;
+    return static_cast<double>(m_renderedFrame.load(std::memory_order_acquire)) /
+           static_cast<double>(m_outputSampleRate);
 }
 
 double AudioEngine::totalDurationSeconds() const {
     if (!m_decoderLoaded.load()) return 0.0;
-    return static_cast<double>(m_totalFrames.load(std::memory_order_acquire)) / 48000.0;
+    return static_cast<double>(m_totalFrames.load(std::memory_order_acquire)) /
+           static_cast<double>(m_outputSampleRate);
 }
 
 } // namespace isac

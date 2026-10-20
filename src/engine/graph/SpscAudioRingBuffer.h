@@ -19,6 +19,14 @@ public:
 
     std::size_t capacityFrames() const noexcept { return m_capacity; }
 
+    void reconfigure(std::size_t capacityFrames, std::size_t channels)
+    {
+        m_capacity = std::max<std::size_t>(1, capacityFrames);
+        m_channels = std::max<std::size_t>(1, channels);
+        m_storage.assign(m_capacity * m_channels, 0.0);
+        reset();
+    }
+
     std::size_t readableFrames() const noexcept
     {
         const auto write = m_writeCursor.load(std::memory_order_acquire);
@@ -106,8 +114,8 @@ private:
         }
     }
 
-    const std::size_t m_capacity;
-    const std::size_t m_channels;
+    std::size_t m_capacity;
+    std::size_t m_channels;
     std::vector<double> m_storage;
     alignas(64) std::atomic<std::uint64_t> m_writeCursor{0};
     alignas(64) std::atomic<std::uint64_t> m_readCursor{0};

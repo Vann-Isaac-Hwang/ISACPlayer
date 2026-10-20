@@ -1,0 +1,7 @@
+<RCC>
+  <qresource prefix="/dsp-presets">
+    <file alias="stereo.json">dsp-presets/stereo.json</file>
+    <file alias="swap-channels.json">dsp-presets/swap-channels.json</file>
+    <file alias="mono-right.json">dsp-presets/mono-right.json</file>
+  </qresource>
+</RCC>

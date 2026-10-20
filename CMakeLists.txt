@@ -57,10 +57,13 @@ set(PROJECT_SOURCES
     src/ui/apple_view/AppleMusicView.cpp
     src/ui/patchbay/PatchbayView.h
     src/ui/patchbay/PatchbayView.cpp
+    src/ui/patchbay/DspPresetCatalog.h
+    src/ui/patchbay/DspPresetCatalog.cpp
     src/ui/inspector/NodeInspectorWidget.h
     src/ui/inspector/NodeInspectorWidget.cpp
     src/ui/plugins/PluginManager.h
     src/ui/plugins/PluginManager.cpp
+    config/dsp-presets.qrc
 )
 
 qt_add_executable(ISACPlayer
@@ -132,6 +135,8 @@ if(BUILD_TESTING)
         tests/PatchbaySceneTest.cpp
         src/ui/patchbay/PatchbayView.h
         src/ui/patchbay/PatchbayView.cpp
+        src/ui/patchbay/DspPresetCatalog.h
+        src/ui/patchbay/DspPresetCatalog.cpp
     )
     target_include_directories(isac_patchbay_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
