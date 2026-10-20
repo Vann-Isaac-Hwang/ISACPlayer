@@ -23,6 +23,8 @@ TrackInfo MetadataReader::readTrack(const QString& filePath) {
     info.title  = fi.completeBaseName();
     info.artist = "Unknown Artist";
     info.album  = "Unknown Album";
+    info.fileSize = fi.size();
+    info.modifiedAt = fi.lastModified();
 
     TagLib::FileRef ref(filePath.toUtf8().constData());
     if (!ref.isNull() && ref.tag()) {
@@ -30,6 +32,8 @@ TrackInfo MetadataReader::readTrack(const QString& filePath) {
         if (!tag->title().isEmpty())  info.title  = QString::fromStdString(tag->title().to8Bit(true));
         if (!tag->artist().isEmpty()) info.artist = QString::fromStdString(tag->artist().to8Bit(true));
         if (!tag->album().isEmpty())  info.album  = QString::fromStdString(tag->album().to8Bit(true));
+        info.trackNumber = static_cast<int>(tag->track());
+        info.year = static_cast<int>(tag->year());
         if (ref.audioProperties())    info.durationSeconds = ref.audioProperties()->lengthInSeconds();
     }
 

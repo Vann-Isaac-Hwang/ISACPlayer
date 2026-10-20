@@ -9,8 +9,8 @@
 #include "ui/apple_view/AppleMusicView.h"
 #include "ui/patchbay/PatchbayView.h"
 #include "ui/plugins/PluginManager.h"
-
-class QDirIterator;
+#include "library/LibraryScanner.h"
+#include "library/PlaybackQueue.h"
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -24,10 +24,13 @@ public:
     ~MainWindow() override;
 
 private:
-    void playTrackAtIndex(int index);
+    void playTrackById(qint64 trackId);
+    void playQueuedTrack(qint64 trackId);
+    void rebuildPlaybackQueue(qint64 currentTrackId);
 
     Ui::MainWindow *ui;
     isac::ui::PluginManager m_pluginManager;
+    isac::library::LibraryRepository m_libraryRepository;
     isac::AudioEngine m_audioEngine;
 
     QStackedWidget* m_stackedWidget = nullptr;
@@ -35,8 +38,10 @@ private:
     isac::ui::NowPlayingBar* m_nowPlayingBar = nullptr;
     isac::ui::PatchbayView* m_patchbayView = nullptr;
     QTimer* m_progressTimer = nullptr;
-    QTimer* m_libraryScanTimer = nullptr;
-    std::unique_ptr<QDirIterator> m_musicIterator;
-    int m_currentTrackIndex = -1;
+    isac::library::LibraryScanner* m_libraryScanner = nullptr;
+    isac::library::PlaybackQueue m_playbackQueue;
+    isac::library::PlaybackMode m_playbackMode =
+        isac::library::PlaybackMode::Sequential;
+    bool m_currentTrackEndHandled = false;
 };
 #endif // MAINWINDOW_H

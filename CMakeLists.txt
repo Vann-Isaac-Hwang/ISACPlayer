@@ -10,9 +10,9 @@ include(CTest)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Sql)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Sql)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(TAGLIB REQUIRED IMPORTED_TARGET taglib)
 
@@ -47,6 +47,11 @@ set(PROJECT_SOURCES
     mainwindow.ui
     src/library/TrackMetadata.h
     src/library/TrackMetadata.cpp
+    src/library/LibraryTypes.h
+    src/library/LibraryRepository.h
+    src/library/LibraryRepository.cpp
+    src/library/LibraryScanner.h
+    src/library/LibraryScanner.cpp
     src/engine/plugin/IAudioPlugin.h
     src/ui/apple_view/AppleMusicView.h
     src/ui/apple_view/AppleMusicView.cpp
@@ -69,6 +74,7 @@ target_include_directories(ISACPlayer PRIVATE
 
 target_link_libraries(ISACPlayer PRIVATE
     Qt${QT_VERSION_MAJOR}::Widgets
+    Qt${QT_VERSION_MAJOR}::Sql
     PkgConfig::TAGLIB
     isac_engine
 )
@@ -128,4 +134,24 @@ if(BUILD_TESTING)
             $<TARGET_FILE:isac_adder>
             $<TARGET_FILE:isac_biquad>
     )
+
+    add_executable(isac_library_tests
+        tests/LibraryRepositoryTest.cpp
+        src/library/LibraryRepository.h
+        src/library/LibraryRepository.cpp
+        src/library/LibraryScanner.h
+        src/library/LibraryScanner.cpp
+        src/library/TrackMetadata.h
+        src/library/TrackMetadata.cpp
+    )
+    target_include_directories(isac_library_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(isac_library_tests PRIVATE
+        Qt${QT_VERSION_MAJOR}::Widgets
+        Qt${QT_VERSION_MAJOR}::Core
+        Qt${QT_VERSION_MAJOR}::Sql
+        PkgConfig::TAGLIB
+    )
+    add_test(NAME isac_library_tests COMMAND isac_library_tests)
 endif()

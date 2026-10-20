@@ -10,12 +10,26 @@
 #include <QListWidget>
 #include <QCoreApplication>
 #include <QFileDialog>
-#include <QDirIterator>
+#include <QDir>
+#include <QStandardPaths>
+
+namespace {
+
+QString libraryDatabasePath()
+{
+    const QString dataDirectory = QStandardPaths::writableLocation(
+        QStandardPaths::AppDataLocation);
+    QDir().mkpath(dataDirectory);
+    return QDir(dataDirectory).filePath(QStringLiteral("library.sqlite"));
+}
+
+}
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
     , m_pluginManager(QCoreApplication::applicationDirPath() + "/plugins")
+    , m_libraryRepository(libraryDatabasePath())
     , m_audioEngine(
           m_pluginManager.createNode("isac.gain"),
           m_pluginManager.createNode("isac.add"),
@@ -77,7 +91,27 @@ MainWindow::MainWindow(QWidget *parent)
     m_stackedWidget = new QStackedWidget(this);
 
     // 页面 0：Apple Music 曲库界面
-    m_libraryPage = new isac::ui::AppleLibraryPage(this);
+    m_libraryPage = new isac::ui::AppleLibraryPage(&m_libraryRepository, this);
+    m_libraryPage->refreshTracks();
+    m_libraryScanner = new isac::library::LibraryScanner(
+        libraryDatabasePath(), this);
+    connect(m_libraryScanner, &isac::library::LibraryScanner::batchCommitted,
+            this, [this](int) { m_libraryPage->refreshTracks(); });
+    connect(m_libraryScanner, &isac::library::LibraryScanner::progressChanged,
+            this, [this](int visited) {
+                m_libraryPage->setScanStatus(QString("已检查 %1 首").arg(visited));
+            });
+    connect(m_libraryScanner, &isac::library::LibraryScanner::scanFinished,
+            this, [this](bool cancelled, const QString& error) {
+                if (!error.isEmpty()) {
+                    m_libraryPage->setScanStatus("扫描失败: " + error);
+                } else if (cancelled) {
+                    m_libraryPage->setScanStatus("扫描已取消");
+                } else {
+                    m_libraryPage->setScanStatus("扫描完成");
+                }
+                m_libraryPage->refreshTracks();
+            });
 
     // 页面 1：Coppwr 风格 DSP 连线调音台页面
     auto* patchbayContainer = new QWidget(this);
@@ -268,7 +302,12 @@ MainWindow::MainWindow(QWidget *parent)
         QStringList files = QFileDialog::getOpenFileNames(
             this, "选择音频文件", "", "Audio Files (*.mp3 *.flac *.wav)");
         if (!files.isEmpty()) {
-            m_libraryPage->addTracks(files);
+            if (m_libraryScanner->isRunning()) {
+                m_libraryPage->setScanStatus("已有扫描任务正在运行");
+                return;
+            }
+            m_libraryPage->setScanStatus("正在读取音频元数据...");
+            m_libraryScanner->scanFiles(files);
         }
     });
 
@@ -276,47 +315,18 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_libraryPage, &isac::ui::AppleLibraryPage::requestImportFolder, this, [this]() {
         QString dir = QFileDialog::getExistingDirectory(this, "选择音乐目录");
         if (!dir.isEmpty()) {
-            if (m_libraryScanTimer && m_libraryScanTimer->isActive()) {
+            if (m_libraryScanner->isRunning()) {
+                m_libraryPage->setScanStatus("已有扫描任务正在运行");
                 return;
             }
-
-            m_musicIterator = std::make_unique<QDirIterator>(
-                dir,
-                QStringList{"*.mp3", "*.flac", "*.wav"},
-                QDir::Files,
-                QDirIterator::Subdirectories);
-
-            if (!m_libraryScanTimer) {
-                m_libraryScanTimer = new QTimer(this);
-                connect(m_libraryScanTimer, &QTimer::timeout, this, [this]() {
-                    if (!m_musicIterator) {
-                        m_libraryScanTimer->stop();
-                        return;
-                    }
-
-                    QStringList batch;
-                    batch.reserve(64);
-                    for (int i = 0; i < 64 && m_musicIterator->hasNext(); ++i) {
-                        batch.append(m_musicIterator->next());
-                    }
-
-                    if (!batch.isEmpty()) {
-                        m_libraryPage->addTracks(batch);
-                    }
-
-                    if (!m_musicIterator->hasNext()) {
-                        m_musicIterator.reset();
-                        m_libraryScanTimer->stop();
-                    }
-                });
-            }
-            m_libraryScanTimer->start(0);
+            m_libraryPage->setScanStatus("正在扫描文件夹...");
+            m_libraryScanner->scanDirectory(dir);
         }
     });
 
     // 双击表格歌曲播放
     connect(m_libraryPage, &isac::ui::AppleLibraryPage::trackDoubleClicked,
-            this, &MainWindow::playTrackAtIndex);
+            this, &MainWindow::playTrackById);
 
     // 底部控制栏事件
     connect(m_nowPlayingBar, &isac::ui::NowPlayingBar::playPauseClicked, this, [this]() {
@@ -325,14 +335,22 @@ MainWindow::MainWindow(QWidget *parent)
         m_nowPlayingBar->setPlayingState(m_audioEngine.isPlaying());
     });
     connect(m_nowPlayingBar, &isac::ui::NowPlayingBar::prevClicked, this, [this]() {
-        if (m_currentTrackIndex > 0) playTrackAtIndex(m_currentTrackIndex - 1);
-    });
-    connect(m_nowPlayingBar, &isac::ui::NowPlayingBar::nextClicked, this, [this]() {
-        const auto& list = m_libraryPage->tracks();
-        if (m_currentTrackIndex + 1 < static_cast<int>(list.size())) {
-            playTrackAtIndex(m_currentTrackIndex + 1);
+        const auto previous = m_playbackQueue.previous();
+        if (previous) {
+            playQueuedTrack(*previous);
         }
     });
+    connect(m_nowPlayingBar, &isac::ui::NowPlayingBar::nextClicked, this, [this]() {
+        const auto next = m_playbackQueue.next();
+        if (next) {
+            playQueuedTrack(*next);
+        }
+    });
+    connect(m_nowPlayingBar, &isac::ui::NowPlayingBar::playbackModeChanged,
+            this, [this](int mode) {
+                m_playbackMode = static_cast<isac::library::PlaybackMode>(mode);
+                m_playbackQueue.setMode(m_playbackMode);
+            });
     connect(m_nowPlayingBar, &isac::ui::NowPlayingBar::seekRequested, this, [this](double sec) {
         m_audioEngine.seekToSeconds(sec);
     });
@@ -436,24 +454,57 @@ MainWindow::MainWindow(QWidget *parent)
     m_progressTimer = new QTimer(this);
     connect(m_progressTimer, &QTimer::timeout, this, [this]() {
         if (m_audioEngine.isPlaying()) {
+            const double position = m_audioEngine.currentPositionSeconds();
+            const double duration = m_audioEngine.totalDurationSeconds();
             m_nowPlayingBar->updateProgress(
-                m_audioEngine.currentPositionSeconds(),
-                m_audioEngine.totalDurationSeconds());
+                position, duration);
+            if (duration > 0.0 && position >= duration &&
+                !m_currentTrackEndHandled) {
+                m_currentTrackEndHandled = true;
+                if (m_playbackMode == isac::library::PlaybackMode::RepeatOne) {
+                    m_audioEngine.seekToSeconds(0.0);
+                    m_currentTrackEndHandled = false;
+                    m_nowPlayingBar->updateProgress(
+                        0.0, m_audioEngine.totalDurationSeconds());
+                } else {
+                    const auto next = m_playbackQueue.next(true);
+                    if (next) {
+                        playQueuedTrack(*next);
+                    } else {
+                        m_audioEngine.setPlaying(false);
+                        m_audioEngine.seekToSeconds(0.0);
+                        m_currentTrackEndHandled = false;
+                        m_nowPlayingBar->setPlayingState(false);
+                        m_nowPlayingBar->updateProgress(
+                            0.0, m_audioEngine.totalDurationSeconds());
+                    }
+                }
+            }
         }
     });
     m_progressTimer->start(200);
 }
 
-void MainWindow::playTrackAtIndex(int index) {
-    const auto& tracks = m_libraryPage->tracks();
-    if (index < 0 || index >= static_cast<int>(tracks.size())) return;
+void MainWindow::playTrackById(qint64 trackId) {
+    rebuildPlaybackQueue(trackId);
+    playQueuedTrack(trackId);
+}
 
-    m_currentTrackIndex = index;
-    const auto& track = tracks[index];
+void MainWindow::rebuildPlaybackQueue(qint64 currentTrackId) {
+    std::vector<qint64> trackIds = m_libraryPage->trackIds();
+    m_playbackQueue.reset(std::move(trackIds), currentTrackId, m_playbackMode);
+}
 
-    if (m_audioEngine.loadAndPlay(track.filePath.toStdString())) {
-        m_libraryPage->updateHeroBanner(track);
-        m_nowPlayingBar->setTrackInfo(track);
+void MainWindow::playQueuedTrack(qint64 trackId) {
+    const auto track = m_libraryRepository.trackById(trackId);
+    if (!track) {
+        return;
+    }
+
+    if (m_audioEngine.loadAndPlay(track->filePath.toStdString())) {
+        m_currentTrackEndHandled = false;
+        m_libraryPage->updateHeroBanner(*track);
+        m_nowPlayingBar->setTrackInfo(*track);
         m_nowPlayingBar->setPlayingState(true);
     }
 }

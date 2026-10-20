@@ -1,16 +1,8 @@
 #pragma once
-#include <QString>
+#include "LibraryTypes.h"
 #include <QPixmap>
 
 namespace isac::library {
-
-struct TrackInfo {
-    QString filePath;
-    QString title;
-    QString artist;
-    QString album;
-    int durationSeconds = 0;
-};
 
 class MetadataReader {
 public:

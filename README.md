@@ -12,6 +12,9 @@ ISACPlayer 是一个面向本地音乐播放与实时音频处理的 Qt 工程�
 - 基于 `QPluginLoader` 的独立动态插件加载
 - Gain、Adder、ReplayGain、Biquad Equalizer 插件
 - 插件 Inspector 控件与实时参数更新
+- SQLite 曲库 Repository，支持稳定曲目 ID、搜索排序、扫描目录记录和歌单数据
+- 稳定曲目 ID 播放队列，支持顺序、随机、单曲循环和列表循环
+- 曲库可搜索歌曲/艺人/专辑，并按加入时间、标题、艺人或专辑排序
 
 ## 目录结构
 
@@ -115,6 +118,13 @@ build/plugins/
 
 DSP 模块可以重复实例化。插件是否显示配置面板取决于插件是否实现了可选的 Qt Inspector 接口。
 
+## 音乐资料库
+
+曲库使用 SQLite 持久化，数据库位于 Qt `AppDataLocation` 下的
+`library.sqlite`。扫描任务在后台线程中读取 TagLib 元数据，并由该线程独占自己的
+SQLite 连接；目录按文件逐个遍历，未变化的文件根据大小和修改时间跳过，数据库写入按
+64 首一批提交。曲目表格通过分页查询读取数据，不会将整个曲库常驻内存。
+
 ## 插件架构
 
 插件由两部分组成：
@@ -181,6 +191,9 @@ ctest --test-dir build --output-on-failure
 - DAG 节点添加、连接和移除
 - 所有内置动态插件的 `QPluginLoader` 加载
 - 插件节点的基本音频处理
+- SQLite 曲目持久化、分页查询、搜索排序、过滤行号和歌单顺序
+- 后台目录扫描、未变化文件跳过及已修改文件更新
+- 播放队列的顺序、随机、单曲循环和列表循环边界
 
 也可以单独执行：
 
@@ -197,6 +210,9 @@ ctest --test-dir build --output-on-failure
 
 当前工程重点已经从内置 DSP 实现迁移到独立插件架构。后续工作包括：
 
+- 实现艺人、专辑视图与歌单管理界面
+- 完善歌单创建、重命名、曲目增删和歌单播放交互
+- 接入 KDE MPRIS D-Bus 系统媒体控制
 - 增加 ReplayGain 跨 block lookahead 的专项测试
 - 将旧内置 DSP 测试完全迁移到动态插件测试
 - 继续优化超大音乐库扫描的内存占用
