@@ -152,6 +152,20 @@ void testDirectoriesAndPlaylists(const QString& databasePath)
                playlistTracks[0].id == tracks[1].id &&
                playlistTracks[1].id == tracks[0].id,
            "playlist query must preserve insertion order");
+    const auto firstPage = repository.queryPlaylistTracks(*playlistId, {}, 1, 0);
+    const auto secondPage = repository.queryPlaylistTracks(*playlistId, {}, 1, 1);
+    expect(firstPage.size() == 1 && secondPage.size() == 1 &&
+               firstPage.front().id == tracks[1].id &&
+               secondPage.front().id == tracks[0].id,
+           "playlist pagination must preserve insertion order");
+    expect(repository.playlistTrackCount(*playlistId) == 2 &&
+               repository.playlistTrackCount(*playlistId, "playlist a") == 1,
+           "playlist track count must support search filtering");
+    const auto playlistIds =
+        repository.playlistTrackIds(*playlistId, {}, 10, 0);
+    expect(playlistIds.size() == 2 && playlistIds[0] == tracks[1].id &&
+               playlistIds[1] == tracks[0].id,
+           "playlist ID query must preserve insertion order for playback");
     expect(repository.playlists().front().trackCount == 2,
            "playlist summary must include track count");
 
@@ -163,6 +177,8 @@ void testDirectoriesAndPlaylists(const QString& databasePath)
 
     expect(repository.renamePlaylist(*playlistId, "Commute"),
            "playlist rename must succeed");
+    expect(!repository.renamePlaylist(*playlistId, "   "),
+           "blank playlist rename must be rejected");
     expect(repository.playlists().front().name == "Commute",
            "renamed playlist must be returned");
     expect(repository.deletePlaylist(*playlistId), "playlist deletion must succeed");

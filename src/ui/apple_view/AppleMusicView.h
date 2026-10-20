@@ -32,10 +32,12 @@ public:
     void refresh();
     void setSearchText(const QString& text);
     void setSort(library::TrackSort sort, bool ascending);
+    void setPlaylistId(std::optional<qint64> playlistId);
     std::optional<library::TrackInfo> trackAtRow(int row) const;
     int rowForTrackId(qint64 id) const;
     std::vector<qint64> trackIds() const;
     qint64 trackCount() const;
+    std::optional<qint64> playlistId() const;
 
 private:
     bool loadPage(int row) const;
@@ -45,6 +47,7 @@ private:
     mutable std::vector<library::TrackInfo> m_page;
     mutable int m_pageStart = -1;
     qint64 m_trackCount = 0;
+    std::optional<qint64> m_playlistId;
     QString m_searchText;
     library::TrackSort m_sort = library::TrackSort::AddedAt;
     bool m_ascending = true;
@@ -65,6 +68,7 @@ public:
     int trackCount() const;
     int rowForTrackId(qint64 id) const;
     std::vector<qint64> trackIds() const;
+    std::optional<qint64> selectedPlaylistId() const;
 
 signals:
     void trackDoubleClicked(qint64 trackId);
@@ -72,6 +76,7 @@ signals:
     void requestImportFolder();
 
 private:
+    library::LibraryRepository* m_repository = nullptr;
     QLabel* m_heroCover;
     QLabel* m_heroTitle;
     QLabel* m_heroArtist;
@@ -83,6 +88,15 @@ private:
     QComboBox* m_sortSelector;
     QComboBox* m_sortDirection;
     QTimer* m_searchTimer;
+    QComboBox* m_playlistSelector;
+    QPushButton* m_createPlaylistButton;
+    QPushButton* m_renamePlaylistButton;
+    QPushButton* m_deletePlaylistButton;
+    QPushButton* m_addToPlaylistButton;
+    QPushButton* m_removeFromPlaylistButton;
+
+    void refreshPlaylists(std::optional<qint64> preferredPlaylist = std::nullopt);
+    void updatePlaylistControls();
 };
 
 // 2. 底部常驻 Apple Music 播放控制条

@@ -446,9 +446,14 @@ std::optional<qint64> LibraryRepository::createPlaylist(const QString& name)
 
 bool LibraryRepository::renamePlaylist(qint64 playlistId, const QString& name)
 {
+    const QString trimmedName = name.trimmed();
+    if (trimmedName.isEmpty()) {
+        m_lastError = QStringLiteral("Playlist name cannot be empty");
+        return false;
+    }
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral("UPDATE playlists SET name = ? WHERE id = ?"));
-    query.addBindValue(name.trimmed());
+    query.addBindValue(trimmedName);
     query.addBindValue(playlistId);
     if (!query.exec()) {
         m_lastError = query.lastError().text();
@@ -569,6 +574,92 @@ std::vector<TrackInfo> LibraryRepository::playlistTracks(qint64 playlistId) cons
         result.push_back(readTrackRow(query));
     }
     return result;
+}
+
+std::vector<TrackInfo> LibraryRepository::queryPlaylistTracks(
+    qint64 playlistId, const QString& searchText, int limit, int offset) const
+{
+    std::vector<TrackInfo> result;
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT t.* FROM tracks t "
+        "JOIN playlist_tracks pt ON pt.track_id = t.id "
+        "WHERE pt.playlist_id = ? "
+        "AND (? = '' OR t.title LIKE ? ESCAPE '\\' COLLATE NOCASE "
+        "OR t.artist LIKE ? ESCAPE '\\' COLLATE NOCASE "
+        "OR t.album LIKE ? ESCAPE '\\' COLLATE NOCASE) "
+        "ORDER BY pt.position LIMIT ? OFFSET ?"));
+    const QString pattern = escapedSearchPattern(searchText);
+    query.addBindValue(playlistId);
+    query.addBindValue(searchText);
+    query.addBindValue(pattern);
+    query.addBindValue(pattern);
+    query.addBindValue(pattern);
+    query.addBindValue(std::clamp(limit, 1, 10000));
+    query.addBindValue(std::max(0, offset));
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return result;
+    }
+    while (query.next()) {
+        result.push_back(readTrackRow(query));
+    }
+    return result;
+}
+
+std::vector<qint64> LibraryRepository::playlistTrackIds(
+    qint64 playlistId, const QString& searchText, int limit, int offset) const
+{
+    std::vector<qint64> ids;
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT t.id FROM tracks t "
+        "JOIN playlist_tracks pt ON pt.track_id = t.id "
+        "WHERE pt.playlist_id = ? "
+        "AND (? = '' OR t.title LIKE ? ESCAPE '\\' COLLATE NOCASE "
+        "OR t.artist LIKE ? ESCAPE '\\' COLLATE NOCASE "
+        "OR t.album LIKE ? ESCAPE '\\' COLLATE NOCASE) "
+        "ORDER BY pt.position LIMIT ? OFFSET ?"));
+    const QString pattern = escapedSearchPattern(searchText);
+    query.addBindValue(playlistId);
+    query.addBindValue(searchText);
+    query.addBindValue(pattern);
+    query.addBindValue(pattern);
+    query.addBindValue(pattern);
+    query.addBindValue(std::clamp(limit, 1, 10000));
+    query.addBindValue(std::max(0, offset));
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return ids;
+    }
+    while (query.next()) {
+        ids.push_back(query.value(0).toLongLong());
+    }
+    return ids;
+}
+
+qint64 LibraryRepository::playlistTrackCount(
+    qint64 playlistId, const QString& searchText) const
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT COUNT(*) FROM tracks t "
+        "JOIN playlist_tracks pt ON pt.track_id = t.id "
+        "WHERE pt.playlist_id = ? "
+        "AND (? = '' OR t.title LIKE ? ESCAPE '\\' COLLATE NOCASE "
+        "OR t.artist LIKE ? ESCAPE '\\' COLLATE NOCASE "
+        "OR t.album LIKE ? ESCAPE '\\' COLLATE NOCASE)"));
+    const QString pattern = escapedSearchPattern(searchText);
+    query.addBindValue(playlistId);
+    query.addBindValue(searchText);
+    query.addBindValue(pattern);
+    query.addBindValue(pattern);
+    query.addBindValue(pattern);
+    if (!query.exec() || !query.next()) {
+        m_lastError = query.lastError().text();
+        return -1;
+    }
+    return query.value(0).toLongLong();
 }
 
 } // namespace isac::library

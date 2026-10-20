@@ -3,8 +3,13 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QAbstractItemView>
+#include <QInputDialog>
+#include <QItemSelectionModel>
+#include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
+#include <QSignalBlocker>
+#include <algorithm>
 #include <utility>
 
 namespace isac::ui {
@@ -103,9 +108,10 @@ void TrackTableModel::refresh() {
     m_page.clear();
     m_pageStart = -1;
     m_coverCache.clear();
-    m_trackCount = m_repository
-        ? std::max<qint64>(0, m_repository->trackCount(m_searchText))
-        : 0;
+    m_trackCount = !m_repository ? 0
+        : std::max<qint64>(0, m_playlistId
+              ? m_repository->playlistTrackCount(*m_playlistId, m_searchText)
+              : m_repository->trackCount(m_searchText));
     endResetModel();
 }
 
@@ -125,6 +131,13 @@ void TrackTableModel::setSort(library::TrackSort sort, bool ascending) {
     }
 }
 
+void TrackTableModel::setPlaylistId(std::optional<qint64> playlistId) {
+    if (m_playlistId != playlistId) {
+        m_playlistId = playlistId;
+        refresh();
+    }
+}
+
 bool TrackTableModel::loadPage(int row) const {
     if (!m_repository || row < 0 || row >= rowCount()) {
         return false;
@@ -133,8 +146,11 @@ bool TrackTableModel::loadPage(int row) const {
     if (pageStart == m_pageStart) {
         return true;
     }
-    m_page = m_repository->queryTracks(
-        m_searchText, m_sort, m_ascending, kPageSize, pageStart);
+    m_page = m_playlistId
+        ? m_repository->queryPlaylistTracks(
+              *m_playlistId, m_searchText, kPageSize, pageStart)
+        : m_repository->queryTracks(
+              m_searchText, m_sort, m_ascending, kPageSize, pageStart);
     m_pageStart = pageStart;
     return !m_page.empty();
 }
@@ -160,8 +176,11 @@ std::vector<qint64> TrackTableModel::trackIds() const {
     ids.reserve(static_cast<std::size_t>(m_trackCount));
     constexpr int pageSize = 10000;
     for (qint64 offset = 0; offset < m_trackCount; offset += pageSize) {
-        auto page = m_repository->queryTrackIds(
-            m_sort, m_ascending, pageSize, static_cast<int>(offset), m_searchText);
+        auto page = m_playlistId
+            ? m_repository->playlistTrackIds(
+                  *m_playlistId, m_searchText, pageSize, static_cast<int>(offset))
+            : m_repository->queryTrackIds(
+                  m_sort, m_ascending, pageSize, static_cast<int>(offset), m_searchText);
         if (page.empty()) {
             break;
         }
@@ -174,10 +193,15 @@ qint64 TrackTableModel::trackCount() const {
     return m_trackCount;
 }
 
+std::optional<qint64> TrackTableModel::playlistId() const {
+    return m_playlistId;
+}
+
 // ==================== AppleLibraryPage ====================
 AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
                                    QWidget* parent)
-    : QWidget(parent) {
+    : QWidget(parent)
+    , m_repository(repository) {
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(32, 24, 32, 16);
     mainLayout->setSpacing(20);
@@ -235,6 +259,37 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
     libraryControls->addWidget(m_sortDirection);
     libraryControls->addWidget(m_resultCount);
 
+    auto* playlistControls = new QHBoxLayout();
+    m_playlistSelector = new QComboBox(this);
+    m_playlistSelector->setMinimumWidth(180);
+    m_playlistSelector->setStyleSheet(
+        "QComboBox { background: #1E2028; color: #EAEAEA; border: 1px solid #343846; "
+        "border-radius: 5px; padding: 6px 8px; }");
+    m_createPlaylistButton = new QPushButton("新建歌单", this);
+    m_renamePlaylistButton = new QPushButton("重命名", this);
+    m_deletePlaylistButton = new QPushButton("删除歌单", this);
+    m_addToPlaylistButton = new QPushButton("添加所选到歌单", this);
+    m_removeFromPlaylistButton = new QPushButton("从歌单移除", this);
+    const QString playlistButtonStyle =
+        "QPushButton { background: #252834; color: #E0E4F0; border: 1px solid #343846; "
+        "border-radius: 5px; padding: 7px 10px; } "
+        "QPushButton:hover { background: #343A4B; } "
+        "QPushButton:disabled { color: #666B78; }";
+    for (QPushButton* button : {
+             m_createPlaylistButton, m_renamePlaylistButton,
+             m_deletePlaylistButton, m_addToPlaylistButton,
+             m_removeFromPlaylistButton}) {
+        button->setStyleSheet(playlistButtonStyle);
+    }
+    playlistControls->addWidget(m_playlistSelector);
+    playlistControls->addWidget(m_createPlaylistButton);
+    playlistControls->addWidget(m_renamePlaylistButton);
+    playlistControls->addWidget(m_deletePlaylistButton);
+    playlistControls->addSpacing(12);
+    playlistControls->addWidget(m_addToPlaylistButton);
+    playlistControls->addWidget(m_removeFromPlaylistButton);
+    playlistControls->addStretch();
+
     // 2. 顶部正在播放巨幅卡片 (Hero Banner)
     auto* heroCard = new QWidget(this);
     heroCard->setStyleSheet(R"(
@@ -279,7 +334,7 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
     m_table->verticalHeader()->setDefaultSectionSize(52);
     m_table->setShowGrid(false);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_table->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_table->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setFocusPolicy(Qt::NoFocus);
     m_table->setIconSize(QSize(40, 40));
@@ -311,7 +366,11 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
     mainLayout->addLayout(topBar);
     mainLayout->addWidget(heroCard);
     mainLayout->addLayout(libraryControls);
+    mainLayout->addLayout(playlistControls);
     mainLayout->addWidget(m_table, 1);
+
+    refreshPlaylists();
+    updatePlaylistControls();
 
     m_searchTimer = new QTimer(this);
     m_searchTimer->setSingleShot(true);
@@ -333,6 +392,130 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
             this, [updateSort](int) { updateSort(); });
     connect(m_sortDirection, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [updateSort](int) { updateSort(); });
+    connect(m_playlistSelector, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int index) {
+                const qint64 playlistId =
+                    m_playlistSelector->itemData(index).toLongLong();
+                m_tableModel->setPlaylistId(
+                    playlistId > 0 ? std::optional<qint64>(playlistId) : std::nullopt);
+                const bool allTracks = playlistId == 0;
+                m_sortSelector->setEnabled(allTracks);
+                m_sortDirection->setEnabled(allTracks);
+                updatePlaylistControls();
+                m_resultCount->setText(
+                    QString("%1 首曲目").arg(m_tableModel->trackCount()));
+            });
+    connect(m_createPlaylistButton, &QPushButton::clicked, this, [this]() {
+        bool accepted = false;
+        const QString name = QInputDialog::getText(
+            this, "新建歌单", "歌单名称", QLineEdit::Normal, {}, &accepted);
+        if (!accepted) {
+            return;
+        }
+        const auto id = m_repository->createPlaylist(name);
+        if (!id) {
+            QMessageBox::warning(this, "无法创建歌单", m_repository->lastError());
+            return;
+        }
+        refreshPlaylists(*id);
+    });
+    connect(m_renamePlaylistButton, &QPushButton::clicked, this, [this]() {
+        const auto selectedId = selectedPlaylistId();
+        if (!selectedId) {
+            return;
+        }
+        const QString currentName =
+            m_playlistSelector->currentData(Qt::UserRole + 1).toString();
+        bool accepted = false;
+        const QString name = QInputDialog::getText(
+            this, "重命名歌单", "歌单名称", QLineEdit::Normal,
+            currentName, &accepted);
+        if (!accepted) {
+            return;
+        }
+        if (!m_repository->renamePlaylist(*selectedId, name)) {
+            QMessageBox::warning(this, "无法重命名歌单", m_repository->lastError());
+            return;
+        }
+        refreshPlaylists(*selectedId);
+    });
+    connect(m_deletePlaylistButton, &QPushButton::clicked, this, [this]() {
+        const auto selectedId = selectedPlaylistId();
+        if (!selectedId) {
+            return;
+        }
+        if (QMessageBox::question(
+                this, "删除歌单", "删除歌单？曲库中的音乐文件不会被删除。",
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) {
+            return;
+        }
+        if (!m_repository->deletePlaylist(*selectedId)) {
+            QMessageBox::warning(this, "无法删除歌单", m_repository->lastError());
+            return;
+        }
+        refreshPlaylists();
+    });
+    connect(m_addToPlaylistButton, &QPushButton::clicked, this, [this]() {
+        const auto rows = m_table->selectionModel()->selectedRows();
+        if (rows.empty()) {
+            return;
+        }
+        const auto playlists = m_repository->playlists();
+        if (playlists.empty()) {
+            QMessageBox::information(this, "没有歌单", "请先创建歌单。");
+            return;
+        }
+        QStringList names;
+        for (const auto& playlist : playlists) {
+            names.push_back(playlist.name);
+        }
+        bool accepted = false;
+        const QString name = QInputDialog::getItem(
+            this, "添加到歌单", "目标歌单", names, 0, false, &accepted);
+        if (!accepted) {
+            return;
+        }
+        const auto playlist = std::find_if(
+            playlists.begin(), playlists.end(),
+            [&name](const library::PlaylistInfo& item) {
+                return item.name == name;
+            });
+        if (playlist == playlists.end()) {
+            return;
+        }
+        int added = 0;
+        for (const QModelIndex& row : rows) {
+            const auto track = m_tableModel->trackAtRow(row.row());
+            if (track && m_repository->addTrackToPlaylist(playlist->id, track->id)) {
+                ++added;
+            }
+        }
+        refreshPlaylists(selectedPlaylistId());
+        if (added == 0) {
+            m_scanStatus->setText("所选曲目已在歌单中或添加失败");
+        } else {
+            m_scanStatus->setText(QString("已添加 %1 首到“%2”").arg(added).arg(name));
+        }
+    });
+    connect(m_removeFromPlaylistButton, &QPushButton::clicked, this, [this]() {
+        const auto playlistId = selectedPlaylistId();
+        if (!playlistId) {
+            return;
+        }
+        const auto rows = m_table->selectionModel()->selectedRows();
+        int removed = 0;
+        for (const QModelIndex& row : rows) {
+            const auto track = m_tableModel->trackAtRow(row.row());
+            if (track &&
+                m_repository->removeTrackFromPlaylist(*playlistId, track->id)) {
+                ++removed;
+            }
+        }
+        refreshPlaylists(*playlistId);
+        m_scanStatus->setText(QString("已从歌单移除 %1 首").arg(removed));
+    });
+    connect(m_table->selectionModel(), &QItemSelectionModel::selectionChanged,
+            this, [this]() { updatePlaylistControls(); });
     m_resultCount->setText(QString("%1 首曲目").arg(m_tableModel->trackCount()));
 
     connect(btnAddFiles,  &QPushButton::clicked, this, &AppleLibraryPage::requestImportFiles);
@@ -348,8 +531,10 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
 }
 
 void AppleLibraryPage::refreshTracks() {
+    refreshPlaylists(selectedPlaylistId());
     m_tableModel->refresh();
     m_resultCount->setText(QString("%1 首曲目").arg(m_tableModel->trackCount()));
+    updatePlaylistControls();
 }
 
 void AppleLibraryPage::setScanStatus(const QString& status) {
@@ -368,8 +553,60 @@ std::vector<qint64> AppleLibraryPage::trackIds() const {
     return m_tableModel->trackIds();
 }
 
+std::optional<qint64> AppleLibraryPage::selectedPlaylistId() const {
+    if (!m_playlistSelector) {
+        return std::nullopt;
+    }
+    const qint64 id = m_playlistSelector->currentData().toLongLong();
+    return id > 0 ? std::optional<qint64>(id) : std::nullopt;
+}
+
 int AppleLibraryPage::rowForTrackId(qint64 id) const {
     return m_tableModel->rowForTrackId(id);
+}
+
+void AppleLibraryPage::refreshPlaylists(std::optional<qint64> preferredPlaylist) {
+    const qint64 previousId = preferredPlaylist.value_or(
+        selectedPlaylistId().value_or(0));
+    const QSignalBlocker blocker(m_playlistSelector);
+    m_playlistSelector->clear();
+    m_playlistSelector->addItem("全部曲目", 0);
+    int selectedIndex = 0;
+    for (const auto& playlist : m_repository->playlists()) {
+        m_playlistSelector->addItem(
+            QString("%1 (%2)").arg(playlist.name).arg(playlist.trackCount),
+            playlist.id);
+        m_playlistSelector->setItemData(
+            m_playlistSelector->count() - 1, playlist.name, Qt::UserRole + 1);
+        if (playlist.id == previousId) {
+            selectedIndex = m_playlistSelector->count() - 1;
+        }
+    }
+    m_playlistSelector->setCurrentIndex(selectedIndex);
+    const qint64 playlistId =
+        m_playlistSelector->currentData().toLongLong();
+    m_tableModel->setPlaylistId(
+        playlistId > 0 ? std::optional<qint64>(playlistId) : std::nullopt);
+    const bool allTracks = playlistId == 0;
+    m_sortSelector->setEnabled(allTracks);
+    m_sortDirection->setEnabled(allTracks);
+    m_resultCount->setText(QString("%1 首曲目").arg(m_tableModel->trackCount()));
+    updatePlaylistControls();
+}
+
+void AppleLibraryPage::updatePlaylistControls() {
+    if (!m_playlistSelector || !m_table) {
+        return;
+    }
+    const bool hasPlaylist = selectedPlaylistId().has_value();
+    const bool hasSelection =
+        m_table->selectionModel() &&
+        !m_table->selectionModel()->selectedRows().isEmpty();
+    const bool hasAnyPlaylist = !m_repository->playlists().empty();
+    m_renamePlaylistButton->setEnabled(hasPlaylist);
+    m_deletePlaylistButton->setEnabled(hasPlaylist);
+    m_addToPlaylistButton->setEnabled(!hasPlaylist && hasSelection && hasAnyPlaylist);
+    m_removeFromPlaylistButton->setEnabled(hasPlaylist && hasSelection);
 }
 
 void AppleLibraryPage::updateHeroBanner(const library::TrackInfo& track) {

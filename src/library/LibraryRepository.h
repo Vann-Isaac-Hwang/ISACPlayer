@@ -72,6 +72,14 @@ public:
     bool removeTrackFromPlaylist(qint64 playlistId, qint64 trackId);
     std::vector<PlaylistInfo> playlists() const;
     std::vector<TrackInfo> playlistTracks(qint64 playlistId) const;
+    std::vector<TrackInfo> queryPlaylistTracks(
+        qint64 playlistId, const QString& searchText = {},
+        int limit = 256, int offset = 0) const;
+    std::vector<qint64> playlistTrackIds(
+        qint64 playlistId, const QString& searchText = {},
+        int limit = 1000, int offset = 0) const;
+    qint64 playlistTrackCount(qint64 playlistId,
+                              const QString& searchText = {}) const;
 
 private:
     bool initializeSchema();
