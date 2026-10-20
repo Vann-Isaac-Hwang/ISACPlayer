@@ -756,6 +756,19 @@ void NowPlayingBar::setPlayingState(bool playing) {
     m_btnPlayPause->setText(playing ? "⏸" : "▶");
 }
 
+void NowPlayingBar::setPlaybackMode(int mode) {
+    const int index = m_playbackMode->findData(mode);
+    if (index >= 0) {
+        m_playbackMode->setCurrentIndex(index);
+    }
+}
+
+void NowPlayingBar::setVolume(double volume) {
+    const QSignalBlocker blocker(m_volumeSlider);
+    const int value = static_cast<int>(std::clamp(volume, 0.0, 2.0) * 100.0);
+    m_volumeSlider->setValue(value);
+}
+
 void NowPlayingBar::updateProgress(double currentSec, double totalSec) {
     m_totalDuration = totalSec;
     m_lblCurrentTime->setText(formatTime(currentSec));

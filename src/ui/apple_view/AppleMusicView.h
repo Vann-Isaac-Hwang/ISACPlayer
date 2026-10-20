@@ -107,6 +107,8 @@ public:
 
     void setTrackInfo(const library::TrackInfo& info);
     void setPlayingState(bool playing);
+    void setPlaybackMode(int mode);
+    void setVolume(double volume);
     void updateProgress(double currentSec, double totalSec);
 
 signals:

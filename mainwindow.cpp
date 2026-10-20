@@ -12,6 +12,8 @@
 #include <QFileDialog>
 #include <QDir>
 #include <QStandardPaths>
+#include <QUrl>
+#include <QDebug>
 
 namespace {
 
@@ -297,6 +299,118 @@ MainWindow::MainWindow(QWidget *parent)
         inspectorDock->show();
     });
 
+#ifdef ISAC_HAS_MPRIS
+    m_mprisController = new isac::platform::MprisController(this);
+    m_mprisController->setPlaybackMode(m_playbackMode);
+    if (!m_mprisController->isAvailable()) {
+        qWarning() << "Unable to register the KDE MPRIS D-Bus service";
+    }
+    connect(m_mprisController, &isac::platform::MprisController::playRequested,
+            this, [this]() {
+                if (m_currentTrackId > 0) {
+                    m_audioEngine.setPlaying(true);
+                    m_nowPlayingBar->setPlayingState(m_audioEngine.isPlaying());
+                    m_mprisController->setPlaybackState(m_audioEngine.isPlaying());
+                    return;
+                }
+                const auto ids = m_libraryPage->trackIds();
+                if (!ids.empty()) {
+                    playTrackById(ids.front());
+                }
+            });
+    connect(m_mprisController, &isac::platform::MprisController::pauseRequested,
+            this, [this]() {
+                m_audioEngine.setPlaying(false);
+                m_nowPlayingBar->setPlayingState(false);
+                m_mprisController->setPlaybackState(false);
+            });
+    connect(m_mprisController, &isac::platform::MprisController::playPauseRequested,
+            this, [this]() {
+                if (m_currentTrackId <= 0) {
+                    const auto ids = m_libraryPage->trackIds();
+                    if (!ids.empty()) {
+                        playTrackById(ids.front());
+                    }
+                    return;
+                }
+                const bool playing = !m_audioEngine.isPlaying();
+                m_audioEngine.setPlaying(playing);
+                m_nowPlayingBar->setPlayingState(m_audioEngine.isPlaying());
+                m_mprisController->setPlaybackState(m_audioEngine.isPlaying());
+            });
+    connect(m_mprisController, &isac::platform::MprisController::stopRequested,
+            this, [this]() {
+                m_audioEngine.setPlaying(false);
+                m_audioEngine.seekToSeconds(0.0);
+                m_nowPlayingBar->setPlayingState(false);
+                m_nowPlayingBar->updateProgress(
+                    0.0, m_audioEngine.totalDurationSeconds());
+                m_mprisController->setPosition(0.0);
+                m_mprisController->setPlaybackState(false);
+            });
+    connect(m_mprisController, &isac::platform::MprisController::nextRequested,
+            this, [this]() {
+                const auto next = m_playbackQueue.next();
+                if (next) {
+                    playQueuedTrack(*next);
+                }
+            });
+    connect(m_mprisController, &isac::platform::MprisController::previousRequested,
+            this, [this]() {
+                const auto previous = m_playbackQueue.previous();
+                if (previous) {
+                    playQueuedTrack(*previous);
+                }
+            });
+    connect(m_mprisController, &isac::platform::MprisController::seekRequested,
+            this, [this](qint64 offsetMicroseconds) {
+                const double target = m_audioEngine.currentPositionSeconds() +
+                    static_cast<double>(offsetMicroseconds) / 1000000.0;
+                m_audioEngine.seekToSeconds(target);
+                m_mprisController->notifySeeked(
+                    m_audioEngine.currentPositionSeconds());
+            });
+    connect(m_mprisController,
+            &isac::platform::MprisController::setPositionRequested,
+            this, [this](const QString& trackPath, qint64 positionMicroseconds) {
+                if (trackPath != m_mprisController->trackObjectPath()) {
+                    return;
+                }
+                m_audioEngine.seekToSeconds(
+                    static_cast<double>(positionMicroseconds) / 1000000.0);
+                m_mprisController->notifySeeked(
+                    m_audioEngine.currentPositionSeconds());
+            });
+    connect(m_mprisController, &isac::platform::MprisController::openUriRequested,
+            this, [this](const QString& uri) {
+                const QUrl url(uri);
+                if (!url.isLocalFile()) {
+                    return;
+                }
+                const auto track =
+                    m_libraryRepository.trackByPath(url.toLocalFile());
+                if (track) {
+                    playTrackById(track->id);
+                }
+            });
+    connect(m_mprisController, &isac::platform::MprisController::volumeRequested,
+            this, [this](double volume) {
+                m_nowPlayingBar->setVolume(volume);
+                if (const auto gain = m_audioEngine.gainNode()) {
+                    gain->setParameter("factor", static_cast<float>(volume));
+                }
+            });
+    connect(m_mprisController,
+            &isac::platform::MprisController::playbackModeRequested,
+            this, [this](int mode) {
+                m_playbackMode =
+                    static_cast<isac::library::PlaybackMode>(mode);
+                m_playbackQueue.setMode(m_playbackMode);
+                m_nowPlayingBar->setPlaybackMode(mode);
+                m_mprisController->setPlaybackMode(m_playbackMode);
+            });
+#endif
+
     // 导入单首或多首音乐
     connect(m_libraryPage, &isac::ui::AppleLibraryPage::requestImportFiles, this, [this]() {
         QStringList files = QFileDialog::getOpenFileNames(
@@ -333,6 +447,9 @@ MainWindow::MainWindow(QWidget *parent)
         bool nextState = !m_audioEngine.isPlaying();
         m_audioEngine.setPlaying(nextState);
         m_nowPlayingBar->setPlayingState(m_audioEngine.isPlaying());
+#ifdef ISAC_HAS_MPRIS
+        m_mprisController->setPlaybackState(m_audioEngine.isPlaying());
+#endif
     });
     connect(m_nowPlayingBar, &isac::ui::NowPlayingBar::prevClicked, this, [this]() {
         const auto previous = m_playbackQueue.previous();
@@ -350,14 +467,23 @@ MainWindow::MainWindow(QWidget *parent)
             this, [this](int mode) {
                 m_playbackMode = static_cast<isac::library::PlaybackMode>(mode);
                 m_playbackQueue.setMode(m_playbackMode);
+#ifdef ISAC_HAS_MPRIS
+                m_mprisController->setPlaybackMode(m_playbackMode);
+#endif
             });
     connect(m_nowPlayingBar, &isac::ui::NowPlayingBar::seekRequested, this, [this](double sec) {
         m_audioEngine.seekToSeconds(sec);
+#ifdef ISAC_HAS_MPRIS
+        m_mprisController->notifySeeked(m_audioEngine.currentPositionSeconds());
+#endif
     });
     connect(m_nowPlayingBar, &isac::ui::NowPlayingBar::volumeChanged, this, [this](float factor) {
         if (const auto gain = m_audioEngine.gainNode()) {
             gain->setParameter("factor", factor);
         }
+#ifdef ISAC_HAS_MPRIS
+        m_mprisController->setVolume(std::min(1.0, static_cast<double>(factor)));
+#endif
     });
 
     // 节点画布预设按钮
@@ -458,6 +584,9 @@ MainWindow::MainWindow(QWidget *parent)
             const double duration = m_audioEngine.totalDurationSeconds();
             m_nowPlayingBar->updateProgress(
                 position, duration);
+#ifdef ISAC_HAS_MPRIS
+            m_mprisController->setPosition(position);
+#endif
             if (duration > 0.0 && position >= duration &&
                 !m_currentTrackEndHandled) {
                 m_currentTrackEndHandled = true;
@@ -475,6 +604,9 @@ MainWindow::MainWindow(QWidget *parent)
                         m_audioEngine.seekToSeconds(0.0);
                         m_currentTrackEndHandled = false;
                         m_nowPlayingBar->setPlayingState(false);
+#ifdef ISAC_HAS_MPRIS
+                        m_mprisController->setPlaybackState(false);
+#endif
                         m_nowPlayingBar->updateProgress(
                             0.0, m_audioEngine.totalDurationSeconds());
                     }
@@ -503,9 +635,15 @@ void MainWindow::playQueuedTrack(qint64 trackId) {
 
     if (m_audioEngine.loadAndPlay(track->filePath.toStdString())) {
         m_currentTrackEndHandled = false;
+        m_currentTrackId = trackId;
         m_libraryPage->updateHeroBanner(*track);
         m_nowPlayingBar->setTrackInfo(*track);
         m_nowPlayingBar->setPlayingState(true);
+#ifdef ISAC_HAS_MPRIS
+        m_mprisController->setTrack(*track);
+        m_mprisController->setPosition(0.0);
+        m_mprisController->setPlaybackState(true);
+#endif
     }
 }
 

@@ -11,6 +11,9 @@
 #include "ui/plugins/PluginManager.h"
 #include "library/LibraryScanner.h"
 #include "library/PlaybackQueue.h"
+#ifdef ISAC_HAS_MPRIS
+#include "platform/mpris/MprisController.h"
+#endif
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -43,5 +46,9 @@ private:
     isac::library::PlaybackMode m_playbackMode =
         isac::library::PlaybackMode::Sequential;
     bool m_currentTrackEndHandled = false;
+    qint64 m_currentTrackId = 0;
+#ifdef ISAC_HAS_MPRIS
+    isac::platform::MprisController* m_mprisController = nullptr;
+#endif
 };
 #endif // MAINWINDOW_H

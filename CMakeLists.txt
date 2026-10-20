@@ -79,6 +79,16 @@ target_link_libraries(ISACPlayer PRIVATE
     isac_engine
 )
 
+if(UNIX AND NOT APPLE)
+    find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS DBus)
+    target_sources(ISACPlayer PRIVATE
+        src/platform/mpris/MprisController.h
+        src/platform/mpris/MprisController.cpp
+    )
+    target_link_libraries(ISACPlayer PRIVATE Qt${QT_VERSION_MAJOR}::DBus)
+    target_compile_definitions(ISACPlayer PRIVATE ISAC_HAS_MPRIS=1)
+endif()
+
 add_subdirectory(plugins/replaygain)
 add_subdirectory(plugins/gain)
 add_subdirectory(plugins/adder)
