@@ -28,8 +28,10 @@ public:
 
 private:
     void playTrackById(qint64 trackId);
-    void playQueuedTrack(qint64 trackId);
+    bool playQueuedTrack(qint64 trackId);
     void rebuildPlaybackQueue(qint64 currentTrackId);
+    void persistPlaybackQueue(bool includeOrder);
+    void restorePlaybackQueue();
 
     Ui::MainWindow *ui;
     isac::ui::PluginManager m_pluginManager;
@@ -47,6 +49,8 @@ private:
         isac::library::PlaybackMode::Sequential;
     bool m_currentTrackEndHandled = false;
     qint64 m_currentTrackId = 0;
+    bool m_trackLoaded = false;
+    bool m_playbackQueueNeedsSave = false;
 #ifdef ISAC_HAS_MPRIS
     isac::platform::MprisController* m_mprisController = nullptr;
 #endif

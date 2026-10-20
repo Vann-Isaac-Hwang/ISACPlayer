@@ -22,7 +22,7 @@ public:
     std::size_t readableFrames() const noexcept
     {
         const auto write = m_writeCursor.load(std::memory_order_acquire);
-        const auto read = m_readCursor.load(std::memory_order_relaxed);
+        const auto read = m_readCursor.load(std::memory_order_acquire);
         return static_cast<std::size_t>(write - read);
     }
 

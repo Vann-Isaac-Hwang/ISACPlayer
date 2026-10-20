@@ -177,10 +177,19 @@ PatchbayScene::PatchbayScene(AudioEngine& engine, QObject* parent)
 }
 
 void PatchbayScene::syncFromEngine() {
+    if (m_tempCable) {
+        removeItem(m_tempCable);
+        delete m_tempCable;
+        m_tempCable = nullptr;
+    }
+    for (auto* cable : m_cableItems) {
+        removeItem(cable);
+        delete cable;
+    }
+    m_cableItems.clear();
     m_tempCable = nullptr;
     clear();
     m_nodeItems.clear();
-    m_cableItems.clear();
 
     // 1. 生成所有节点方块并按稳定的 NodeId 排布，避免多个实例重叠。
     std::vector<std::pair<NodeId, std::shared_ptr<IAudioNode>>> orderedNodes;

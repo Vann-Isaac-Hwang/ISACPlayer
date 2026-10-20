@@ -1,6 +1,7 @@
 #pragma once
 
 #include "LibraryTypes.h"
+#include "PlaybackQueue.h"
 
 #include <QSqlDatabase>
 #include <QSqlQuery>
@@ -21,6 +22,18 @@ struct PlaylistInfo {
     QString name;
     QDateTime createdAt;
     int trackCount = 0;
+};
+
+struct LibraryGroup {
+    QString name;
+    QString artist;
+    qint64 trackCount = 0;
+};
+
+struct PersistedPlaybackQueue {
+    std::vector<qint64> trackIds;
+    std::size_t position = 0;
+    PlaybackMode mode = PlaybackMode::Sequential;
 };
 
 enum class TrackSort {
@@ -60,6 +73,34 @@ public:
                                       int offset = 0,
                                       const QString& searchText = {}) const;
     qint64 trackCount(const QString& searchText = {}) const;
+    std::vector<LibraryGroup> queryArtists(
+        const QString& searchText = {}, bool ascending = true,
+        int limit = 256, int offset = 0) const;
+    qint64 artistCount(const QString& searchText = {}) const;
+    std::vector<LibraryGroup> queryAlbums(
+        const QString& searchText = {}, bool ascending = true,
+        int limit = 256, int offset = 0) const;
+    qint64 albumCount(const QString& searchText = {}) const;
+    std::vector<TrackInfo> queryArtistTracks(
+        const QString& artist, const QString& searchText = {},
+        TrackSort sort = TrackSort::Title, bool ascending = true,
+        int limit = 256, int offset = 0) const;
+    std::vector<qint64> queryArtistTrackIds(
+        const QString& artist, const QString& searchText = {},
+        TrackSort sort = TrackSort::Title, bool ascending = true,
+        int limit = 10000, int offset = 0) const;
+    qint64 artistTrackCount(const QString& artist,
+                            const QString& searchText = {}) const;
+    std::vector<TrackInfo> queryAlbumTracks(
+        const QString& artist, const QString& album,
+        const QString& searchText = {}, TrackSort sort = TrackSort::Title,
+        bool ascending = true, int limit = 256, int offset = 0) const;
+    std::vector<qint64> queryAlbumTrackIds(
+        const QString& artist, const QString& album,
+        const QString& searchText = {}, TrackSort sort = TrackSort::Title,
+        bool ascending = true, int limit = 10000, int offset = 0) const;
+    qint64 albumTrackCount(const QString& artist, const QString& album,
+                           const QString& searchText = {}) const;
 
     bool addDirectory(const QString& path);
     bool markDirectoryScanned(const QString& path, const QDateTime& scannedAt);
@@ -70,6 +111,8 @@ public:
     bool deletePlaylist(qint64 playlistId);
     bool addTrackToPlaylist(qint64 playlistId, qint64 trackId);
     bool removeTrackFromPlaylist(qint64 playlistId, qint64 trackId);
+    bool movePlaylistTrack(qint64 playlistId, qint64 trackId,
+                           int destinationIndex);
     std::vector<PlaylistInfo> playlists() const;
     std::vector<TrackInfo> playlistTracks(qint64 playlistId) const;
     std::vector<TrackInfo> queryPlaylistTracks(
@@ -80,6 +123,10 @@ public:
         int limit = 1000, int offset = 0) const;
     qint64 playlistTrackCount(qint64 playlistId,
                               const QString& searchText = {}) const;
+    bool savePlaybackQueue(const std::vector<qint64>& trackIds,
+                           std::size_t position, PlaybackMode mode);
+    bool savePlaybackCursor(std::size_t position, PlaybackMode mode);
+    std::optional<PersistedPlaybackQueue> loadPlaybackQueue() const;
 
 private:
     bool initializeSchema();

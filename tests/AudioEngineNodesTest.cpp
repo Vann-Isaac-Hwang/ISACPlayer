@@ -1,5 +1,6 @@
 #include "engine/graph/AudioBuffer.h"
 #include "engine/graph/AudioEngine.h"
+#include "engine/graph/PlaybackFade.h"
 #include "engine/graph/SpscAudioRingBuffer.h"
 #include "engine/nodes/BiquadEqualizerNode.h"
 #include "engine/nodes/MultiplyNode.h"
@@ -40,6 +41,28 @@ void testDoublePlanarBus()
                "double sample precision must be preserved");
     expect(buffer.channel(1) == buffer.channel(0) + buffer.numFrames(),
            "audio bus must use planar channel storage");
+}
+
+void testPlaybackFadeEnvelope()
+{
+    constexpr std::uint64_t fadeFrames = 100;
+    constexpr std::uint64_t totalFrames = 1000;
+    expectNear(isac::playbackFadeGain(0, totalFrames, fadeFrames),
+               0.0, 0.0, "fade-in must start silent");
+    expectNear(isac::playbackFadeGain(50, totalFrames, fadeFrames),
+               0.5, 1.0e-12, "fade-in midpoint must be linear");
+    expectNear(isac::playbackFadeGain(100, totalFrames, fadeFrames),
+               1.0, 0.0, "fade-in must reach unity");
+    expectNear(isac::playbackFadeGain(950, totalFrames, fadeFrames),
+               0.5, 1.0e-12, "fade-out midpoint must be linear");
+    expectNear(isac::playbackFadeGain(totalFrames, totalFrames, fadeFrames),
+               0.0, 0.0, "fade-out must end silent");
+    expectNear(isac::playbackFadeGain(0, 40, fadeFrames),
+               0.0, 0.0, "short tracks must begin silent");
+    expectNear(isac::playbackFadeGain(20, 40, fadeFrames),
+               0.25, 1.0e-12, "overlapping fades must combine smoothly");
+    expectNear(isac::playbackFadeGain(20, 40, 0),
+               1.0, 0.0, "zero-duration fade must preserve unity gain");
 }
 
 void testBiquadBypass()
@@ -125,6 +148,24 @@ void testNodeRemoval()
     expect(!engine.removeNode(sinkId), "sink endpoint must not be removable");
 }
 
+void testOutputDeviceEnumeration()
+{
+    isac::AudioEngine engine;
+    const auto devices = engine.availableOutputDevices();
+
+    expect(!devices.empty(), "output device list must include system default");
+    expect(devices.front().useSystemDefault,
+           "system default must be the first output option");
+    expect(devices.front().isDefault,
+           "system default option must be marked as default");
+
+    std::string error;
+    expect(engine.selectOutputDevice(devices.front(), error),
+           "selecting system default before playback must succeed");
+    expect(!engine.selectedOutputDevice().has_value(),
+           "system default selection must clear an explicit device id");
+}
+
 void testSpscAudioRingBuffer()
 {
     isac::SpscAudioRingBuffer ring(4, 2);
@@ -168,10 +209,12 @@ void testSpscAudioRingBuffer()
 int main()
 {
     testDoublePlanarBus();
+    testPlaybackFadeEnvelope();
     testBiquadBypass();
     testBiquadPeak();
     testAtomicParameterUpdate();
     testNodeRemoval();
+    testOutputDeviceEnumeration();
     testSpscAudioRingBuffer();
     std::cout << "isac_engine_tests: all tests passed\n";
     return EXIT_SUCCESS;

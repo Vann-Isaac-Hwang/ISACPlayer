@@ -9,6 +9,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QSignalBlocker>
+#include <QDataStream>
 #include <algorithm>
 #include <utility>
 
@@ -103,6 +104,79 @@ QVariant TrackTableModel::headerData(int section, Qt::Orientation orientation, i
     }
 }
 
+Qt::ItemFlags TrackTableModel::flags(const QModelIndex& index) const {
+    Qt::ItemFlags itemFlags = QAbstractTableModel::flags(index);
+    if (m_playlistId && m_searchText.isEmpty()) {
+        itemFlags |= Qt::ItemIsDropEnabled;
+        if (index.isValid()) {
+            itemFlags |= Qt::ItemIsDragEnabled;
+        }
+    }
+    return itemFlags;
+}
+
+QStringList TrackTableModel::mimeTypes() const {
+    return {QStringLiteral("application/x-isac-playlist-track-id")};
+}
+
+QMimeData* TrackTableModel::mimeData(const QModelIndexList& indexes) const {
+    if (!m_playlistId || !m_searchText.isEmpty() || indexes.isEmpty()) {
+        return nullptr;
+    }
+    const int sourceRow = indexes.front().row();
+    if (std::any_of(indexes.begin(), indexes.end(),
+                    [sourceRow](const QModelIndex& index) {
+                        return index.row() != sourceRow;
+                    })) {
+        return nullptr;
+    }
+    const auto track = trackAtRow(sourceRow);
+    if (!track) {
+        return nullptr;
+    }
+    auto* data = new QMimeData();
+    QByteArray payload;
+    QDataStream stream(&payload, QIODevice::WriteOnly);
+    stream << track->id;
+    data->setData(QStringLiteral("application/x-isac-playlist-track-id"),
+                  payload);
+    return data;
+}
+
+bool TrackTableModel::dropMimeData(const QMimeData* data,
+                                   Qt::DropAction action, int row, int,
+                                   const QModelIndex& parent) {
+    if (action == Qt::IgnoreAction) {
+        return true;
+    }
+    if (action != Qt::MoveAction || !m_playlistId ||
+        !m_searchText.isEmpty() || !data ||
+        !data->hasFormat(
+            QStringLiteral("application/x-isac-playlist-track-id"))) {
+        return false;
+    }
+    QByteArray payload = data->data(
+        QStringLiteral("application/x-isac-playlist-track-id"));
+    QDataStream stream(&payload, QIODevice::ReadOnly);
+    qint64 trackId = 0;
+    stream >> trackId;
+    if (stream.status() != QDataStream::Ok || trackId <= 0) {
+        return false;
+    }
+    const int destination = row >= 0
+        ? row : parent.isValid() ? parent.row() : rowCount();
+    if (!m_repository->movePlaylistTrack(
+            *m_playlistId, trackId, destination)) {
+        return false;
+    }
+    refresh();
+    return true;
+}
+
+Qt::DropActions TrackTableModel::supportedDropActions() const {
+    return Qt::MoveAction;
+}
+
 void TrackTableModel::refresh() {
     beginResetModel();
     m_page.clear();
@@ -111,7 +185,12 @@ void TrackTableModel::refresh() {
     m_trackCount = !m_repository ? 0
         : std::max<qint64>(0, m_playlistId
               ? m_repository->playlistTrackCount(*m_playlistId, m_searchText)
-              : m_repository->trackCount(m_searchText));
+              : !m_artistFilter.isEmpty()
+                  ? m_albumFilter.isEmpty()
+                      ? m_repository->artistTrackCount(m_artistFilter, m_searchText)
+                      : m_repository->albumTrackCount(
+                            m_artistFilter, m_albumFilter, m_searchText)
+                  : m_repository->trackCount(m_searchText));
     endResetModel();
 }
 
@@ -134,6 +213,21 @@ void TrackTableModel::setSort(library::TrackSort sort, bool ascending) {
 void TrackTableModel::setPlaylistId(std::optional<qint64> playlistId) {
     if (m_playlistId != playlistId) {
         m_playlistId = playlistId;
+        if (playlistId) {
+            m_artistFilter.clear();
+            m_albumFilter.clear();
+        }
+        refresh();
+    }
+}
+
+void TrackTableModel::setCategoryFilter(const QString& artist,
+                                        const QString& album) {
+    if (m_artistFilter != artist || m_albumFilter != album ||
+        m_playlistId.has_value()) {
+        m_playlistId.reset();
+        m_artistFilter = artist;
+        m_albumFilter = album;
         refresh();
     }
 }
@@ -146,11 +240,21 @@ bool TrackTableModel::loadPage(int row) const {
     if (pageStart == m_pageStart) {
         return true;
     }
-    m_page = m_playlistId
-        ? m_repository->queryPlaylistTracks(
-              *m_playlistId, m_searchText, kPageSize, pageStart)
-        : m_repository->queryTracks(
-              m_searchText, m_sort, m_ascending, kPageSize, pageStart);
+    if (m_playlistId) {
+        m_page = m_repository->queryPlaylistTracks(
+            *m_playlistId, m_searchText, kPageSize, pageStart);
+    } else if (!m_artistFilter.isEmpty()) {
+        m_page = m_albumFilter.isEmpty()
+            ? m_repository->queryArtistTracks(
+                  m_artistFilter, m_searchText, m_sort, m_ascending,
+                  kPageSize, pageStart)
+            : m_repository->queryAlbumTracks(
+                  m_artistFilter, m_albumFilter, m_searchText, m_sort,
+                  m_ascending, kPageSize, pageStart);
+    } else {
+        m_page = m_repository->queryTracks(
+            m_searchText, m_sort, m_ascending, kPageSize, pageStart);
+    }
     m_pageStart = pageStart;
     return !m_page.empty();
 }
@@ -163,7 +267,7 @@ std::optional<library::TrackInfo> TrackTableModel::trackAtRow(int row) const {
 }
 
 int TrackTableModel::rowForTrackId(qint64 id) const {
-    if (!m_repository || id <= 0) {
+    if (!m_repository || id <= 0 || !m_artistFilter.isEmpty()) {
         return -1;
     }
     const qint64 row = m_repository->rowForTrackId(
@@ -176,11 +280,23 @@ std::vector<qint64> TrackTableModel::trackIds() const {
     ids.reserve(static_cast<std::size_t>(m_trackCount));
     constexpr int pageSize = 10000;
     for (qint64 offset = 0; offset < m_trackCount; offset += pageSize) {
-        auto page = m_playlistId
-            ? m_repository->playlistTrackIds(
-                  *m_playlistId, m_searchText, pageSize, static_cast<int>(offset))
-            : m_repository->queryTrackIds(
-                  m_sort, m_ascending, pageSize, static_cast<int>(offset), m_searchText);
+        std::vector<qint64> page;
+        if (m_playlistId) {
+            page = m_repository->playlistTrackIds(
+                *m_playlistId, m_searchText, pageSize, static_cast<int>(offset));
+        } else if (!m_artistFilter.isEmpty()) {
+            page = m_albumFilter.isEmpty()
+                ? m_repository->queryArtistTrackIds(
+                      m_artistFilter, m_searchText, m_sort, m_ascending,
+                      pageSize, static_cast<int>(offset))
+                : m_repository->queryAlbumTrackIds(
+                      m_artistFilter, m_albumFilter, m_searchText, m_sort,
+                      m_ascending, pageSize, static_cast<int>(offset));
+        } else {
+            page = m_repository->queryTrackIds(
+                m_sort, m_ascending, pageSize, static_cast<int>(offset),
+                m_searchText);
+        }
         if (page.empty()) {
             break;
         }
@@ -195,6 +311,120 @@ qint64 TrackTableModel::trackCount() const {
 
 std::optional<qint64> TrackTableModel::playlistId() const {
     return m_playlistId;
+}
+
+LibraryGroupTableModel::LibraryGroupTableModel(
+    library::LibraryRepository* repository, bool albums, QObject* parent)
+    : QAbstractTableModel(parent)
+    , m_repository(repository)
+    , m_albums(albums)
+{
+    refresh();
+}
+
+int LibraryGroupTableModel::rowCount(const QModelIndex& parent) const {
+    return parent.isValid() ? 0
+        : static_cast<int>(std::min<qint64>(m_groupCount, INT_MAX));
+}
+
+int LibraryGroupTableModel::columnCount(const QModelIndex& parent) const {
+    return parent.isValid() ? 0 : (m_albums ? 3 : 2);
+}
+
+QVariant LibraryGroupTableModel::data(const QModelIndex& index, int role) const {
+    if (!index.isValid() || role != Qt::DisplayRole ||
+        !loadPage(index.row())) {
+        return {};
+    }
+    const auto& group =
+        m_page[static_cast<std::size_t>(index.row() - m_pageStart)];
+    if (m_albums) {
+        switch (index.column()) {
+        case 0: return group.name;
+        case 1: return group.artist;
+        case 2: return group.trackCount;
+        default: return {};
+        }
+    }
+    switch (index.column()) {
+    case 0: return group.name;
+    case 1: return group.trackCount;
+    default: return {};
+    }
+}
+
+QVariant LibraryGroupTableModel::headerData(
+    int section, Qt::Orientation orientation, int role) const {
+    if (orientation != Qt::Horizontal || role != Qt::DisplayRole) {
+        return {};
+    }
+    if (m_albums) {
+        switch (section) {
+        case 0: return QStringLiteral("专辑");
+        case 1: return QStringLiteral("艺人");
+        case 2: return QStringLiteral("曲目数");
+        default: return {};
+        }
+    }
+    switch (section) {
+    case 0: return QStringLiteral("艺人");
+    case 1: return QStringLiteral("曲目数");
+    default: return {};
+    }
+}
+
+void LibraryGroupTableModel::refresh() {
+    beginResetModel();
+    m_page.clear();
+    m_pageStart = -1;
+    m_groupCount = !m_repository ? 0
+        : m_albums ? m_repository->albumCount(m_searchText)
+                   : m_repository->artistCount(m_searchText);
+    endResetModel();
+}
+
+void LibraryGroupTableModel::setSearchText(const QString& text) {
+    const QString normalized = text.trimmed();
+    if (m_searchText != normalized) {
+        m_searchText = normalized;
+        refresh();
+    }
+}
+
+void LibraryGroupTableModel::setAscending(bool ascending) {
+    if (m_ascending != ascending) {
+        m_ascending = ascending;
+        refresh();
+    }
+}
+
+bool LibraryGroupTableModel::loadPage(int row) const {
+    if (!m_repository || row < 0 || row >= rowCount()) {
+        return false;
+    }
+    const int pageStart = (row / kPageSize) * kPageSize;
+    if (pageStart == m_pageStart) {
+        return true;
+    }
+    m_page = m_albums
+        ? m_repository->queryAlbums(
+              m_searchText, m_ascending, kPageSize, pageStart)
+        : m_repository->queryArtists(
+              m_searchText, m_ascending, kPageSize, pageStart);
+    m_pageStart = pageStart;
+    return !m_page.empty();
+}
+
+std::optional<library::LibraryGroup>
+LibraryGroupTableModel::groupAtRow(int row) const {
+    if (!loadPage(row)) {
+        return std::nullopt;
+    }
+    return m_page[static_cast<std::size_t>(row - m_pageStart)];
+}
+
+qint64 LibraryGroupTableModel::groupCount() const {
+    return m_groupCount;
 }
 
 // ==================== AppleLibraryPage ====================
@@ -329,6 +559,8 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
     const QPixmap defaultRowCover = library::MetadataReader::generateDefaultCover("ISAC", 80);
     m_table = new QTableView(this);
     m_tableModel = new TrackTableModel(repository, QIcon(defaultRowCover), m_table);
+    m_artistModel = new LibraryGroupTableModel(repository, false, m_table);
+    m_albumModel = new LibraryGroupTableModel(repository, true, m_table);
     m_table->setModel(m_tableModel);
     m_table->verticalHeader()->setVisible(false);
     m_table->verticalHeader()->setDefaultSectionSize(52);
@@ -337,6 +569,11 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
     m_table->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setFocusPolicy(Qt::NoFocus);
+    m_table->setDragEnabled(true);
+    m_table->setAcceptDrops(true);
+    m_table->setDropIndicatorShown(true);
+    m_table->setDragDropMode(QAbstractItemView::InternalMove);
+    m_table->setDefaultDropAction(Qt::MoveAction);
     m_table->setIconSize(QSize(40, 40));
     m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Interactive);
@@ -363,10 +600,27 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
         }
     )");
 
+    m_libraryTabs = new QTabBar(this);
+    m_libraryTabs->addTab(QStringLiteral("歌曲"));
+    m_libraryTabs->addTab(QStringLiteral("艺人"));
+    m_libraryTabs->addTab(QStringLiteral("专辑"));
+    m_libraryTabs->setExpanding(false);
+    m_libraryTabs->setStyleSheet(
+        "QTabBar::tab { color: #A5AAB8; background: transparent; "
+        "padding: 8px 18px; border-bottom: 2px solid transparent; }"
+        "QTabBar::tab:selected { color: #FFFFFF; border-bottom-color: #FA2D48; }");
+    m_groupBackButton = new QPushButton(QStringLiteral("返回分类"), this);
+    m_groupBackButton->hide();
+
     mainLayout->addLayout(topBar);
     mainLayout->addWidget(heroCard);
     mainLayout->addLayout(libraryControls);
     mainLayout->addLayout(playlistControls);
+    auto* viewBar = new QHBoxLayout();
+    viewBar->addWidget(m_libraryTabs);
+    viewBar->addWidget(m_groupBackButton);
+    viewBar->addStretch();
+    mainLayout->addLayout(viewBar);
     mainLayout->addWidget(m_table, 1);
 
     refreshPlaylists();
@@ -379,14 +633,19 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
             QOverload<>::of(&QTimer::start));
     connect(m_searchTimer, &QTimer::timeout, this, [this]() {
         m_tableModel->setSearchText(m_searchInput->text());
-        m_resultCount->setText(QString("%1 首曲目").arg(m_tableModel->trackCount()));
+        m_artistModel->setSearchText(m_searchInput->text());
+        m_albumModel->setSearchText(m_searchInput->text());
+        updateResultCount();
     });
     auto updateSort = [this]() {
         m_tableModel->setSort(
             static_cast<library::TrackSort>(
                 m_sortSelector->currentData().toInt()),
             m_sortDirection->currentData().toBool());
-        m_resultCount->setText(QString("%1 首曲目").arg(m_tableModel->trackCount()));
+        const bool ascending = m_sortDirection->currentData().toBool();
+        m_artistModel->setAscending(ascending);
+        m_albumModel->setAscending(ascending);
+        updateResultCount();
     };
     connect(m_sortSelector, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [updateSort](int) { updateSort(); });
@@ -396,14 +655,16 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
             this, [this](int index) {
                 const qint64 playlistId =
                     m_playlistSelector->itemData(index).toLongLong();
+                if (playlistId > 0 && m_showingGroupTracks) {
+                    m_libraryTabs->setCurrentIndex(0);
+                }
                 m_tableModel->setPlaylistId(
                     playlistId > 0 ? std::optional<qint64>(playlistId) : std::nullopt);
                 const bool allTracks = playlistId == 0;
                 m_sortSelector->setEnabled(allTracks);
                 m_sortDirection->setEnabled(allTracks);
                 updatePlaylistControls();
-                m_resultCount->setText(
-                    QString("%1 首曲目").arg(m_tableModel->trackCount()));
+                updateResultCount();
             });
     connect(m_createPlaylistButton, &QPushButton::clicked, this, [this]() {
         bool accepted = false;
@@ -516,16 +777,32 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
     });
     connect(m_table->selectionModel(), &QItemSelectionModel::selectionChanged,
             this, [this]() { updatePlaylistControls(); });
-    m_resultCount->setText(QString("%1 首曲目").arg(m_tableModel->trackCount()));
+    connect(m_libraryTabs, &QTabBar::currentChanged,
+            this, [this](int index) { showLibraryView(index); });
+    connect(m_groupBackButton, &QPushButton::clicked, this, [this]() {
+        m_showingGroupTracks = false;
+        m_tableModel->setCategoryFilter({}, {});
+        showLibraryView(m_libraryView);
+    });
+    updateResultCount();
 
     connect(btnAddFiles,  &QPushButton::clicked, this, &AppleLibraryPage::requestImportFiles);
     connect(btnAddFolder, &QPushButton::clicked, this, &AppleLibraryPage::requestImportFolder);
     connect(m_table, &QTableView::doubleClicked, this, [this](const QModelIndex& index) {
-        if (index.isValid()) {
+        if (!index.isValid()) {
+            return;
+        }
+        if (m_libraryView == 0 || m_showingGroupTracks) {
             const auto track = m_tableModel->trackAtRow(index.row());
             if (track) {
                 emit trackDoubleClicked(track->id);
             }
+            return;
+        }
+        const auto* model = m_libraryView == 1 ? m_artistModel : m_albumModel;
+        const auto group = model->groupAtRow(index.row());
+        if (group) {
+            showGroupTracks(*group);
         }
     });
 }
@@ -533,7 +810,9 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
 void AppleLibraryPage::refreshTracks() {
     refreshPlaylists(selectedPlaylistId());
     m_tableModel->refresh();
-    m_resultCount->setText(QString("%1 首曲目").arg(m_tableModel->trackCount()));
+    m_artistModel->refresh();
+    m_albumModel->refresh();
+    updateResultCount();
     updatePlaylistControls();
 }
 
@@ -603,10 +882,83 @@ void AppleLibraryPage::updatePlaylistControls() {
         m_table->selectionModel() &&
         !m_table->selectionModel()->selectedRows().isEmpty();
     const bool hasAnyPlaylist = !m_repository->playlists().empty();
+    const bool showControls = m_libraryView == 0 && !m_showingGroupTracks;
+    const QList<QWidget*> playlistControls{
+        m_playlistSelector, m_createPlaylistButton, m_renamePlaylistButton,
+        m_deletePlaylistButton, m_addToPlaylistButton,
+        m_removeFromPlaylistButton
+    };
+    for (QWidget* control : playlistControls) {
+        control->setVisible(showControls);
+    }
     m_renamePlaylistButton->setEnabled(hasPlaylist);
     m_deletePlaylistButton->setEnabled(hasPlaylist);
     m_addToPlaylistButton->setEnabled(!hasPlaylist && hasSelection && hasAnyPlaylist);
     m_removeFromPlaylistButton->setEnabled(hasPlaylist && hasSelection);
+}
+
+void AppleLibraryPage::showLibraryView(int view) {
+    m_libraryView = std::clamp(view, 0, 2);
+    m_showingGroupTracks = false;
+    m_groupBackButton->hide();
+    if (m_libraryView == 0) {
+        m_tableModel->setCategoryFilter({}, {});
+        const qint64 playlistId = m_playlistSelector->currentData().toLongLong();
+        m_tableModel->setPlaylistId(
+            playlistId > 0 ? std::optional<qint64>(playlistId) : std::nullopt);
+        m_table->setModel(m_tableModel);
+    } else {
+        {
+            const QSignalBlocker blocker(m_playlistSelector);
+            m_playlistSelector->setCurrentIndex(0);
+        }
+        m_tableModel->setCategoryFilter({}, {});
+        m_tableModel->setPlaylistId(std::nullopt);
+        m_table->setModel(m_libraryView == 1 ? m_artistModel : m_albumModel);
+    }
+    connect(m_table->selectionModel(),
+            &QItemSelectionModel::selectionChanged,
+            this, [this]() { updatePlaylistControls(); });
+    m_sortSelector->setVisible(m_libraryView == 0);
+    m_sortSelector->setEnabled(m_libraryView == 0 &&
+                               !m_tableModel->playlistId().has_value());
+    m_sortDirection->setEnabled(
+        m_libraryView != 0 || !m_tableModel->playlistId().has_value());
+    updatePlaylistControls();
+    updateResultCount();
+}
+
+void AppleLibraryPage::showGroupTracks(const library::LibraryGroup& group) {
+    m_showingGroupTracks = true;
+    const QString artist = m_libraryView == 1 ? group.name : group.artist;
+    const QString album = m_libraryView == 2 ? group.name : QString{};
+    m_tableModel->setCategoryFilter(artist, album);
+    m_table->setModel(m_tableModel);
+    connect(m_table->selectionModel(),
+            &QItemSelectionModel::selectionChanged,
+            this, [this]() { updatePlaylistControls(); });
+    m_groupBackButton->setText(
+        QStringLiteral("返回%1").arg(m_libraryView == 1
+            ? QStringLiteral("艺人") : QStringLiteral("专辑")));
+    m_groupBackButton->show();
+    m_sortSelector->show();
+    m_sortSelector->setEnabled(true);
+    m_sortDirection->setEnabled(true);
+    updatePlaylistControls();
+    updateResultCount();
+}
+
+void AppleLibraryPage::updateResultCount() {
+    if (m_showingGroupTracks || m_libraryView == 0) {
+        m_resultCount->setText(
+            QStringLiteral("%1 首曲目").arg(m_tableModel->trackCount()));
+    } else if (m_libraryView == 1) {
+        m_resultCount->setText(
+            QStringLiteral("%1 位艺人").arg(m_artistModel->groupCount()));
+    } else {
+        m_resultCount->setText(
+            QStringLiteral("%1 张专辑").arg(m_albumModel->groupCount()));
+    }
 }
 
 void AppleLibraryPage::updateHeroBanner(const library::TrackInfo& track) {

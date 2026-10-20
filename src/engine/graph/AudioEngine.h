@@ -3,6 +3,7 @@
 #include "GraphCompiler.h"
 #include "SpscAudioRingBuffer.h"
 #include <array>
+#include <cstdint>
 #include <condition_variable>
 #include <string>
 #include <memory>
@@ -10,8 +11,18 @@
 #include <atomic>
 #include <thread>
 #include <unordered_map>
+#include <optional>
+#include <vector>
 
 namespace isac {
+
+struct AudioOutputDevice {
+    std::string name;
+    std::array<std::uint8_t, sizeof(ma_device_id)> id{};
+    bool useSystemDefault = false;
+    bool isDefault = false;
+    std::uint32_t maxChannels = 2;
+};
 
 constexpr int MAX_ENGINE_BLOCK_FRAMES = 8192; // 防御 PipeWire 大帧数回调
 constexpr std::size_t PCM_RING_BUFFER_FRAMES = 96000; // 2 秒 @ 48 kHz
@@ -58,8 +69,15 @@ public:
     ~AudioEngine();
 
     bool loadAndPlay(const std::string& filePath);
+    std::vector<AudioOutputDevice> availableOutputDevices();
+    bool selectOutputDevice(const AudioOutputDevice& device,
+                            std::string& error);
+    std::optional<AudioOutputDevice> selectedOutputDevice() const;
+    void setFadeEnabled(bool enabled) noexcept;
+    void setFadeDurationSeconds(double seconds) noexcept;
     void setPlaying(bool play);
     bool isPlaying() const;
+    bool isPlaybackComplete() const noexcept;
     void seekToSeconds(double seconds);
     double currentPositionSeconds() const;
     double totalDurationSeconds() const;
@@ -93,9 +111,14 @@ private:
     void stopDecoderThread();
     void notifyDecoder();
     void markDecoderReady();
+    bool initializePlaybackDevice(std::string& error);
+    void destroyPlaybackDevice();
 
+    ma_context m_context{};
+    bool m_contextInitialized = false;
     ma_decoder m_decoder{};
     ma_device m_device{};
+    std::optional<AudioOutputDevice> m_selectedOutputDevice;
     std::atomic<bool> m_decoderLoaded{false};
     bool m_decoderInitialized = false;
     bool m_deviceInitialized = false;
@@ -134,6 +157,8 @@ private:
     std::atomic<ma_uint64> m_renderedFrame{0};
     std::atomic<ma_uint64> m_totalFrames{0};
     std::atomic<ma_uint64> m_underrunFrames{0};
+    std::atomic<bool> m_fadeEnabled{false};
+    std::atomic<ma_uint64> m_fadeDurationFrames{96000};
 };
 
 } // namespace isac

@@ -128,6 +128,23 @@ if(BUILD_TESTING)
     target_link_libraries(isac_engine_tests PRIVATE isac_engine)
     add_test(NAME isac_engine_tests COMMAND isac_engine_tests)
 
+    add_executable(isac_patchbay_tests
+        tests/PatchbaySceneTest.cpp
+        src/ui/patchbay/PatchbayView.h
+        src/ui/patchbay/PatchbayView.cpp
+    )
+    target_include_directories(isac_patchbay_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(isac_patchbay_tests PRIVATE
+        Qt${QT_VERSION_MAJOR}::Widgets
+        isac_engine
+    )
+    add_test(NAME isac_patchbay_tests COMMAND isac_patchbay_tests)
+    set_tests_properties(isac_patchbay_tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+
     add_executable(isac_plugin_loader_tests
         tests/PluginLoaderTest.cpp
     )

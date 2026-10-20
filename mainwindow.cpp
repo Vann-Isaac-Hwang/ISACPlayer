@@ -14,6 +14,14 @@
 #include <QStandardPaths>
 #include <QUrl>
 #include <QDebug>
+#include <QComboBox>
+#include <QCheckBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QDoubleSpinBox>
+#include <QFormLayout>
+#include <QSettings>
+#include <QSignalBlocker>
 
 namespace {
 
@@ -38,6 +46,11 @@ MainWindow::MainWindow(QWidget *parent)
           m_pluginManager.createNode("isac.biquad"))
 {
     ui->setupUi(this);
+    QSettings settings;
+    m_audioEngine.setFadeEnabled(
+        settings.value(QStringLiteral("playback/fadeEnabled"), false).toBool());
+    m_audioEngine.setFadeDurationSeconds(
+        settings.value(QStringLiteral("playback/fadeDurationSeconds"), 2.0).toDouble());
     setWindowTitle("ISACPlayer — Apple Music & DSP Patchbay Workstation");
     resize(1180, 760);
 
@@ -88,6 +101,49 @@ MainWindow::MainWindow(QWidget *parent)
     sideLayout->addWidget(new QLabel("ENGINEERING 工程视图", sidebar));
     sideLayout->addWidget(btnNavPatchbay);
     sideLayout->addStretch();
+    auto* settingsButton = new QPushButton("设置", sidebar);
+    settingsButton->setToolTip("播放设置");
+    sideLayout->addWidget(settingsButton);
+    connect(settingsButton, &QPushButton::clicked, this, [this]() {
+        QSettings settings;
+        QDialog dialog(this);
+        dialog.setWindowTitle("播放设置");
+        dialog.setMinimumWidth(360);
+        auto* layout = new QVBoxLayout(&dialog);
+        auto* form = new QFormLayout();
+        auto* fadeEnabled = new QCheckBox("启用淡入淡出", &dialog);
+        fadeEnabled->setChecked(
+            settings.value(QStringLiteral("playback/fadeEnabled"), false).toBool());
+        auto* fadeDuration = new QDoubleSpinBox(&dialog);
+        fadeDuration->setRange(0.25, 10.0);
+        fadeDuration->setSingleStep(0.25);
+        fadeDuration->setSuffix(" 秒");
+        fadeDuration->setDecimals(2);
+        fadeDuration->setValue(
+            settings.value(QStringLiteral("playback/fadeDurationSeconds"), 2.0)
+                .toDouble());
+        fadeDuration->setEnabled(fadeEnabled->isChecked());
+        connect(fadeEnabled, &QCheckBox::toggled,
+                fadeDuration, &QDoubleSpinBox::setEnabled);
+        form->addRow(fadeEnabled);
+        form->addRow("淡入/淡出时长", fadeDuration);
+        layout->addLayout(form);
+        auto* buttons = new QDialogButtonBox(
+            QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
+        connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        layout->addWidget(buttons);
+        if (dialog.exec() != QDialog::Accepted) {
+            return;
+        }
+
+        settings.setValue(QStringLiteral("playback/fadeEnabled"),
+                          fadeEnabled->isChecked());
+        settings.setValue(QStringLiteral("playback/fadeDurationSeconds"),
+                          fadeDuration->value());
+        m_audioEngine.setFadeDurationSeconds(fadeDuration->value());
+        m_audioEngine.setFadeEnabled(fadeEnabled->isChecked());
+    });
 
     // ==================== 2. 中央多页面切换容器 (QStackedWidget) ====================
     m_stackedWidget = new QStackedWidget(this);
@@ -126,8 +182,24 @@ MainWindow::MainWindow(QWidget *parent)
     patchTitle->setStyleSheet("font-size: 22px; font-weight: bold; color: white;");
     auto* lblPatchStatus = new QLabel("提示：左键从橙色针脚拉线至蓝色针脚，右键点击连线拆除", this);
     lblPatchStatus->setStyleSheet("color: #9499A6; font-size: 13px;");
+    auto* outputSelector = new QComboBox(this);
+    outputSelector->setMinimumWidth(190);
+    outputSelector->setToolTip("播放音频使用的输出设备");
+    outputSelector->setStyleSheet(
+        "QComboBox { background: #1E2028; color: #EAEAEA; "
+        "border: 1px solid #343846; border-radius: 5px; padding: 6px 8px; }");
+    auto* refreshOutputsButton = new QPushButton("刷新设备", this);
+    refreshOutputsButton->setToolTip("重新枚举音频输出设备");
+    refreshOutputsButton->setStyleSheet(
+        "QPushButton { background: #252834; color: #E0E4F0; "
+        "border: 1px solid #343846; border-radius: 5px; padding: 6px 9px; }");
+    auto* outputStatus = new QLabel(this);
+    outputStatus->setStyleSheet("color: #9499A6; font-size: 12px;");
     patchHeader->addWidget(patchTitle);
     patchHeader->addStretch();
+    patchHeader->addWidget(new QLabel("音频输出", this));
+    patchHeader->addWidget(outputSelector);
+    patchHeader->addWidget(refreshOutputsButton);
     patchHeader->addWidget(lblPatchStatus);
 
     m_patchbayView = new isac::ui::PatchbayView(m_audioEngine, this);
@@ -272,11 +344,104 @@ MainWindow::MainWindow(QWidget *parent)
     m_stackedWidget->addWidget(m_libraryPage);
     m_stackedWidget->addWidget(patchbayContainer);
 
+    auto refreshOutputDevices = [this, outputSelector, outputStatus]() {
+        const QSignalBlocker blocker(outputSelector);
+        QSettings settings;
+        QString status;
+        const QByteArray savedId =
+            settings.value(QStringLiteral("audio/outputDeviceId")).toByteArray();
+        const auto devices = m_audioEngine.availableOutputDevices();
+        outputSelector->clear();
+        int selectedIndex = 0;
+        for (const auto& device : devices) {
+            const QByteArray id = device.useSystemDefault
+                ? QByteArray{}
+                : QByteArray(reinterpret_cast<const char*>(device.id.data()),
+                             static_cast<qsizetype>(device.id.size()));
+            QString label = QString::fromStdString(device.name);
+            if (!device.useSystemDefault && device.isDefault) {
+                label += QStringLiteral(" (系统默认)");
+            }
+            outputSelector->addItem(label, id);
+            outputSelector->setItemData(
+                outputSelector->count() - 1,
+                QStringLiteral("检测到的最大通道数：%1；当前输出为立体声")
+                    .arg(device.maxChannels),
+                Qt::ToolTipRole);
+            if (id == savedId) {
+                selectedIndex = outputSelector->count() - 1;
+            }
+        }
+        outputSelector->setCurrentIndex(selectedIndex);
+        if (!savedId.isEmpty() && selectedIndex == 0) {
+            settings.setValue(QStringLiteral("audio/outputDeviceId"), QByteArray{});
+        }
+        if (!devices.empty()) {
+            const auto& desired = devices[static_cast<std::size_t>(selectedIndex)];
+            const auto current = m_audioEngine.selectedOutputDevice();
+            const QByteArray currentId = current
+                ? QByteArray(reinterpret_cast<const char*>(current->id.data()),
+                             static_cast<qsizetype>(current->id.size()))
+                : QByteArray{};
+            if (currentId != outputSelector->currentData().toByteArray()) {
+                std::string error;
+                if (!m_audioEngine.selectOutputDevice(desired, error)) {
+                    status = QStringLiteral("无法应用输出设备：%1")
+                                 .arg(QString::fromStdString(error));
+                    outputSelector->setCurrentIndex(0);
+                    settings.setValue(
+                        QStringLiteral("audio/outputDeviceId"), QByteArray{});
+                }
+            }
+        }
+        if (status.isEmpty()) {
+            status = QStringLiteral("%1 个设备")
+                         .arg(std::max(0, outputSelector->count() - 1));
+        }
+        outputStatus->setText(status);
+    };
+    refreshOutputDevices();
+    connect(refreshOutputsButton, &QPushButton::clicked,
+            this, refreshOutputDevices);
+    connect(outputSelector, QOverload<int>::of(&QComboBox::activated),
+            this, [this, outputSelector, outputStatus, refreshOutputDevices]() {
+        const QByteArray id = outputSelector->currentData().toByteArray();
+        auto devices = m_audioEngine.availableOutputDevices();
+        const auto selected = std::find_if(
+            devices.begin(), devices.end(),
+            [&id](const isac::AudioOutputDevice& device) {
+                if (device.useSystemDefault) {
+                    return id.isEmpty();
+                }
+                return id == QByteArray(
+                    reinterpret_cast<const char*>(device.id.data()),
+                    static_cast<qsizetype>(device.id.size()));
+            });
+        if (selected == devices.end()) {
+            outputStatus->setText("设备已不存在，请刷新列表");
+            return;
+        }
+        std::string error;
+        if (!m_audioEngine.selectOutputDevice(*selected, error)) {
+            refreshOutputDevices();
+            outputStatus->setText(
+                QStringLiteral("切换失败，已保留原输出：%1")
+                    .arg(QString::fromStdString(error)));
+            return;
+        }
+        QSettings settings;
+        settings.setValue(QStringLiteral("audio/outputDeviceId"), id);
+        outputStatus->setText(
+            QStringLiteral("当前输出：%1（立体声）")
+                .arg(QString::fromStdString(selected->name)));
+    });
+
     upperLayout->addWidget(sidebar);
     upperLayout->addWidget(m_stackedWidget, 1);
 
     // ==================== 3. 底部常驻播放控制条 ====================
     m_nowPlayingBar = new isac::ui::NowPlayingBar(this);
+    restorePlaybackQueue();
 
     rootLayout->addLayout(upperLayout, 1);
     rootLayout->addWidget(m_nowPlayingBar);
@@ -302,15 +467,25 @@ MainWindow::MainWindow(QWidget *parent)
 #ifdef ISAC_HAS_MPRIS
     m_mprisController = new isac::platform::MprisController(this);
     m_mprisController->setPlaybackMode(m_playbackMode);
+    if (m_currentTrackId > 0) {
+        if (const auto track = m_libraryRepository.trackById(m_currentTrackId)) {
+            m_mprisController->setTrack(*track);
+            m_mprisController->setPlaybackState(false);
+        }
+    }
     if (!m_mprisController->isAvailable()) {
         qWarning() << "Unable to register the KDE MPRIS D-Bus service";
     }
     connect(m_mprisController, &isac::platform::MprisController::playRequested,
             this, [this]() {
-                if (m_currentTrackId > 0) {
+                if (m_trackLoaded) {
                     m_audioEngine.setPlaying(true);
                     m_nowPlayingBar->setPlayingState(m_audioEngine.isPlaying());
                     m_mprisController->setPlaybackState(m_audioEngine.isPlaying());
+                    return;
+                }
+                if (const auto current = m_playbackQueue.currentTrackId()) {
+                    playQueuedTrack(*current);
                     return;
                 }
                 const auto ids = m_libraryPage->trackIds();
@@ -326,7 +501,11 @@ MainWindow::MainWindow(QWidget *parent)
             });
     connect(m_mprisController, &isac::platform::MprisController::playPauseRequested,
             this, [this]() {
-                if (m_currentTrackId <= 0) {
+                if (!m_trackLoaded) {
+                    if (const auto current = m_playbackQueue.currentTrackId()) {
+                        playQueuedTrack(*current);
+                        return;
+                    }
                     const auto ids = m_libraryPage->trackIds();
                     if (!ids.empty()) {
                         playTrackById(ids.front());
@@ -406,6 +585,7 @@ MainWindow::MainWindow(QWidget *parent)
                 m_playbackMode =
                     static_cast<isac::library::PlaybackMode>(mode);
                 m_playbackQueue.setMode(m_playbackMode);
+                persistPlaybackQueue(true);
                 m_nowPlayingBar->setPlaybackMode(mode);
                 m_mprisController->setPlaybackMode(m_playbackMode);
             });
@@ -444,6 +624,17 @@ MainWindow::MainWindow(QWidget *parent)
 
     // 底部控制栏事件
     connect(m_nowPlayingBar, &isac::ui::NowPlayingBar::playPauseClicked, this, [this]() {
+        if (!m_trackLoaded) {
+            if (const auto current = m_playbackQueue.currentTrackId()) {
+                playQueuedTrack(*current);
+                return;
+            }
+            const auto ids = m_libraryPage->trackIds();
+            if (!ids.empty()) {
+                playTrackById(ids.front());
+            }
+            return;
+        }
         bool nextState = !m_audioEngine.isPlaying();
         m_audioEngine.setPlaying(nextState);
         m_nowPlayingBar->setPlayingState(m_audioEngine.isPlaying());
@@ -467,6 +658,7 @@ MainWindow::MainWindow(QWidget *parent)
             this, [this](int mode) {
                 m_playbackMode = static_cast<isac::library::PlaybackMode>(mode);
                 m_playbackQueue.setMode(m_playbackMode);
+                persistPlaybackQueue(true);
 #ifdef ISAC_HAS_MPRIS
                 m_mprisController->setPlaybackMode(m_playbackMode);
 #endif
@@ -587,7 +779,7 @@ MainWindow::MainWindow(QWidget *parent)
 #ifdef ISAC_HAS_MPRIS
             m_mprisController->setPosition(position);
 #endif
-            if (duration > 0.0 && position >= duration &&
+            if (m_audioEngine.isPlaybackComplete() &&
                 !m_currentTrackEndHandled) {
                 m_currentTrackEndHandled = true;
                 if (m_playbackMode == isac::library::PlaybackMode::RepeatOne) {
@@ -596,12 +788,16 @@ MainWindow::MainWindow(QWidget *parent)
                     m_nowPlayingBar->updateProgress(
                         0.0, m_audioEngine.totalDurationSeconds());
                 } else {
-                    const auto next = m_playbackQueue.next(true);
-                    if (next) {
-                        playQueuedTrack(*next);
-                    } else {
+                    const bool startedNextTrack =
+                        m_playbackQueue.advanceToPlayable(
+                            true, [this](qint64 id) {
+                                return playQueuedTrack(id);
+                            });
+                    if (!startedNextTrack) {
                         m_audioEngine.setPlaying(false);
-                        m_audioEngine.seekToSeconds(0.0);
+                        if (m_audioEngine.totalDurationSeconds() > 0.0) {
+                            m_audioEngine.seekToSeconds(0.0);
+                        }
                         m_currentTrackEndHandled = false;
                         m_nowPlayingBar->setPlayingState(false);
 #ifdef ISAC_HAS_MPRIS
@@ -609,6 +805,7 @@ MainWindow::MainWindow(QWidget *parent)
 #endif
                         m_nowPlayingBar->updateProgress(
                             0.0, m_audioEngine.totalDurationSeconds());
+                        persistPlaybackQueue(false);
                     }
                 }
             }
@@ -625,17 +822,19 @@ void MainWindow::playTrackById(qint64 trackId) {
 void MainWindow::rebuildPlaybackQueue(qint64 currentTrackId) {
     std::vector<qint64> trackIds = m_libraryPage->trackIds();
     m_playbackQueue.reset(std::move(trackIds), currentTrackId, m_playbackMode);
+    m_playbackQueueNeedsSave = true;
 }
 
-void MainWindow::playQueuedTrack(qint64 trackId) {
+bool MainWindow::playQueuedTrack(qint64 trackId) {
     const auto track = m_libraryRepository.trackById(trackId);
     if (!track) {
-        return;
+        return false;
     }
 
     if (m_audioEngine.loadAndPlay(track->filePath.toStdString())) {
         m_currentTrackEndHandled = false;
         m_currentTrackId = trackId;
+        m_trackLoaded = true;
         m_libraryPage->updateHeroBanner(*track);
         m_nowPlayingBar->setTrackInfo(*track);
         m_nowPlayingBar->setPlayingState(true);
@@ -644,6 +843,51 @@ void MainWindow::playQueuedTrack(qint64 trackId) {
         m_mprisController->setPosition(0.0);
         m_mprisController->setPlaybackState(true);
 #endif
+        persistPlaybackQueue(m_playbackQueueNeedsSave);
+        return true;
+    }
+    m_trackLoaded = false;
+    m_currentTrackEndHandled = false;
+    m_nowPlayingBar->setPlayingState(false);
+#ifdef ISAC_HAS_MPRIS
+    m_mprisController->setPlaybackState(false);
+#endif
+    return false;
+}
+
+void MainWindow::persistPlaybackQueue(bool includeOrder) {
+    if (includeOrder) {
+        m_playbackQueueNeedsSave = !m_libraryRepository.savePlaybackQueue(
+            m_playbackQueue.orderedTrackIds(), m_playbackQueue.position(),
+            m_playbackMode);
+    } else {
+        if (!m_libraryRepository.savePlaybackCursor(
+                m_playbackQueue.position(), m_playbackMode)) {
+            m_playbackQueueNeedsSave = !m_libraryRepository.savePlaybackQueue(
+                m_playbackQueue.orderedTrackIds(),
+                m_playbackQueue.position(), m_playbackMode);
+        }
+    }
+}
+
+void MainWindow::restorePlaybackQueue() {
+    const auto saved = m_libraryRepository.loadPlaybackQueue();
+    if (!saved) {
+        return;
+    }
+    m_playbackMode = saved->mode;
+    m_playbackQueue.restore(
+        saved->trackIds, saved->position, saved->mode);
+    m_currentTrackId =
+        m_playbackQueue.currentTrackId().value_or(0);
+    m_nowPlayingBar->setPlaybackMode(static_cast<int>(m_playbackMode));
+    if (m_currentTrackId > 0) {
+        if (const auto track = m_libraryRepository.trackById(m_currentTrackId)) {
+            m_libraryPage->updateHeroBanner(*track);
+            m_nowPlayingBar->setTrackInfo(*track);
+        } else {
+            m_currentTrackId = 0;
+        }
     }
 }
 

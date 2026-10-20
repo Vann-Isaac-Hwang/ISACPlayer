@@ -10,6 +10,8 @@
 #include <QComboBox>
 #include <QLineEdit>
 #include <QTimer>
+#include <QTabBar>
+#include <QMimeData>
 #include <optional>
 #include <vector>
 #include "library/LibraryRepository.h"
@@ -28,11 +30,18 @@ public:
     QVariant data(const QModelIndex& index, int role = Qt::DisplayRole) const override;
     QVariant headerData(int section, Qt::Orientation orientation,
                         int role = Qt::DisplayRole) const override;
+    Qt::ItemFlags flags(const QModelIndex& index) const override;
+    QStringList mimeTypes() const override;
+    QMimeData* mimeData(const QModelIndexList& indexes) const override;
+    bool dropMimeData(const QMimeData* data, Qt::DropAction action,
+                      int row, int column, const QModelIndex& parent) override;
+    Qt::DropActions supportedDropActions() const override;
 
     void refresh();
     void setSearchText(const QString& text);
     void setSort(library::TrackSort sort, bool ascending);
     void setPlaylistId(std::optional<qint64> playlistId);
+    void setCategoryFilter(const QString& artist, const QString& album);
     std::optional<library::TrackInfo> trackAtRow(int row) const;
     int rowForTrackId(qint64 id) const;
     std::vector<qint64> trackIds() const;
@@ -48,9 +57,41 @@ private:
     mutable int m_pageStart = -1;
     qint64 m_trackCount = 0;
     std::optional<qint64> m_playlistId;
+    QString m_artistFilter;
+    QString m_albumFilter;
     QString m_searchText;
     library::TrackSort m_sort = library::TrackSort::AddedAt;
     bool m_ascending = true;
+    static constexpr int kPageSize = 256;
+};
+
+class LibraryGroupTableModel final : public QAbstractTableModel {
+public:
+    explicit LibraryGroupTableModel(library::LibraryRepository* repository,
+                                    bool albums,
+                                    QObject* parent = nullptr);
+
+    int rowCount(const QModelIndex& parent = {}) const override;
+    int columnCount(const QModelIndex& parent = {}) const override;
+    QVariant data(const QModelIndex& index, int role = Qt::DisplayRole) const override;
+    QVariant headerData(int section, Qt::Orientation orientation,
+                        int role = Qt::DisplayRole) const override;
+
+    void refresh();
+    void setSearchText(const QString& text);
+    void setAscending(bool ascending);
+    std::optional<library::LibraryGroup> groupAtRow(int row) const;
+    qint64 groupCount() const;
+
+private:
+    bool loadPage(int row) const;
+    library::LibraryRepository* m_repository = nullptr;
+    bool m_albums = false;
+    QString m_searchText;
+    bool m_ascending = true;
+    qint64 m_groupCount = 0;
+    mutable std::vector<library::LibraryGroup> m_page;
+    mutable int m_pageStart = -1;
     static constexpr int kPageSize = 256;
 };
 
@@ -84,6 +125,12 @@ private:
     QLabel* m_resultCount;
     QTableView* m_table;
     TrackTableModel* m_tableModel;
+    LibraryGroupTableModel* m_artistModel;
+    LibraryGroupTableModel* m_albumModel;
+    QTabBar* m_libraryTabs;
+    QPushButton* m_groupBackButton;
+    int m_libraryView = 0;
+    bool m_showingGroupTracks = false;
     QLineEdit* m_searchInput;
     QComboBox* m_sortSelector;
     QComboBox* m_sortDirection;
@@ -97,6 +144,9 @@ private:
 
     void refreshPlaylists(std::optional<qint64> preferredPlaylist = std::nullopt);
     void updatePlaylistControls();
+    void showLibraryView(int view);
+    void showGroupTracks(const library::LibraryGroup& group);
+    void updateResultCount();
 };
 
 // 2. 底部常驻 Apple Music 播放控制条

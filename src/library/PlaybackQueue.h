@@ -34,6 +34,15 @@ public:
         }
     }
 
+    void restore(std::vector<qint64> trackIds, std::size_t position,
+                 PlaybackMode mode)
+    {
+        m_mode = mode;
+        m_order = std::move(trackIds);
+        m_position = m_order.empty()
+            ? 0 : std::min(position, m_order.size() - 1);
+    }
+
     void setMode(PlaybackMode mode)
     {
         if (m_mode == mode) {
@@ -47,6 +56,11 @@ public:
     }
 
     PlaybackMode mode() const noexcept { return m_mode; }
+    const std::vector<qint64>& orderedTrackIds() const noexcept
+    {
+        return m_order;
+    }
+    std::size_t position() const noexcept { return m_position; }
 
     std::optional<qint64> currentTrackId() const
     {
@@ -72,6 +86,21 @@ public:
             return m_order[m_position];
         }
         return std::nullopt;
+    }
+
+    template <typename TryPlay>
+    bool advanceToPlayable(bool naturalEnd, TryPlay&& tryPlay)
+    {
+        for (std::size_t attempt = 0; attempt < m_order.size(); ++attempt) {
+            const auto candidate = next(attempt == 0 && naturalEnd);
+            if (!candidate) {
+                return false;
+            }
+            if (tryPlay(*candidate)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     std::optional<qint64> previous()

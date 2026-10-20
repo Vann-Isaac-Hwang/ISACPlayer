@@ -169,6 +169,21 @@ void testDirectoriesAndPlaylists(const QString& databasePath)
     expect(repository.playlists().front().trackCount == 2,
            "playlist summary must include track count");
 
+    expect(repository.movePlaylistTrack(*playlistId, tracks[1].id, 1),
+           "playlist item must move toward the end");
+    playlistTracks = repository.playlistTracks(*playlistId);
+    expect(playlistTracks[0].id == tracks[0].id &&
+               playlistTracks[1].id == tracks[1].id,
+           "forward move must persist the requested playlist order");
+    expect(repository.movePlaylistTrack(*playlistId, tracks[0].id, 1),
+           "playlist item must move toward the beginning");
+    playlistTracks = repository.playlistTracks(*playlistId);
+    expect(playlistTracks[0].id == tracks[1].id &&
+               playlistTracks[1].id == tracks[0].id,
+           "backward move must persist the requested playlist order");
+    expect(!repository.movePlaylistTrack(*playlistId, -1, 0),
+           "playlist move must reject tracks not in the playlist");
+
     expect(repository.removeTrackFromPlaylist(*playlistId, tracks[1].id),
            "playlist track removal must succeed");
     playlistTracks = repository.playlistTracks(*playlistId);
@@ -183,6 +198,44 @@ void testDirectoriesAndPlaylists(const QString& databasePath)
            "renamed playlist must be returned");
     expect(repository.deletePlaylist(*playlistId), "playlist deletion must succeed");
     expect(repository.playlists().empty(), "deleted playlist must not remain");
+}
+
+void testPersistedPlaybackQueue(const QString& databasePath)
+{
+    using namespace isac::library;
+    LibraryRepository repository(databasePath);
+    expect(repository.isOpen(), "playback persistence repository must open");
+    std::vector<TrackInfo> tracks{
+        makeTrack("/queue/one.flac", "One", "Artist", "Album", 100),
+        makeTrack("/queue/two.flac", "Two", "Artist", "Album", 100),
+        makeTrack("/queue/three.flac", "Three", "Artist", "Album", 100)
+    };
+    expect(repository.upsertTracks(tracks), "queue fixtures must insert");
+
+    const std::vector<qint64> order{
+        tracks[2].id, tracks[0].id, tracks[1].id
+    };
+    expect(repository.savePlaybackQueue(order, 1, PlaybackMode::Shuffle),
+           "queue order, cursor and playback mode must persist");
+    auto restored = repository.loadPlaybackQueue();
+    expect(restored && restored->trackIds == order &&
+               restored->position == 1 &&
+               restored->mode == PlaybackMode::Shuffle,
+           "queue state must restore exactly after persistence");
+
+    expect(repository.savePlaybackCursor(2, PlaybackMode::RepeatAll),
+           "playback cursor and mode must update independently");
+    restored = repository.loadPlaybackQueue();
+    expect(restored && restored->trackIds == order &&
+               restored->position == 2 &&
+               restored->mode == PlaybackMode::RepeatAll,
+           "cursor update must preserve the stored queue order");
+
+    PlaybackQueue queue;
+    queue.restore(restored->trackIds, restored->position, restored->mode);
+    expect(queue.currentTrackId() == tracks[1].id &&
+               queue.next() == tracks[2].id,
+           "restored queue must continue from its saved cursor");
 }
 
 void testFilteredSortOrdering(const QString& databasePath)
@@ -230,6 +283,47 @@ void testFilteredSortOrdering(const QString& databasePath)
            "filtered stable row lookup must exclude nonmatching tracks");
 }
 
+void testArtistAndAlbumQueries(const QString& databasePath)
+{
+    using namespace isac::library;
+    LibraryRepository repository(databasePath);
+    expect(repository.isOpen(), "category test repository must open");
+
+    std::vector<TrackInfo> tracks{
+        makeTrack("/category/a1.flac", "A One", "Artist A", "Shared Album", 100),
+        makeTrack("/category/a2.flac", "A Two", "artist a", "Shared Album", 100),
+        makeTrack("/category/a3.flac", "A Three", "Artist A", "Other Album", 100),
+        makeTrack("/category/b1.flac", "B One", "Artist B", "Shared Album", 100)
+    };
+    expect(repository.upsertTracks(tracks), "category fixtures must insert");
+
+    const auto artists = repository.queryArtists({}, true, 1, 0);
+    expect(repository.artistCount() == 2 && artists.size() == 1 &&
+               artists.front().name.compare("Artist A", Qt::CaseInsensitive) == 0 &&
+               artists.front().trackCount == 3,
+           "artists must aggregate case-insensitively and paginate");
+    expect(repository.queryArtists("artist b").size() == 1 &&
+               repository.artistCount("missing") == 0,
+           "artist search must filter category names");
+
+    const auto albums = repository.queryAlbums({}, true, 10, 0);
+    expect(repository.albumCount() == 3 && albums.size() == 3,
+           "albums with the same title by different artists must remain distinct");
+    expect(repository.albumTrackCount("Artist A", "Shared Album") == 2,
+           "album track count must use both artist and album identity");
+    const auto albumTracks = repository.queryAlbumTracks(
+        "Artist A", "Shared Album", {}, TrackSort::Title, true, 10, 0);
+    expect(albumTracks.size() == 2 &&
+               albumTracks[0].title == "A One" &&
+               albumTracks[1].title == "A Two",
+           "album track queries must return only the selected artist's album");
+    const auto artistIds = repository.queryArtistTrackIds(
+        "Artist A", {}, TrackSort::Title, true, 10, 0);
+    expect(artistIds.size() == 3 &&
+               repository.artistTrackCount("Artist A") == 3,
+           "artist playback IDs and count must cover the category tracks");
+}
+
 void testPlaybackQueueModes()
 {
     using namespace isac::library;
@@ -254,6 +348,25 @@ void testPlaybackQueueModes()
     queue.reset({11, 22}, 22, PlaybackMode::RepeatAll);
     expect(queue.next() == 11 && queue.previous() == 22,
            "repeat-all mode must wrap in both directions");
+
+    queue.reset({11, 22, 33}, 11, PlaybackMode::Sequential);
+    std::vector<qint64> attempted;
+    const bool recovered = queue.advanceToPlayable(
+        true, [&attempted](qint64 id) {
+            attempted.push_back(id);
+            return id == 33;
+        });
+    expect(recovered && attempted == std::vector<qint64>({22, 33}) &&
+               queue.currentTrackId() == 33,
+           "automatic advance must skip tracks that fail to load");
+
+    queue.reset({11, 22}, 11, PlaybackMode::Sequential);
+    expect(!queue.advanceToPlayable(true, [](qint64) { return false; }),
+           "automatic advance must stop after remaining tracks fail");
+
+    queue.reset({11}, 11, PlaybackMode::RepeatAll);
+    expect(queue.advanceToPlayable(true, [](qint64 id) { return id == 11; }),
+           "repeat-all must restart a single-track queue");
 
     queue.reset({11, 22, 33, 44}, 33, PlaybackMode::Shuffle);
     expect(queue.currentTrackId() == 33,
@@ -364,6 +477,10 @@ int main(int argc, char** argv)
     testTrackPersistenceAndQueries(databasePath);
     testFilteredSortOrdering(
         QDir(temporaryDirectory.path()).filePath("sort.sqlite"));
+    testArtistAndAlbumQueries(
+        QDir(temporaryDirectory.path()).filePath("categories.sqlite"));
+    testPersistedPlaybackQueue(
+        QDir(temporaryDirectory.path()).filePath("playback.sqlite"));
     testPlaybackQueueModes();
     testDirectoriesAndPlaylists(databasePath);
     testBackgroundScanner(

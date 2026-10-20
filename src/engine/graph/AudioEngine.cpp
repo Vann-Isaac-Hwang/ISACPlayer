@@ -1,8 +1,10 @@
 #define MINIAUDIO_IMPLEMENTATION
 #include "AudioEngine.h"
+#include "PlaybackFade.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 
 namespace isac {
 
@@ -12,6 +14,8 @@ AudioEngine::AudioEngine(std::shared_ptr<IAudioNode> gainPluginNode,
     : m_gainNode(std::move(gainPluginNode))
     , m_addNode(std::move(addPluginNode))
     , m_equalizerNode(std::move(equalizerPluginNode)) {
+    m_contextInitialized =
+        ma_context_init(nullptr, 0, nullptr, &m_context) == MA_SUCCESS;
     m_sourceNode = std::make_shared<DecoderSourceNode>();
     m_sinkNode   = std::make_shared<MasterSinkNode>();
 
@@ -53,16 +57,145 @@ AudioEngine::AudioEngine(std::shared_ptr<IAudioNode> gainPluginNode,
 
 AudioEngine::~AudioEngine() {
     m_decoderLoaded.store(false, std::memory_order_release);
-    if (m_deviceInitialized) {
-        ma_device_stop(&m_device);
-        ma_device_uninit(&m_device);
-        m_deviceInitialized = false;
-    }
+    destroyPlaybackDevice();
     stopDecoderThread();
     if (m_decoderInitialized) {
         ma_decoder_uninit(&m_decoder);
         m_decoderInitialized = false;
     }
+    if (m_contextInitialized) {
+        ma_context_uninit(&m_context);
+        m_contextInitialized = false;
+    }
+}
+
+std::vector<AudioOutputDevice> AudioEngine::availableOutputDevices()
+{
+    std::vector<AudioOutputDevice> devices;
+    AudioOutputDevice systemDefault;
+    systemDefault.name = "System Default";
+    systemDefault.useSystemDefault = true;
+    systemDefault.isDefault = true;
+    devices.push_back(systemDefault);
+
+    if (!m_contextInitialized) {
+        return devices;
+    }
+
+    ma_device_info* playbackInfos = nullptr;
+    ma_uint32 playbackCount = 0;
+    if (ma_context_get_devices(
+            &m_context, &playbackInfos, &playbackCount,
+            nullptr, nullptr) != MA_SUCCESS) {
+        return devices;
+    }
+
+    devices.reserve(static_cast<std::size_t>(playbackCount) + 1);
+    for (ma_uint32 index = 0; index < playbackCount; ++index) {
+        AudioOutputDevice device;
+        device.name = playbackInfos[index].name;
+        std::memcpy(device.id.data(), &playbackInfos[index].id,
+                    sizeof(ma_device_id));
+        device.isDefault = playbackInfos[index].isDefault == MA_TRUE;
+        for (ma_uint32 formatIndex = 0;
+             formatIndex < playbackInfos[index].nativeDataFormatCount;
+             ++formatIndex) {
+            device.maxChannels = std::max(
+                device.maxChannels,
+                playbackInfos[index].nativeDataFormats[formatIndex].channels);
+        }
+        devices.push_back(std::move(device));
+    }
+    return devices;
+}
+
+std::optional<AudioOutputDevice> AudioEngine::selectedOutputDevice() const
+{
+    return m_selectedOutputDevice;
+}
+
+bool AudioEngine::selectOutputDevice(const AudioOutputDevice& device,
+                                     std::string& error)
+{
+    const bool wasStarted =
+        m_deviceInitialized && ma_device_is_started(&m_device);
+    destroyPlaybackDevice();
+
+    const auto previousSelection = m_selectedOutputDevice;
+    m_selectedOutputDevice = device.useSystemDefault
+        ? std::nullopt
+        : std::optional<AudioOutputDevice>(device);
+
+    if (!m_decoderLoaded.load(std::memory_order_acquire)) {
+        return true;
+    }
+
+    if (initializePlaybackDevice(error)) {
+        if (!wasStarted || ma_device_start(&m_device) == MA_SUCCESS) {
+            return true;
+        }
+        error = "Unable to start the selected audio output device";
+        destroyPlaybackDevice();
+    }
+
+    m_selectedOutputDevice = previousSelection;
+    std::string restoreError;
+    if (initializePlaybackDevice(restoreError)) {
+        if (wasStarted && ma_device_start(&m_device) != MA_SUCCESS) {
+            restoreError = "Unable to restart the previous audio output device";
+            destroyPlaybackDevice();
+        }
+    }
+    if (!restoreError.empty()) {
+        error += "; previous output could not be restored: " + restoreError;
+    }
+    return false;
+}
+
+bool AudioEngine::initializePlaybackDevice(std::string& error)
+{
+    if (!m_contextInitialized) {
+        error = "Audio backend context is unavailable";
+        return false;
+    }
+
+    ma_device_config deviceConfig =
+        ma_device_config_init(ma_device_type_playback);
+    deviceConfig.playback.format = ma_format_f32;
+    deviceConfig.playback.channels = 2;
+    deviceConfig.sampleRate = 48000;
+    deviceConfig.periodSizeInFrames = 512;
+    deviceConfig.periods = 3;
+    deviceConfig.dataCallback = dataCallback;
+    deviceConfig.pUserData = this;
+    ma_device_id selectedDeviceId{};
+    if (m_selectedOutputDevice) {
+        std::memcpy(&selectedDeviceId, m_selectedOutputDevice->id.data(),
+                    sizeof(selectedDeviceId));
+        deviceConfig.playback.pDeviceID = &selectedDeviceId;
+    }
+
+    const ma_result result =
+        ma_device_init(&m_context, &deviceConfig, &m_device);
+    if (result != MA_SUCCESS) {
+        error = "Unable to initialize audio output (miniaudio error " +
+                std::to_string(result) + ")";
+        return false;
+    }
+    m_deviceInitialized = true;
+    return true;
+}
+
+void AudioEngine::destroyPlaybackDevice()
+{
+    if (!m_deviceInitialized) {
+        return;
+    }
+    if (ma_device_is_started(&m_device)) {
+        ma_device_stop(&m_device);
+    }
+    ma_device_uninit(&m_device);
+    m_deviceInitialized = false;
 }
 
 NodeId AudioEngine::addNode(std::shared_ptr<IAudioNode> node) {
@@ -151,6 +284,10 @@ void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
     // 分块安全处理：防止声卡单次请求超过 MAX_ENGINE_BLOCK_FRAMES 导致越界
     uint32_t framesRemaining = frameCount;
     float* currentOutPtr = pInterleavedOutput;
+    const bool fadeEnabled = m_fadeEnabled.load(std::memory_order_relaxed);
+    const ma_uint64 fadeFrames =
+        m_fadeDurationFrames.load(std::memory_order_relaxed);
+    const ma_uint64 totalFrames = m_totalFrames.load(std::memory_order_relaxed);
 
     while (framesRemaining > 0) {
         uint32_t chunkFrames = std::min<uint32_t>(framesRemaining, MAX_ENGINE_BLOCK_FRAMES);
@@ -165,6 +302,8 @@ void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
         };
         const std::size_t framesRead = m_pcmRing.readPlanar(
             sourceChannels, static_cast<std::size_t>(chunkFrames));
+        const ma_uint64 blockStartFrame =
+            m_renderedFrame.load(std::memory_order_relaxed);
         if (framesRead < chunkFrames &&
             !m_decoderEof.load(std::memory_order_acquire)) {
             m_underrunFrames.fetch_add(
@@ -192,15 +331,38 @@ void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
         // 3. 直接从 MasterSinkNode 的 inBus 取出汇聚好的 2 声道数据写入声卡！
         const auto& finalBus = plan->steps[plan->sinkStepIndex].inBus;
         for (uint32_t i = 0; i < chunkFrames; ++i) {
+            const ma_uint64 mediaFrame =
+                blockStartFrame + std::min<std::size_t>(i, framesRead);
+            const double gain = fadeEnabled
+                ? playbackFadeGain(mediaFrame, totalFrames, fadeFrames)
+                : 1.0;
             for (uint32_t ch = 0; ch < channels; ++ch) {
                 currentOutPtr[i * channels + ch] =
-                    ch < 2 ? static_cast<float>(finalBus.channel(ch)[i]) : 0.0f;
+                    ch < 2
+                        ? static_cast<float>(finalBus.channel(ch)[i] * gain)
+                        : 0.0f;
             }
         }
 
         currentOutPtr += chunkFrames * channels;
         framesRemaining -= chunkFrames;
     }
+}
+
+void AudioEngine::setFadeEnabled(bool enabled) noexcept
+{
+    m_fadeEnabled.store(enabled, std::memory_order_relaxed);
+}
+
+void AudioEngine::setFadeDurationSeconds(double seconds) noexcept
+{
+    if (!std::isfinite(seconds)) {
+        return;
+    }
+    const double clampedSeconds = std::clamp(seconds, 0.05, 30.0);
+    m_fadeDurationFrames.store(
+        static_cast<ma_uint64>(clampedSeconds * 48000.0),
+        std::memory_order_relaxed);
 }
 
 void AudioEngine::decoderLoop()
@@ -301,11 +463,7 @@ void AudioEngine::markDecoderReady()
 
 bool AudioEngine::loadAndPlay(const std::string& filePath) {
     m_decoderLoaded.store(false, std::memory_order_release);
-    if (m_deviceInitialized) {
-        ma_device_stop(&m_device);
-        ma_device_uninit(&m_device);
-        m_deviceInitialized = false;
-    }
+    destroyPlaybackDevice();
     stopDecoderThread();
     if (m_decoderInitialized) {
         ma_decoder_uninit(&m_decoder);
@@ -346,28 +504,18 @@ bool AudioEngine::loadAndPlay(const std::string& filePath) {
         return false;
     }
 
-    ma_device_config deviceConfig = ma_device_config_init(ma_device_type_playback);
-    deviceConfig.playback.format   = ma_format_f32;
-    deviceConfig.playback.channels = 2; // 强制声卡开启 2 通道输出
-    deviceConfig.sampleRate        = 48000;
-    deviceConfig.periodSizeInFrames = 512;
-    deviceConfig.periods = 3;
-    deviceConfig.dataCallback      = dataCallback;
-    deviceConfig.pUserData         = this;
-
-    if (ma_device_init(nullptr, &deviceConfig, &m_device) != MA_SUCCESS) {
+    std::string outputError;
+    if (!initializePlaybackDevice(outputError)) {
         stopDecoderThread();
         ma_decoder_uninit(&m_decoder);
         m_decoderInitialized = false;
         return false;
     }
-    m_deviceInitialized = true;
 
     m_decoderLoaded.store(true, std::memory_order_release);
     if (ma_device_start(&m_device) != MA_SUCCESS) {
         m_decoderLoaded.store(false, std::memory_order_release);
-        ma_device_uninit(&m_device);
-        m_deviceInitialized = false;
+        destroyPlaybackDevice();
         stopDecoderThread();
         ma_decoder_uninit(&m_decoder);
         m_decoderInitialized = false;
@@ -384,6 +532,13 @@ void AudioEngine::setPlaying(bool play) {
 
 bool AudioEngine::isPlaying() const {
     return m_decoderLoaded.load() && ma_device_is_started(&m_device);
+}
+
+bool AudioEngine::isPlaybackComplete() const noexcept
+{
+    return m_decoderLoaded.load(std::memory_order_acquire) &&
+           m_decoderEof.load(std::memory_order_acquire) &&
+           m_pcmRing.readableFrames() == 0;
 }
 
 void AudioEngine::seekToSeconds(double seconds) {
