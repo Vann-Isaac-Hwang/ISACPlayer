@@ -2,7 +2,6 @@
 
 #include <isac/plugin/IAudioNode.h>
 #include <algorithm>
-#include <cmath>
 
 namespace isac::plugins {
 
@@ -26,7 +25,7 @@ public:
         AudioSample* output = outBus.channel(0);
 
         for (int frame = 0; frame < count; ++frame) {
-            output[frame] = std::clamp(first[frame] + second[frame], -1.0, 1.0);
+            output[frame] = first[frame] + second[frame];
         }
     }
 };

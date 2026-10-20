@@ -68,7 +68,7 @@ public:
                 std::shared_ptr<IAudioNode> equalizerNode = {});
     ~AudioEngine();
 
-    bool loadAndPlay(const std::string& filePath);
+    bool loadAndPlay(const std::string& filePath, std::string* error = nullptr);
     std::vector<AudioOutputDevice> availableOutputDevices();
     bool selectOutputDevice(const AudioOutputDevice& device,
                             std::string& error);

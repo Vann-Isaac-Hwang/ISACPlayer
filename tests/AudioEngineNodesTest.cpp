@@ -166,6 +166,17 @@ void testOutputDeviceEnumeration()
            "system default selection must clear an explicit device id");
 }
 
+void testPlaybackFailureReportsReason()
+{
+    isac::AudioEngine engine;
+    std::string error;
+    expect(!engine.loadAndPlay(
+               "/path/that/does/not/exist/isacplayer-test.wav", &error),
+           "loading a missing file must fail");
+    expect(!error.empty(),
+           "playback failure must provide a diagnostic");
+}
+
 void testSpscAudioRingBuffer()
 {
     isac::SpscAudioRingBuffer ring(4, 2);
@@ -215,6 +226,7 @@ int main()
     testAtomicParameterUpdate();
     testNodeRemoval();
     testOutputDeviceEnumeration();
+    testPlaybackFailureReportsReason();
     testSpscAudioRingBuffer();
     std::cout << "isac_engine_tests: all tests passed\n";
     return EXIT_SUCCESS;

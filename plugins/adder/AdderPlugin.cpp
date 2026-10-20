@@ -19,7 +19,7 @@ QWidget* AdderPlugin::createControlWidget(isac::IAudioNode* node,
     auto* panel = new QWidget(parent);
     auto* layout = new QVBoxLayout(panel);
     layout->setContentsMargins(0, 0, 0, 0);
-    auto* hint = new QLabel("A + B with output limited to [-1, 1]", panel);
+    auto* hint = new QLabel("Linear A + B; peaks above 0 dBFS are preserved", panel);
     hint->setStyleSheet("color: #9499A6; font-size: 11px;");
     layout->addWidget(hint);
     return panel;

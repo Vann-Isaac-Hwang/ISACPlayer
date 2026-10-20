@@ -5,6 +5,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QLinearGradient>
+#include <algorithm>
 
 #include <taglib/fileref.h>
 #include <taglib/tag.h>
@@ -13,6 +14,8 @@
 #include <taglib/mpegfile.h>
 #include <taglib/id3v2tag.h>
 #include <taglib/attachedpictureframe.h>
+#include <taglib/flacproperties.h>
+#include <taglib/wavproperties.h>
 
 namespace isac::library {
 
@@ -38,6 +41,33 @@ TrackInfo MetadataReader::readTrack(const QString& filePath) {
     }
 
     return info;
+}
+
+void MetadataReader::readAudioProperties(TrackInfo& track)
+{
+    track.audioFormat = QFileInfo(track.filePath).suffix().toUpper();
+    track.sampleRateHz = 0;
+    track.bitDepth = 0;
+    track.channels = 0;
+    track.bitrateKbps = 0;
+
+    TagLib::FileRef ref(track.filePath.toUtf8().constData());
+    if (ref.isNull() || !ref.audioProperties()) {
+        return;
+    }
+
+    const TagLib::AudioProperties* properties = ref.audioProperties();
+    track.sampleRateHz = std::max(0, properties->sampleRate());
+    track.channels = std::max(0, properties->channels());
+    track.bitrateKbps = std::max(0, properties->bitrate());
+
+    if (const auto* flac =
+            dynamic_cast<const TagLib::FLAC::Properties*>(properties)) {
+        track.bitDepth = std::max(0, flac->bitsPerSample());
+    } else if (const auto* wav =
+                   dynamic_cast<const TagLib::RIFF::WAV::Properties*>(properties)) {
+        track.bitDepth = std::max(0, wav->bitsPerSample());
+    }
 }
 
 static QPixmap loadScaledPixmap(const QByteArray& encodedData, int size) {

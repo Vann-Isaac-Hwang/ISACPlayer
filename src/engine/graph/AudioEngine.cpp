@@ -461,7 +461,10 @@ void AudioEngine::markDecoderReady()
     m_decoderReadyCondition.notify_all();
 }
 
-bool AudioEngine::loadAndPlay(const std::string& filePath) {
+bool AudioEngine::loadAndPlay(const std::string& filePath, std::string* error) {
+    if (error) {
+        error->clear();
+    }
     m_decoderLoaded.store(false, std::memory_order_release);
     destroyPlaybackDevice();
     stopDecoderThread();
@@ -471,7 +474,13 @@ bool AudioEngine::loadAndPlay(const std::string& filePath) {
     }
 
     ma_decoder_config decoderConfig = ma_decoder_config_init(ma_format_f32, 2, 48000);
-    if (ma_decoder_init_file(filePath.c_str(), &decoderConfig, &m_decoder) != MA_SUCCESS) {
+    const ma_result decoderResult =
+        ma_decoder_init_file(filePath.c_str(), &decoderConfig, &m_decoder);
+    if (decoderResult != MA_SUCCESS) {
+        if (error) {
+            *error = "Unable to decode audio file (miniaudio error " +
+                     std::to_string(decoderResult) + ")";
+        }
         return false;
     }
     m_decoderInitialized = true;
@@ -498,6 +507,11 @@ bool AudioEngine::loadAndPlay(const std::string& filePath) {
             });
     }
     if (!prebufferReady || m_decoderFailed.load(std::memory_order_acquire)) {
+        if (error) {
+            *error = !prebufferReady
+                ? "Timed out while preparing audio for playback"
+                : "Audio decoding failed while preparing playback";
+        }
         stopDecoderThread();
         ma_decoder_uninit(&m_decoder);
         m_decoderInitialized = false;
@@ -506,6 +520,9 @@ bool AudioEngine::loadAndPlay(const std::string& filePath) {
 
     std::string outputError;
     if (!initializePlaybackDevice(outputError)) {
+        if (error) {
+            *error = std::move(outputError);
+        }
         stopDecoderThread();
         ma_decoder_uninit(&m_decoder);
         m_decoderInitialized = false;
@@ -514,6 +531,9 @@ bool AudioEngine::loadAndPlay(const std::string& filePath) {
 
     m_decoderLoaded.store(true, std::memory_order_release);
     if (ma_device_start(&m_device) != MA_SUCCESS) {
+        if (error) {
+            *error = "Unable to start audio output device";
+        }
         m_decoderLoaded.store(false, std::memory_order_release);
         destroyPlaybackDevice();
         stopDecoderThread();

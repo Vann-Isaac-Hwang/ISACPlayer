@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QPluginLoader>
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <iostream>
@@ -31,16 +32,24 @@ int main(int argc, char** argv) {
         assert(node);
 
         isac::AudioBuffer input(2, 160);
-        isac::AudioBuffer output(2, 160);
+        isac::AudioBuffer output(
+            std::max(1, node->numOutputs()), 160);
         for (int i = 0; i < input.numFrames(); ++i) {
-            input.channel(0)[i] = 1.0;
-            input.channel(1)[i] = -1.0;
+            input.channel(0)[i] = 0.75;
+            input.channel(1)[i] = 0.75;
         }
         node->process(input, output, input.numFrames());
 
         for (int channel = 0; channel < output.numChannels(); ++channel) {
             for (int frame = 0; frame < output.numFrames(); ++frame) {
                 assert(std::isfinite(output.channel(channel)[frame]));
+            }
+        }
+
+        if (QString::fromLatin1(plugin->pluginId()) ==
+            QStringLiteral("isac.add")) {
+            for (int frame = 0; frame < output.numFrames(); ++frame) {
+                assert(std::abs(output.channel(0)[frame] - 1.5) < 1.0e-12);
             }
         }
     }

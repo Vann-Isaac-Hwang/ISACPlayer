@@ -22,6 +22,7 @@
 #include <QFormLayout>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QMessageBox>
 
 namespace {
 
@@ -127,6 +128,28 @@ MainWindow::MainWindow(QWidget *parent)
                 fadeDuration, &QDoubleSpinBox::setEnabled);
         form->addRow(fadeEnabled);
         form->addRow("淡入/淡出时长", fadeDuration);
+        auto makeInfoOption = [&settings, &dialog](const QString& label,
+                                                   const QString& key) {
+            auto* option = new QCheckBox(&dialog);
+            option->setChecked(settings.value(key, true).toBool());
+            return std::pair{label, option};
+        };
+        const auto [formatLabel, showFormat] =
+            makeInfoOption("文件格式", QStringLiteral("display/audioFormat"));
+        const auto [sampleRateLabel, showSampleRate] =
+            makeInfoOption("采样率", QStringLiteral("display/sampleRate"));
+        const auto [bitDepthLabel, showBitDepth] =
+            makeInfoOption("位深", QStringLiteral("display/bitDepth"));
+        const auto [channelsLabel, showChannels] =
+            makeInfoOption("声道数", QStringLiteral("display/channels"));
+        const auto [bitrateLabel, showBitrate] =
+            makeInfoOption("比特率", QStringLiteral("display/bitrate"));
+        form->addRow(new QLabel("曲目信息显示", &dialog));
+        form->addRow(formatLabel, showFormat);
+        form->addRow(sampleRateLabel, showSampleRate);
+        form->addRow(bitDepthLabel, showBitDepth);
+        form->addRow(channelsLabel, showChannels);
+        form->addRow(bitrateLabel, showBitrate);
         layout->addLayout(form);
         auto* buttons = new QDialogButtonBox(
             QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
@@ -143,6 +166,20 @@ MainWindow::MainWindow(QWidget *parent)
                           fadeDuration->value());
         m_audioEngine.setFadeDurationSeconds(fadeDuration->value());
         m_audioEngine.setFadeEnabled(fadeEnabled->isChecked());
+        settings.setValue(QStringLiteral("display/audioFormat"),
+                          showFormat->isChecked());
+        settings.setValue(QStringLiteral("display/sampleRate"),
+                          showSampleRate->isChecked());
+        settings.setValue(QStringLiteral("display/bitDepth"),
+                          showBitDepth->isChecked());
+        settings.setValue(QStringLiteral("display/channels"),
+                          showChannels->isChecked());
+        settings.setValue(QStringLiteral("display/bitrate"),
+                          showBitrate->isChecked());
+        m_nowPlayingBar->setAudioInfoVisibility(
+            showFormat->isChecked(), showSampleRate->isChecked(),
+            showBitDepth->isChecked(), showChannels->isChecked(),
+            showBitrate->isChecked());
     });
 
     // ==================== 2. 中央多页面切换容器 (QStackedWidget) ====================
@@ -441,6 +478,12 @@ MainWindow::MainWindow(QWidget *parent)
 
     // ==================== 3. 底部常驻播放控制条 ====================
     m_nowPlayingBar = new isac::ui::NowPlayingBar(this);
+    m_nowPlayingBar->setAudioInfoVisibility(
+        settings.value(QStringLiteral("display/audioFormat"), true).toBool(),
+        settings.value(QStringLiteral("display/sampleRate"), true).toBool(),
+        settings.value(QStringLiteral("display/bitDepth"), true).toBool(),
+        settings.value(QStringLiteral("display/channels"), true).toBool(),
+        settings.value(QStringLiteral("display/bitrate"), true).toBool());
     restorePlaybackQueue();
 
     rootLayout->addLayout(upperLayout, 1);
@@ -816,7 +859,13 @@ MainWindow::MainWindow(QWidget *parent)
 
 void MainWindow::playTrackById(qint64 trackId) {
     rebuildPlaybackQueue(trackId);
-    playQueuedTrack(trackId);
+    if (!playQueuedTrack(trackId)) {
+        QMessageBox::warning(
+            this, QStringLiteral("Playback failed"),
+            m_lastPlaybackError.isEmpty()
+                ? QStringLiteral("The selected track could not be played.")
+                : m_lastPlaybackError);
+    }
 }
 
 void MainWindow::rebuildPlaybackQueue(qint64 currentTrackId) {
@@ -831,12 +880,17 @@ bool MainWindow::playQueuedTrack(qint64 trackId) {
         return false;
     }
 
-    if (m_audioEngine.loadAndPlay(track->filePath.toStdString())) {
+    std::string playbackError;
+    if (m_audioEngine.loadAndPlay(
+            track->filePath.toStdString(), &playbackError)) {
+        m_lastPlaybackError.clear();
+        auto displayTrack = *track;
+        isac::library::MetadataReader::readAudioProperties(displayTrack);
         m_currentTrackEndHandled = false;
         m_currentTrackId = trackId;
         m_trackLoaded = true;
-        m_libraryPage->updateHeroBanner(*track);
-        m_nowPlayingBar->setTrackInfo(*track);
+        m_libraryPage->updateHeroBanner(displayTrack);
+        m_nowPlayingBar->setTrackInfo(displayTrack);
         m_nowPlayingBar->setPlayingState(true);
 #ifdef ISAC_HAS_MPRIS
         m_mprisController->setTrack(*track);
@@ -846,12 +900,15 @@ bool MainWindow::playQueuedTrack(qint64 trackId) {
         persistPlaybackQueue(m_playbackQueueNeedsSave);
         return true;
     }
+    m_lastPlaybackError = QString::fromStdString(playbackError);
     m_trackLoaded = false;
     m_currentTrackEndHandled = false;
     m_nowPlayingBar->setPlayingState(false);
 #ifdef ISAC_HAS_MPRIS
     m_mprisController->setPlaybackState(false);
 #endif
+    qWarning() << "Unable to play track"
+               << track->filePath << QString::fromStdString(playbackError);
     return false;
 }
 
@@ -883,8 +940,10 @@ void MainWindow::restorePlaybackQueue() {
     m_nowPlayingBar->setPlaybackMode(static_cast<int>(m_playbackMode));
     if (m_currentTrackId > 0) {
         if (const auto track = m_libraryRepository.trackById(m_currentTrackId)) {
-            m_libraryPage->updateHeroBanner(*track);
-            m_nowPlayingBar->setTrackInfo(*track);
+            auto displayTrack = *track;
+            isac::library::MetadataReader::readAudioProperties(displayTrack);
+            m_libraryPage->updateHeroBanner(displayTrack);
+            m_nowPlayingBar->setTrackInfo(displayTrack);
         } else {
             m_currentTrackId = 0;
         }

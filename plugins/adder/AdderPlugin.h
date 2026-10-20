@@ -14,7 +14,7 @@ public:
     const char* pluginId() const noexcept override { return "isac.add"; }
     const char* displayName() const noexcept override { return "Adder"; }
     const char* description() const noexcept override {
-        return "Two-input mono mixer with hard safety limiting";
+        return "Two-input linear mixer with floating-point headroom";
     }
 
     std::shared_ptr<isac::IAudioNode> createNode() const override;

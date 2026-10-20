@@ -156,6 +156,8 @@ public:
     explicit NowPlayingBar(QWidget* parent = nullptr);
 
     void setTrackInfo(const library::TrackInfo& info);
+    void setAudioInfoVisibility(bool format, bool sampleRate, bool bitDepth,
+                                bool channels, bool bitrate);
     void setPlayingState(bool playing);
     void setPlaybackMode(int mode);
     void setVolume(double volume);
@@ -171,10 +173,12 @@ signals:
 
 private:
     static QString formatTime(double seconds);
+    void updateAudioInfoLabel();
 
     QLabel* m_coverThumb;
     QLabel* m_titleLabel;
     QLabel* m_artistLabel;
+    QLabel* m_audioInfoLabel;
     QPushButton* m_btnPrev;
     QPushButton* m_btnPlayPause;
     QPushButton* m_btnNext;
@@ -186,6 +190,12 @@ private:
 
     double m_totalDuration = 0.0;
     bool m_isUserSeeking = false;
+    library::TrackInfo m_trackInfo;
+    bool m_showAudioFormat = true;
+    bool m_showSampleRate = true;
+    bool m_showBitDepth = true;
+    bool m_showChannels = true;
+    bool m_showBitrate = true;
 };
 
 } // namespace isac::ui

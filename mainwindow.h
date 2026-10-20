@@ -51,6 +51,7 @@ private:
     qint64 m_currentTrackId = 0;
     bool m_trackLoaded = false;
     bool m_playbackQueueNeedsSave = false;
+    QString m_lastPlaybackError;
 #ifdef ISAC_HAS_MPRIS
     isac::platform::MprisController* m_mprisController = nullptr;
 #endif

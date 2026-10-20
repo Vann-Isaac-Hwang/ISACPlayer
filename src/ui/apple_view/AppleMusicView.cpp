@@ -10,6 +10,7 @@
 #include <QPainterPath>
 #include <QSignalBlocker>
 #include <QDataStream>
+#include <QFontMetrics>
 #include <algorithm>
 #include <utility>
 
@@ -970,7 +971,7 @@ void AppleLibraryPage::updateHeroBanner(const library::TrackInfo& track) {
 
 // ==================== NowPlayingBar ====================
 NowPlayingBar::NowPlayingBar(QWidget* parent) : QWidget(parent) {
-    setFixedHeight(84);
+    setFixedHeight(98);
     setStyleSheet(R"(
         NowPlayingBar {
             background-color: #1E2028;
@@ -1007,14 +1008,19 @@ NowPlayingBar::NowPlayingBar(QWidget* parent) : QWidget(parent) {
 
     auto* metaLayout = new QVBoxLayout();
     m_titleLabel = new QLabel("未在播放", this);
-    m_titleLabel->setStyleSheet("font-weight: bold; font-size: 14px; color: white;");
-    m_titleLabel->setFixedWidth(180);
+    m_titleLabel->setStyleSheet("font-weight: bold; font-size: 13px; color: white;");
+    m_titleLabel->setFixedWidth(240);
     m_artistLabel = new QLabel("ISAC Audio Engine", this);
     m_artistLabel->setStyleSheet("font-size: 12px; color: #9499A6;");
-    m_artistLabel->setFixedWidth(180);
+    m_artistLabel->setFixedWidth(240);
+    m_audioInfoLabel = new QLabel(this);
+    m_audioInfoLabel->setStyleSheet("font-size: 10px; color: #858B99;");
+    m_audioInfoLabel->setFixedWidth(240);
+    m_audioInfoLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     metaLayout->addStretch();
     metaLayout->addWidget(m_titleLabel);
     metaLayout->addWidget(m_artistLabel);
+    metaLayout->addWidget(m_audioInfoLabel);
     metaLayout->addStretch();
 
     // 2. 中间：播放控制按钮 + 进度条
@@ -1098,10 +1104,50 @@ NowPlayingBar::NowPlayingBar(QWidget* parent) : QWidget(parent) {
 }
 
 void NowPlayingBar::setTrackInfo(const library::TrackInfo& info) {
+    m_trackInfo = info;
     m_coverThumb->setPixmap(makeRoundedPixmap(
         library::MetadataReader::loadCoverArt(info, 108), 54, 8));
     m_titleLabel->setText(info.title);
     m_artistLabel->setText(info.artist);
+    updateAudioInfoLabel();
+}
+
+void NowPlayingBar::setAudioInfoVisibility(bool format, bool sampleRate,
+                                           bool bitDepth, bool channels,
+                                           bool bitrate)
+{
+    m_showAudioFormat = format;
+    m_showSampleRate = sampleRate;
+    m_showBitDepth = bitDepth;
+    m_showChannels = channels;
+    m_showBitrate = bitrate;
+    updateAudioInfoLabel();
+}
+
+void NowPlayingBar::updateAudioInfoLabel()
+{
+    QStringList details;
+    if (m_showAudioFormat && !m_trackInfo.audioFormat.isEmpty()) {
+        details.push_back(m_trackInfo.audioFormat);
+    }
+    if (m_showSampleRate && m_trackInfo.sampleRateHz > 0) {
+        details.push_back(QStringLiteral("%1 kHz")
+                              .arg(m_trackInfo.sampleRateHz / 1000.0, 0, 'f', 1));
+    }
+    if (m_showBitDepth && m_trackInfo.bitDepth > 0) {
+        details.push_back(QStringLiteral("%1-bit").arg(m_trackInfo.bitDepth));
+    }
+    if (m_showChannels && m_trackInfo.channels > 0) {
+        details.push_back(QStringLiteral("%1 ch").arg(m_trackInfo.channels));
+    }
+    if (m_showBitrate && m_trackInfo.bitrateKbps > 0) {
+        details.push_back(QStringLiteral("%1 kb/s").arg(m_trackInfo.bitrateKbps));
+    }
+
+    const QString fullText = details.join(QStringLiteral(" · "));
+    m_audioInfoLabel->setToolTip(fullText);
+    m_audioInfoLabel->setText(QFontMetrics(m_audioInfoLabel->font()).elidedText(
+        fullText, Qt::ElideRight, m_audioInfoLabel->width()));
 }
 
 void NowPlayingBar::setPlayingState(bool playing) {

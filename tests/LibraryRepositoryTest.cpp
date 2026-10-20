@@ -1,6 +1,7 @@
 #include "library/LibraryRepository.h"
 #include "library/LibraryScanner.h"
 #include "library/PlaybackQueue.h"
+#include "library/TrackMetadata.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -387,6 +388,45 @@ void writeFixture(const QString& path, const QByteArray& contents)
     expect(file.write(contents) == contents.size(), "scanner fixture must be written");
 }
 
+void appendLittleEndian(QByteArray& data, quint32 value, int bytes)
+{
+    for (int index = 0; index < bytes; ++index) {
+        data.append(static_cast<char>((value >> (index * 8)) & 0xff));
+    }
+}
+
+void testAudioProperties(const QString& directory)
+{
+    QByteArray wav;
+    wav.append("RIFF", 4);
+    appendLittleEndian(wav, 42, 4);
+    wav.append("WAVEfmt ", 8);
+    appendLittleEndian(wav, 16, 4);
+    appendLittleEndian(wav, 1, 2);
+    appendLittleEndian(wav, 2, 2);
+    appendLittleEndian(wav, 44100, 4);
+    appendLittleEndian(wav, 264600, 4);
+    appendLittleEndian(wav, 6, 2);
+    appendLittleEndian(wav, 24, 2);
+    wav.append("data", 4);
+    appendLittleEndian(wav, 6, 4);
+    wav.append(QByteArray(6, '\0'));
+
+    const QString filePath = QDir(directory).filePath("properties.wav");
+    writeFixture(filePath, wav);
+
+    isac::library::TrackInfo track;
+    track.filePath = filePath;
+    isac::library::MetadataReader::readAudioProperties(track);
+    expect(track.audioFormat == "WAV",
+           "audio properties must include the source file format");
+    expect(track.sampleRateHz == 44100 && track.channels == 2 &&
+               track.bitDepth == 24,
+           "WAV technical properties must be read from the file");
+    expect(track.bitrateKbps > 0,
+           "audio properties must include bitrate when available");
+}
+
 void runScan(isac::library::LibraryScanner& scanner,
              const std::function<void()>& start,
              bool& cancelled,
@@ -482,6 +522,7 @@ int main(int argc, char** argv)
     testPersistedPlaybackQueue(
         QDir(temporaryDirectory.path()).filePath("playback.sqlite"));
     testPlaybackQueueModes();
+    testAudioProperties(temporaryDirectory.path());
     testDirectoriesAndPlaylists(databasePath);
     testBackgroundScanner(
         QDir(temporaryDirectory.path()).filePath("scanner.sqlite"),
