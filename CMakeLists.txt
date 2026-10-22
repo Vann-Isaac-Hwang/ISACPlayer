@@ -15,6 +15,7 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Sql)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(TAGLIB REQUIRED IMPORTED_TARGET taglib)
+pkg_check_modules(FFTW3 REQUIRED IMPORTED_TARGET fftw3)
 
 # Public headers consumed by external DSP plugins. This subproject intentionally
 # carries no Qt or engine implementation dependency.
@@ -55,6 +56,8 @@ set(PROJECT_SOURCES
     src/engine/plugin/IAudioPlugin.h
     src/ui/apple_view/AppleMusicView.h
     src/ui/apple_view/AppleMusicView.cpp
+    src/ui/player/AudioVisualization.h
+    src/ui/player/AudioVisualization.cpp
     src/ui/patchbay/PatchbayView.h
     src/ui/patchbay/PatchbayView.cpp
     src/ui/patchbay/DspPresetCatalog.h
@@ -79,6 +82,7 @@ target_link_libraries(ISACPlayer PRIVATE
     Qt${QT_VERSION_MAJOR}::Widgets
     Qt${QT_VERSION_MAJOR}::Sql
     PkgConfig::TAGLIB
+    PkgConfig::FFTW3
     isac_engine
 )
 
@@ -155,7 +159,9 @@ if(BUILD_TESTING)
     )
     target_include_directories(isac_plugin_loader_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/plugin_sdk/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/plugins/replaygain
     )
+    target_link_libraries(isac_plugin_loader_tests PRIVATE isac_plugin_sdk)
     target_link_libraries(isac_plugin_loader_tests PRIVATE
         Qt${QT_VERSION_MAJOR}::Core
     )

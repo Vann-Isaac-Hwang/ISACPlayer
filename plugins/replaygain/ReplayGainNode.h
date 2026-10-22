@@ -20,17 +20,28 @@ public:
         return port == 0 ? "Out L" : "Out R";
     }
 
-    // The host can wire parsed track metadata to this atomic parameter later.
-    void setGainDb(double gainDb) {
+    bool setParameter(std::string_view name, double value) noexcept override {
+        if (name != "gainDb") {
+            return false;
+        }
+        setGainDb(value);
+        return true;
+    }
+
+    void setGainDb(double gainDb) noexcept {
+        if (!std::isfinite(gainDb)) {
+            return;
+        }
         m_targetGain.store(std::clamp(gainDb, -24.0, 12.0), std::memory_order_relaxed);
     }
 
-    double gainDb() const {
+    double gainDb() const noexcept {
         return m_targetGain.load(std::memory_order_relaxed);
     }
 
     void process(const AudioBuffer& inBus, AudioBuffer& outBus, int frames) override {
-        const int count = std::clamp(frames, 0, outBus.numFrames());
+        const int count = std::clamp(
+            frames, 0, std::min(inBus.numFrames(), outBus.numFrames()));
         const double target = dbToLinear(m_targetGain.load(std::memory_order_relaxed));
         const double step = (target - m_currentGain) / static_cast<double>(std::max(1, count));
 
@@ -64,5 +75,8 @@ private:
     int m_delayIndex = 0;
     std::array<std::array<AudioSample, kLookaheadFrames>, 2> m_delay{};
 };
+
+static_assert(std::atomic<double>::is_always_lock_free,
+              "ReplayGain parameters must use lock-free atomics");
 
 } // namespace isac::plugins

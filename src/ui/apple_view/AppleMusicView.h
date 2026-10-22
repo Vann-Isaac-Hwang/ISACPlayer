@@ -4,6 +4,7 @@
 #include <QCache>
 #include <QTableView>
 #include <QLabel>
+#include <QListWidget>
 #include <QPushButton>
 #include <QSlider>
 #include <QIcon>
@@ -16,6 +17,7 @@
 #include <vector>
 #include "library/LibraryRepository.h"
 #include "library/TrackMetadata.h"
+#include "ui/player/AudioVisualization.h"
 
 namespace isac::ui {
 
@@ -104,12 +106,10 @@ public:
 
     void refreshTracks();
     void setScanStatus(const QString& status);
-    void updateHeroBanner(const library::TrackInfo& track);
     std::optional<library::TrackInfo> trackAtRow(int row) const;
     int trackCount() const;
     int rowForTrackId(qint64 id) const;
     std::vector<qint64> trackIds() const;
-    std::optional<qint64> selectedPlaylistId() const;
 
 signals:
     void trackDoubleClicked(qint64 trackId);
@@ -118,9 +118,6 @@ signals:
 
 private:
     library::LibraryRepository* m_repository = nullptr;
-    QLabel* m_heroCover;
-    QLabel* m_heroTitle;
-    QLabel* m_heroArtist;
     QLabel* m_scanStatus;
     QLabel* m_resultCount;
     QTableView* m_table;
@@ -135,25 +132,46 @@ private:
     QComboBox* m_sortSelector;
     QComboBox* m_sortDirection;
     QTimer* m_searchTimer;
-    QComboBox* m_playlistSelector;
-    QPushButton* m_createPlaylistButton;
-    QPushButton* m_renamePlaylistButton;
-    QPushButton* m_deletePlaylistButton;
-    QPushButton* m_addToPlaylistButton;
-    QPushButton* m_removeFromPlaylistButton;
 
-    void refreshPlaylists(std::optional<qint64> preferredPlaylist = std::nullopt);
-    void updatePlaylistControls();
     void showLibraryView(int view);
     void showGroupTracks(const library::LibraryGroup& group);
     void updateResultCount();
 };
 
-// 2. 底部常驻 Apple Music 播放控制条
-class NowPlayingBar : public QWidget {
+class PlaylistPage final : public QWidget {
     Q_OBJECT
 public:
-    explicit NowPlayingBar(QWidget* parent = nullptr);
+    explicit PlaylistPage(library::LibraryRepository* repository,
+                          QWidget* parent = nullptr);
+
+    void refresh();
+    std::vector<qint64> trackIds() const;
+
+signals:
+    void trackDoubleClicked(qint64 trackId);
+
+private:
+    library::LibraryRepository* m_repository = nullptr;
+    QListWidget* m_playlistList = nullptr;
+    QTableView* m_table = nullptr;
+    TrackTableModel* m_tableModel = nullptr;
+    QLineEdit* m_searchInput = nullptr;
+    QLabel* m_statusLabel = nullptr;
+    QPushButton* m_renameButton = nullptr;
+    QPushButton* m_deleteButton = nullptr;
+    QPushButton* m_addTracksButton = nullptr;
+    QPushButton* m_removeTracksButton = nullptr;
+
+    std::optional<qint64> selectedPlaylistId() const;
+    void refreshPlaylistList(std::optional<qint64> preferred = std::nullopt);
+    void updateControls();
+    void openAddTracksDialog();
+};
+
+class NowPlayingHeader final : public QWidget {
+    Q_OBJECT
+public:
+    explicit NowPlayingHeader(QWidget* parent = nullptr);
 
     void setTrackInfo(const library::TrackInfo& info);
     void setAudioInfoVisibility(bool format, bool sampleRate, bool bitDepth,
@@ -162,6 +180,9 @@ public:
     void setPlaybackMode(int mode);
     void setVolume(double volume);
     void updateProgress(double currentSec, double totalSec);
+    void updateVisualization(const double* preLeft, const double* preRight,
+                             const double* postLeft, const double* postRight,
+                             std::size_t count, std::uint32_t sampleRate);
 
 signals:
     void playPauseClicked();
@@ -178,18 +199,22 @@ private:
     QLabel* m_coverThumb;
     QLabel* m_titleLabel;
     QLabel* m_artistLabel;
+    QLabel* m_albumLabel;
     QLabel* m_audioInfoLabel;
+    QLabel* m_lblCurrentTime;
+    QLabel* m_lblTotalTime;
     QPushButton* m_btnPrev;
     QPushButton* m_btnPlayPause;
     QPushButton* m_btnNext;
-    QComboBox* m_playbackMode;
-    QSlider* m_seekSlider;
-    QLabel* m_lblCurrentTime;
-    QLabel* m_lblTotalTime;
+    QPushButton* m_playbackModeButton;
+    WaveformProgressWidget* m_waveform = nullptr;
+    WaterfallWidget* m_preDspWaterfall = nullptr;
+    WaterfallWidget* m_postDspWaterfall = nullptr;
     QSlider* m_volumeSlider;
 
+    std::vector<double> m_waveformSamples;
+    int m_playbackModeValue = 0;
     double m_totalDuration = 0.0;
-    bool m_isUserSeeking = false;
     library::TrackInfo m_trackInfo;
     bool m_showAudioFormat = true;
     bool m_showSampleRate = true;

@@ -1,17 +1,54 @@
 #include <isac/plugin/QtAudioPlugin.h>
+#include "ReplayGainNode.h"
 
 #include <QCoreApplication>
 #include <QPluginLoader>
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <limits>
 
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     if (argc < 2) {
         std::cerr << "expected at least one plugin path\n";
         return 2;
+    }
+
+    {
+        constexpr int totalFrames = 160;
+        isac::plugins::ReplayGainNode node;
+        isac::AudioBuffer input(2, 80, 48000);
+        isac::AudioBuffer output(2, 80, 48000);
+        input.channel(0)[0] = 1.0;
+        input.channel(1)[0] = 1.0;
+        std::array<double, totalFrames> rendered{};
+        int offset = 0;
+        for (const int blockSize : {23, 41, 17, 79}) {
+            input.clear();
+            if (offset == 0) {
+                input.channel(0)[0] = 1.0;
+                input.channel(1)[0] = 1.0;
+            }
+            node.process(input, output, blockSize);
+            for (int frame = 0; frame < blockSize; ++frame) {
+                rendered[static_cast<std::size_t>(offset + frame)] =
+                    output.channel(0)[frame];
+            }
+            offset += blockSize;
+        }
+        assert(offset == totalFrames);
+        for (int frame = 0; frame < 64; ++frame) {
+            assert(rendered[static_cast<std::size_t>(frame)] == 0.0);
+        }
+        assert(std::abs(rendered[64] - 1.0) < 1.0e-12);
+        assert(std::abs(rendered[64 + 1]) < 1.0e-12);
+        assert(node.setParameter("gainDb", -6.0));
+        assert(!node.setParameter("missing", 0.0));
+        node.setGainDb(std::numeric_limits<double>::quiet_NaN());
+        assert(std::isfinite(node.gainDb()));
     }
 
     for (int argument = 1; argument < argc; ++argument) {
@@ -26,6 +63,30 @@ int main(int argc, char** argv) {
         if (!plugin) {
             std::cerr << "plugin does not implement IAudioPlugin\n";
             return 4;
+        }
+
+        auto* compatibility =
+            qobject_cast<isac::IAudioPluginCompatibility*>(instance);
+        if (!compatibility ||
+            compatibility->pluginApiVersion() !=
+                ISAC_AUDIO_PLUGIN_API_VERSION) {
+            std::cerr << "plugin API version mismatch\n";
+            return 5;
+        }
+
+        if (auto* parameters =
+                qobject_cast<isac::IAudioPluginParameters*>(instance)) {
+            for (std::size_t index = 0;
+                 index < parameters->parameterCount(); ++index) {
+                const auto* descriptor = parameters->parameterAt(index);
+                assert(descriptor && descriptor->id &&
+                       descriptor->displayName);
+                assert(std::isfinite(descriptor->minimum));
+                assert(std::isfinite(descriptor->maximum));
+                assert(std::isfinite(descriptor->defaultValue));
+                assert(descriptor->minimum <= descriptor->defaultValue);
+                assert(descriptor->defaultValue <= descriptor->maximum);
+            }
         }
 
         auto node = plugin->createNode();

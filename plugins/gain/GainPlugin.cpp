@@ -5,6 +5,17 @@
 #include <QFormLayout>
 #include <QLabel>
 #include <QVBoxLayout>
+#include <iterator>
+
+const isac::AudioParameterDescriptor* GainPlugin::parameterAt(
+    std::size_t index) const noexcept
+{
+    static constexpr isac::AudioParameterDescriptor parameters[] = {
+        {"factor", "Gain", "x", isac::AudioParameterType::Continuous,
+         0.0, 4.0, 1.0}
+    };
+    return index < std::size(parameters) ? &parameters[index] : nullptr;
+}
 
 std::shared_ptr<isac::IAudioNode> GainPlugin::createNode() const
 {

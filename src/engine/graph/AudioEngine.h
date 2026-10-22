@@ -1,6 +1,7 @@
 #pragma once
 #include "../../third_party/miniaudio/miniaudio.h"
 #include "GraphCompiler.h"
+#include "AudioTapBuffer.h"
 #include "SpscAudioRingBuffer.h"
 #include <array>
 #include <cstdint>
@@ -85,6 +86,10 @@ public:
     ma_uint64 underrunFrames() const noexcept {
         return m_underrunFrames.load(std::memory_order_acquire);
     }
+    std::size_t readPreDspSamples(double* left, double* right,
+                                  std::size_t maxFrames) noexcept;
+    std::size_t readPostDspSamples(double* left, double* right,
+                                   std::size_t maxFrames) noexcept;
 
     // 图拓扑操作接口
     NodeId addNode(std::shared_ptr<IAudioNode> node);
@@ -141,6 +146,8 @@ private:
     // callback can use a raw plan pointer without refcounting or reclamation.
     std::shared_ptr<ExecutionPlan> m_activePlanOwner;
     SpscAudioRingBuffer m_pcmRing{48000, 2};
+    AudioTapBuffer m_preDspTap{65536, 2};
+    AudioTapBuffer m_postDspTap{65536, 2};
     std::array<float, DECODER_CHUNK_FRAMES * 2> m_decodeBuffer{};
     std::thread m_decoderThread;
     std::atomic<bool> m_decoderStop{false};

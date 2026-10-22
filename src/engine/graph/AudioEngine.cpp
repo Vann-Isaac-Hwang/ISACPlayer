@@ -303,6 +303,11 @@ void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
         };
         const std::size_t framesRead = m_pcmRing.readPlanar(
             sourceChannels, static_cast<std::size_t>(chunkFrames));
+        const double* preDspChannels[] = {
+            sourceChannels[0],
+            sourceChannels[1]
+        };
+        m_preDspTap.write(preDspChannels, chunkFrames);
         const ma_uint64 blockStartFrame =
             m_renderedFrame.load(std::memory_order_relaxed);
         if (framesRead < chunkFrames &&
@@ -331,6 +336,11 @@ void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
 
         // 3. 直接从 MasterSinkNode 的 inBus 取出汇聚好的 2 声道数据写入声卡！
         const auto& finalBus = plan->steps[plan->sinkStepIndex].inBus;
+        const double* postDspChannels[] = {
+            finalBus.channel(0),
+            finalBus.channel(1)
+        };
+        m_postDspTap.write(postDspChannels, chunkFrames);
         for (uint32_t i = 0; i < chunkFrames; ++i) {
             const ma_uint64 mediaFrame =
                 blockStartFrame + std::min<std::size_t>(i, framesRead);
@@ -348,6 +358,20 @@ void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
         currentOutPtr += chunkFrames * channels;
         framesRemaining -= chunkFrames;
     }
+}
+
+std::size_t AudioEngine::readPreDspSamples(
+    double* left, double* right, std::size_t maxFrames) noexcept
+{
+    double* channels[] = {left, right};
+    return m_preDspTap.readLatest(channels, maxFrames);
+}
+
+std::size_t AudioEngine::readPostDspSamples(
+    double* left, double* right, std::size_t maxFrames) noexcept
+{
+    double* channels[] = {left, right};
+    return m_postDspTap.readLatest(channels, maxFrames);
 }
 
 void AudioEngine::setFadeEnabled(bool enabled) noexcept
@@ -510,6 +534,8 @@ bool AudioEngine::loadAndPlay(const std::string& filePath, std::string* error) {
             m_fadeDurationSeconds * static_cast<double>(m_outputSampleRate)),
         std::memory_order_relaxed);
     m_pcmRing.reconfigure(m_outputSampleRate, 2);
+    m_preDspTap.reset();
+    m_postDspTap.reset();
     if (!rebuildGraph()) {
         if (error) {
             *error = "Unable to prepare the DSP graph for the source sample rate";
@@ -529,6 +555,8 @@ bool AudioEngine::loadAndPlay(const std::string& filePath, std::string* error) {
     m_decoderReady.store(false, std::memory_order_release);
     m_underrunFrames.store(0, std::memory_order_release);
     m_pcmRing.reset();
+    m_preDspTap.reset();
+    m_postDspTap.reset();
 
     m_decoderThread = std::thread(&AudioEngine::decoderLoop, this);
     bool prebufferReady = false;

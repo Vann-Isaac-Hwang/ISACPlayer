@@ -31,6 +31,14 @@ Qt 信号槽。插件的 UI 控件通过 `createControlWidget()` 提供，不能
 org.isacplayer.IAudioPlugin/1.0
 ```
 
+插件还必须实现 `IAudioPluginCompatibility` 并返回
+`ISAC_AUDIO_PLUGIN_API_VERSION`。宿主会拒绝缺少该接口或版本不匹配的动态库。
+接口发生不兼容变化时，应提升 IID 和 API 版本。
+
+可选的 `IAudioPluginParameters` 提供参数描述（ID、显示名、单位、类型、范围和默认值）。
+宿主可据此生成基础 Inspector；插件若提供专用 Qt 控件，专用控件优先。参数写入经
+`IAudioNode::setParameter()` 传递，节点需自行验证参数并通过无锁状态传给实时线程。
+
 SDK 的 DSP 接口不依赖 Qt。插件控制面板属于后续独立的 Qt 扩展层，不能从
 实时 `process()` 线程访问 Qt 对象。
 

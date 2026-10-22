@@ -14,6 +14,17 @@ struct PluginInfo {
     QString id;
     QString displayName;
     QString description;
+    struct Parameter {
+        QString id;
+        QString displayName;
+        QString unit;
+        isac::AudioParameterType type = isac::AudioParameterType::Continuous;
+        double minimum = 0.0;
+        double maximum = 1.0;
+        double defaultValue = 0.0;
+    };
+    std::vector<Parameter> parameters;
+    int apiVersion = 0;
 };
 
 class PluginManager {
@@ -34,16 +45,22 @@ private:
         NodeFactory factory;
         IAudioPlugin* plugin = nullptr;
         IAudioPluginUi* pluginUi = nullptr;
+        IAudioPluginParameters* parameters = nullptr;
     };
 
     struct NodeBinding {
         std::weak_ptr<IAudioNode> node;
         IAudioPluginUi* pluginUi = nullptr;
+        IAudioPluginParameters* parameters = nullptr;
     };
 
     void registerPlugin(PluginInfo info, NodeFactory factory,
                         IAudioPlugin* plugin = nullptr,
-                        IAudioPluginUi* pluginUi = nullptr);
+                        IAudioPluginUi* pluginUi = nullptr,
+                        IAudioPluginParameters* parameters = nullptr);
+    static QWidget* createSchemaControlWidget(
+        IAudioPluginParameters* parameters,
+        const std::shared_ptr<IAudioNode>& node, QWidget* parent);
 
     std::vector<PluginInfo> m_plugins;
     std::vector<Record> m_records;

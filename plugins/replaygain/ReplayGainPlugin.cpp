@@ -4,6 +4,17 @@
 #include <QFormLayout>
 #include <QLabel>
 #include <QVBoxLayout>
+#include <iterator>
+
+const isac::AudioParameterDescriptor* ReplayGainPlugin::parameterAt(
+    std::size_t index) const noexcept
+{
+    static constexpr isac::AudioParameterDescriptor parameters[] = {
+        {"gainDb", "Target gain", "dB", isac::AudioParameterType::Continuous,
+         -24.0, 12.0, 0.0}
+    };
+    return index < std::size(parameters) ? &parameters[index] : nullptr;
+}
 
 std::shared_ptr<isac::IAudioNode> ReplayGainPlugin::createNode() const {
     return std::make_shared<isac::plugins::ReplayGainNode>();

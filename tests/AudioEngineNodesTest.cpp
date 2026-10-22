@@ -1,5 +1,6 @@
 #include "engine/graph/AudioBuffer.h"
 #include "engine/graph/AudioEngine.h"
+#include "engine/graph/AudioTapBuffer.h"
 #include "engine/graph/PlaybackFade.h"
 #include "engine/graph/SpscAudioRingBuffer.h"
 #include "engine/nodes/BiquadEqualizerNode.h"
@@ -166,6 +167,23 @@ void testOutputDeviceEnumeration()
            "system default selection must clear an explicit device id");
 }
 
+void testNativeRateGraphBuffers()
+{
+    isac::AudioEngine engine;
+    for (const std::uint32_t sampleRate :
+         {44100u, 96000u, 192000u, 768000u}) {
+        const auto plan = isac::GraphCompiler::compile(
+            engine.nodes(), engine.connections(), engine.sinkNodeId(),
+            128, sampleRate);
+        expect(plan != nullptr, "graph must compile at supported source rates");
+        for (const auto& step : plan->steps) {
+            expect(step.inBus.sampleRate() == sampleRate &&
+                       step.outBus.sampleRate() == sampleRate,
+                   "compiled DSP buses must retain the requested native rate");
+        }
+    }
+}
+
 void testPlaybackFailureReportsReason()
 {
     isac::AudioEngine engine;
@@ -215,6 +233,34 @@ void testSpscAudioRingBuffer()
     expectNear(right[3], 60.0, 0.0, "wrapped right channel frame 4");
 }
 
+void testAudioTapBufferLatestWindow()
+{
+    isac::AudioTapBuffer tap(5, 2);
+    const double leftFirst[] = {1.0, 2.0, 3.0, 4.0};
+    const double rightFirst[] = {10.0, 20.0, 30.0, 40.0};
+    const double* firstBlock[] = {leftFirst, rightFirst};
+    tap.write(firstBlock, 4);
+
+    double leftRead[4]{};
+    double rightRead[4]{};
+    double* output[] = {leftRead, rightRead};
+    expect(tap.readLatest(output, 2) == 2,
+           "audio tap must return only the requested latest window");
+    expectNear(leftRead[0], 3.0, 0.0, "audio tap latest left sample");
+    expectNear(rightRead[1], 40.0, 0.0, "audio tap latest right sample");
+
+    const double leftSecond[] = {5.0, 6.0, 7.0, 8.0};
+    const double rightSecond[] = {50.0, 60.0, 70.0, 80.0};
+    const double* secondBlock[] = {leftSecond, rightSecond};
+    tap.write(secondBlock, 4);
+    expect(tap.readLatest(output, 4) == 4,
+           "audio tap must read across the ring boundary");
+    expectNear(leftRead[0], 5.0, 0.0, "audio tap wrapped left sample");
+    expectNear(leftRead[3], 8.0, 0.0, "audio tap wrapped left tail");
+    expectNear(rightRead[0], 50.0, 0.0, "audio tap wrapped right sample");
+    expectNear(rightRead[3], 80.0, 0.0, "audio tap wrapped right tail");
+}
+
 } // namespace
 
 int main()
@@ -226,8 +272,10 @@ int main()
     testAtomicParameterUpdate();
     testNodeRemoval();
     testOutputDeviceEnumeration();
+    testNativeRateGraphBuffers();
     testPlaybackFailureReportsReason();
     testSpscAudioRingBuffer();
+    testAudioTapBufferLatestWindow();
     std::cout << "isac_engine_tests: all tests passed\n";
     return EXIT_SUCCESS;
 }

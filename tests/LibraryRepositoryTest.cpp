@@ -148,6 +148,9 @@ void testDirectoriesAndPlaylists(const QString& databasePath)
            "first playlist track insert must succeed");
     expect(repository.addTrackToPlaylist(*playlistId, tracks[0].id),
            "second playlist track insert must succeed");
+    expect(repository.playlistContainsTrack(*playlistId, tracks[0].id) &&
+               !repository.playlistContainsTrack(*playlistId, 999999),
+           "playlist membership query must identify existing tracks");
     expect(!repository.addTrackToPlaylist(*playlistId, tracks[0].id),
            "duplicate playlist tracks must be rejected");
 
@@ -320,15 +323,22 @@ void testArtistAndAlbumQueries(const QString& databasePath)
                albums[1].name == "Shared Album" &&
                albums[1].artist == "Artist A / Artist B / Guest A / Guest B",
            "albums must merge by title and expose the union of artists");
-    expect(repository.albumTrackCount("Artist A", "Shared Album") == 3,
+    expect(repository.albumTrackCount("Shared Album") == 3,
            "album track count must use album identity only");
     const auto albumTracks = repository.queryAlbumTracks(
-        "Artist A", "Shared Album", {}, TrackSort::Title, true, 10, 0);
+        "Shared Album", {}, TrackSort::Title, true, 10, 0);
     expect(albumTracks.size() == 3 &&
                albumTracks[0].title == "A One" &&
                albumTracks[1].title == "A Two" &&
                albumTracks[2].title == "B One",
            "album track queries must return every track in the album");
+    const auto albumIds = repository.queryAlbumTrackIds(
+        "Shared Album", {}, TrackSort::Title, true, 10, 0);
+    expect(albumIds.size() == 3 &&
+               albumIds[0] == tracks[0].id &&
+               albumIds[1] == tracks[1].id &&
+               albumIds[2] == tracks[3].id,
+           "album ID queries must use album identity only");
     const auto artistIds = repository.queryArtistTrackIds(
         "Artist A", {}, TrackSort::Title, true, 10, 0);
     expect(artistIds.size() == 3 &&
@@ -365,23 +375,78 @@ void testLegacyCategoryMigration(const QString& databasePath)
                    "('/legacy/two.flac', 'Two', 'Gamma', 'Legacy Album', "
                    "'2024-01-01T00:00:00.000Z')"),
                "legacy fixture tracks must be inserted");
+        QSqlQuery batchInsert(database);
+        batchInsert.prepare(
+            "INSERT INTO tracks "
+            "(path, title, artist, album, added_at) "
+            "VALUES (?, ?, ?, ?, '2024-01-01T00:00:00.000Z')");
+        for (int index = 0; index < 513; ++index) {
+            batchInsert.addBindValue(
+                QStringLiteral("/legacy/batch-%1.flac").arg(index));
+            batchInsert.addBindValue(
+                QStringLiteral("Batch %1").arg(index));
+            batchInsert.addBindValue(
+                QStringLiteral("Batch Artist A / Batch Artist B"));
+            batchInsert.addBindValue(QStringLiteral("Batch Album"));
+            expect(batchInsert.exec(),
+                   "legacy batch fixture tracks must be inserted");
+            batchInsert.finish();
+        }
         database.close();
     }
     QSqlDatabase::removeDatabase(connectionName);
 
     isac::library::LibraryRepository repository(databasePath);
     expect(repository.isOpen(), "repository must open legacy database");
-    expect(repository.artistCount() == 3 &&
+    expect(repository.artistCount() == 5 &&
                repository.artistTrackCount("Alpha") == 1 &&
                repository.artistTrackCount("Beta") == 1 &&
-               repository.artistTrackCount("Gamma") == 1,
+               repository.artistTrackCount("Gamma") == 1 &&
+               repository.artistTrackCount("Batch Artist A") == 513 &&
+               repository.artistTrackCount("Batch Artist B") == 513,
            "legacy compound artists must migrate into separate entities");
     const auto albums = repository.queryAlbums();
-    expect(albums.size() == 1 &&
-               albums.front().name == "Legacy Album" &&
-               albums.front().artist == "Alpha / Beta / Gamma" &&
-               albums.front().trackCount == 2,
-           "legacy albums must migrate by name with the artist union");
+    expect(repository.trackCount() == 515 &&
+               repository.albumCount() == 2 &&
+               albums.size() == 2 &&
+               albums.front().name == "Batch Album" &&
+               albums.front().artist == "Batch Artist A / Batch Artist B" &&
+               albums.front().trackCount == 513 &&
+               albums.back().name == "Legacy Album" &&
+               albums.back().artist == "Alpha / Beta / Gamma" &&
+               albums.back().trackCount == 2,
+           "batched legacy migration must preserve album relations and ordering");
+}
+
+void testMetadataCategoryNormalization(const QString& databasePath)
+{
+    using namespace isac::library;
+    LibraryRepository repository(databasePath);
+    expect(repository.isOpen(), "metadata normalization repository must open");
+
+    std::vector<TrackInfo> tracks{
+        makeTrack("/normalization/empty-parts.flac", "Empty Parts",
+                  "  Artist One / / Artist Two / artist one  ",
+                  "  Shared Name  ", 100),
+        makeTrack("/normalization/empty-tags.flac", "Empty Tags",
+                  " /  / ", "   ", 100)
+    };
+    expect(repository.upsertTracks(tracks),
+           "metadata normalization fixtures must insert");
+
+    expect(repository.artistCount() == 3 &&
+               repository.artistTrackCount("Artist One") == 1 &&
+               repository.artistTrackCount("Artist Two") == 1 &&
+               repository.artistTrackCount("Unknown Artist") == 1,
+           "artist normalization must trim, skip empty parts and deduplicate");
+    const auto albums = repository.queryAlbums();
+    expect(albums.size() == 2 &&
+               albums[0].name == "Shared Name" &&
+               albums[1].name == "Unknown Album",
+           "album normalization must trim names and replace blank tags");
+    expect(albums[0].artist == "Artist One / Artist Two" &&
+               albums[1].artist == "Unknown Artist",
+           "album artist unions must contain normalized distinct artists");
 }
 
 void testPlaybackQueueModes()
@@ -580,6 +645,8 @@ int main(int argc, char** argv)
         QDir(temporaryDirectory.path()).filePath("categories.sqlite"));
     testLegacyCategoryMigration(
         QDir(temporaryDirectory.path()).filePath("legacy.sqlite"));
+    testMetadataCategoryNormalization(
+        QDir(temporaryDirectory.path()).filePath("normalization.sqlite"));
     testPersistedPlaybackQueue(
         QDir(temporaryDirectory.path()).filePath("playback.sqlite"));
     testPlaybackQueueModes();

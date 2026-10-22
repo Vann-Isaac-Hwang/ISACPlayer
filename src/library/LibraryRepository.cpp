@@ -69,6 +69,8 @@ QString escapedSearchPattern(const QString& text)
     return QStringLiteral("%") + escaped + QStringLiteral("%");
 }
 
+constexpr int kRelationMigrationBatchSize = 512;
+
 } // namespace
 
 LibraryRepository::LibraryRepository(const QString& databasePath)
@@ -192,29 +194,53 @@ bool LibraryRepository::initializeSchema()
         return true;
     }
 
-    std::vector<std::tuple<qint64, QString, QString>> relations;
-    QSqlQuery existingTracks(m_database);
-    if (!existingTracks.exec(
-            QStringLiteral("SELECT id, artist, album FROM tracks"))) {
-        m_lastError = existingTracks.lastError().text();
-        return false;
-    }
-    while (existingTracks.next()) {
-        relations.emplace_back(
-            existingTracks.value(0).toLongLong(),
-            existingTracks.value(1).toString(),
-            existingTracks.value(2).toString());
-    }
-    existingTracks.finish();
-    if (!m_database.transaction()) {
-        m_lastError = m_database.lastError().text();
-        return false;
-    }
-    for (const auto& [trackId, artist, album] : relations) {
-        if (!syncTrackRelations(trackId, artist, album)) {
+    qint64 lastTrackId = 0;
+    while (true) {
+        std::vector<std::tuple<qint64, QString, QString>> relations;
+        relations.reserve(kRelationMigrationBatchSize);
+
+        QSqlQuery existingTracks(m_database);
+        existingTracks.prepare(QStringLiteral(
+            "SELECT id, artist, album FROM tracks "
+            "WHERE id > ? ORDER BY id ASC LIMIT ?"));
+        existingTracks.addBindValue(lastTrackId);
+        existingTracks.addBindValue(kRelationMigrationBatchSize);
+        if (!existingTracks.exec()) {
+            m_lastError = existingTracks.lastError().text();
+            return false;
+        }
+        while (existingTracks.next()) {
+            relations.emplace_back(
+                existingTracks.value(0).toLongLong(),
+                existingTracks.value(1).toString(),
+                existingTracks.value(2).toString());
+        }
+        existingTracks.finish();
+        if (relations.empty()) {
+            break;
+        }
+
+        if (!m_database.transaction()) {
+            m_lastError = m_database.lastError().text();
+            return false;
+        }
+        for (const auto& [trackId, artist, album] : relations) {
+            if (!syncTrackRelations(trackId, artist, album)) {
+                m_database.rollback();
+                return false;
+            }
+        }
+        if (!m_database.commit()) {
+            m_lastError = m_database.lastError().text();
             m_database.rollback();
             return false;
         }
+        lastTrackId = std::get<0>(relations.back());
+    }
+
+    if (!m_database.transaction()) {
+        m_lastError = m_database.lastError().text();
+        return false;
     }
     QSqlQuery markMigration(m_database);
     markMigration.prepare(QStringLiteral(
@@ -813,7 +839,7 @@ qint64 LibraryRepository::artistTrackCount(
 }
 
 std::vector<TrackInfo> LibraryRepository::queryAlbumTracks(
-    const QString& artist, const QString& album, const QString& searchText,
+    const QString& album, const QString& searchText,
     TrackSort sort, bool ascending, int limit, int offset) const
 {
     std::vector<TrackInfo> tracks;
@@ -849,7 +875,7 @@ std::vector<TrackInfo> LibraryRepository::queryAlbumTracks(
 }
 
 std::vector<qint64> LibraryRepository::queryAlbumTrackIds(
-    const QString& artist, const QString& album, const QString& searchText,
+    const QString& album, const QString& searchText,
     TrackSort sort, bool ascending, int limit, int offset) const
 {
     std::vector<qint64> ids;
@@ -885,8 +911,7 @@ std::vector<qint64> LibraryRepository::queryAlbumTrackIds(
 }
 
 qint64 LibraryRepository::albumTrackCount(
-    const QString& artist, const QString& album,
-    const QString& searchText) const
+    const QString& album, const QString& searchText) const
 {
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
@@ -1022,6 +1047,18 @@ bool LibraryRepository::addTrackToPlaylist(qint64 playlistId, qint64 trackId)
         return false;
     }
     return query.numRowsAffected() == 1;
+}
+
+bool LibraryRepository::playlistContainsTrack(
+    qint64 playlistId, qint64 trackId) const
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT 1 FROM playlist_tracks "
+        "WHERE playlist_id = ? AND track_id = ? LIMIT 1"));
+    query.addBindValue(playlistId);
+    query.addBindValue(trackId);
+    return query.exec() && query.next();
 }
 
 bool LibraryRepository::removeTrackFromPlaylist(qint64 playlistId, qint64 trackId)

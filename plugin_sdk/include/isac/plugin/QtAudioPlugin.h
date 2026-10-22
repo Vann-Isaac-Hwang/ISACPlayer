@@ -1,6 +1,7 @@
 #pragma once
 
 #include "IAudioPlugin.h"
+#include "PluginParameters.h"
 #include "PluginApiVersion.h"
 #include <QtCore/QObject>
 #include <QtWidgets/QWidget>
@@ -8,6 +9,10 @@
 // This header is only for the Qt dynamic-discovery boundary. DSP nodes and
 // their processing implementation should include IAudioPlugin.h instead.
 Q_DECLARE_INTERFACE(isac::IAudioPlugin, ISAC_AUDIO_PLUGIN_IID)
+Q_DECLARE_INTERFACE(isac::IAudioPluginParameters,
+                    "org.isacplayer.IAudioPluginParameters/1.0")
+Q_DECLARE_INTERFACE(isac::IAudioPluginCompatibility,
+                    ISAC_AUDIO_PLUGIN_COMPATIBILITY_IID)
 
 #define ISAC_AUDIO_PLUGIN_UI_IID "org.isacplayer.IAudioPluginUi/1.0"
 

@@ -7,7 +7,7 @@
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QLabel>
-#include <QDockWidget>
+#include <QSplitter>
 #include <QListWidget>
 #include <QCoreApplication>
 #include <QFileDialog>
@@ -24,6 +24,7 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QMessageBox>
+#include <algorithm>
 
 namespace {
 
@@ -69,41 +70,46 @@ MainWindow::MainWindow(QWidget *parent)
     upperLayout->setContentsMargins(0, 0, 0, 0);
     upperLayout->setSpacing(0);
 
-    // ==================== 1. 左侧 Apple Music 风格侧边导航栏 ====================
+    // ==================== 1. 左侧页面导航栏 ====================
     auto* sidebar = new QWidget(this);
-    sidebar->setFixedWidth(220);
+    sidebar->setObjectName(QStringLiteral("sidebar"));
+    sidebar->setFixedWidth(88);
     sidebar->setStyleSheet(R"(
-        QWidget { background-color: #191B22; border-right: 1px solid #262934; }
-        QLabel { color: #6E7382; font-size: 11px; font-weight: bold; border: none; padding-left: 12px; }
-        QPushButton {
-            text-align: left; padding: 11px 16px; border: none; border-radius: 8px;
-            color: #D0D4E0; font-size: 14px; font-weight: 500; background: transparent;
+        QWidget#sidebar {
+            background-color: #191B22;
+            border-right: 1px solid #262934;
         }
-        QPushButton:hover { background-color: #252834; color: white; }
-        QPushButton:checked { background-color: #FA2D48; color: white; font-weight: bold; }
+        QPushButton {
+            text-align: center; padding: 0; margin: 0; border: none;
+            border-radius: 0; color: #E6E8ED; font-size: 11px;
+            font-weight: 500; background: #292C34;
+        }
+        QPushButton:hover { background: #454952; color: white; }
+        QPushButton:pressed { background: #565A64; }
+        QPushButton:checked { background: #393C45; color: white; font-weight: bold; }
     )");
 
     auto* sideLayout = new QVBoxLayout(sidebar);
-    sideLayout->setContentsMargins(14, 24, 14, 20);
-    sideLayout->setSpacing(8);
+    sideLayout->setContentsMargins(0, 0, 0, 0);
+    sideLayout->setSpacing(0);
 
-    auto* appLogo = new QLabel(" ISAC Music", sidebar);
-    appLogo->setStyleSheet("color: white; font-size: 20px; font-weight: bold; padding-bottom: 14px;");
-
-    auto* btnNavLibrary  = new QPushButton("🎵  音乐资料库", sidebar);
-    auto* btnNavPatchbay = new QPushButton("🎛️  DSP 节点实验室", sidebar);
+    auto* btnNavLibrary = new QPushButton("音乐资料库", sidebar);
+    auto* btnNavPlaylists = new QPushButton("歌单管理", sidebar);
+    auto* btnNavPatchbay = new QPushButton("DSP Router", sidebar);
     btnNavLibrary->setCheckable(true);
+    btnNavPlaylists->setCheckable(true);
     btnNavPatchbay->setCheckable(true);
+    btnNavLibrary->setFixedHeight(44);
+    btnNavPlaylists->setFixedHeight(44);
+    btnNavPatchbay->setFixedHeight(44);
     btnNavLibrary->setChecked(true);
 
-    sideLayout->addWidget(appLogo);
-    sideLayout->addWidget(new QLabel("APPLE MUSIC 视图", sidebar));
     sideLayout->addWidget(btnNavLibrary);
-    sideLayout->addSpacing(16);
-    sideLayout->addWidget(new QLabel("ENGINEERING 工程视图", sidebar));
+    sideLayout->addWidget(btnNavPlaylists);
     sideLayout->addWidget(btnNavPatchbay);
     sideLayout->addStretch();
     auto* settingsButton = new QPushButton("设置", sidebar);
+    settingsButton->setFixedHeight(44);
     settingsButton->setToolTip("播放设置");
     sideLayout->addWidget(settingsButton);
     connect(settingsButton, &QPushButton::clicked, this, [this]() {
@@ -177,7 +183,7 @@ MainWindow::MainWindow(QWidget *parent)
                           showChannels->isChecked());
         settings.setValue(QStringLiteral("display/bitrate"),
                           showBitrate->isChecked());
-        m_nowPlayingBar->setAudioInfoVisibility(
+        m_nowPlayingHeader->setAudioInfoVisibility(
             showFormat->isChecked(), showSampleRate->isChecked(),
             showBitDepth->isChecked(), showChannels->isChecked(),
             showBitrate->isChecked());
@@ -210,16 +216,18 @@ MainWindow::MainWindow(QWidget *parent)
             });
 
     // 页面 1：Coppwr 风格 DSP 连线调音台页面
+    m_playlistPage = new isac::ui::PlaylistPage(&m_libraryRepository, this);
+    connect(m_playlistPage, &isac::ui::PlaylistPage::trackDoubleClicked,
+            this, &MainWindow::playTrackById);
+
+    // 页面 2：Coppwr 风格 DSP 连线调音台页面
     auto* patchbayContainer = new QWidget(this);
     auto* patchLayout = new QVBoxLayout(patchbayContainer);
     patchLayout->setContentsMargins(24, 20, 24, 16);
     patchLayout->setSpacing(12);
 
     auto* patchHeader = new QHBoxLayout();
-    auto* outputRow = new QHBoxLayout();
     auto* patchStatusRow = new QHBoxLayout();
-    auto* patchTitle = new QLabel("音频路由", this);
-    patchTitle->setStyleSheet("font-size: 20px; font-weight: bold; color: white;");
     auto* presetSelector = new QComboBox(this);
     presetSelector->setMinimumWidth(180);
     presetSelector->setToolTip("选择 DSP 路由配置");
@@ -247,15 +255,14 @@ MainWindow::MainWindow(QWidget *parent)
         "border: 1px solid #343846; border-radius: 5px; padding: 6px 9px; }");
     auto* outputStatus = new QLabel(this);
     outputStatus->setStyleSheet("color: #9499A6; font-size: 12px;");
-    patchHeader->addWidget(patchTitle);
-    patchHeader->addStretch();
     patchHeader->addWidget(new QLabel("配置", this));
     patchHeader->addWidget(presetSelector);
     patchHeader->addWidget(clearConnectionsButton);
-    outputRow->addWidget(new QLabel("音频输出", this));
-    outputRow->addWidget(outputSelector);
-    outputRow->addWidget(refreshOutputsButton);
-    outputRow->addStretch();
+    patchHeader->addSpacing(16);
+    patchHeader->addWidget(new QLabel("音频输出", this));
+    patchHeader->addWidget(outputSelector);
+    patchHeader->addWidget(refreshOutputsButton);
+    patchHeader->addStretch();
     patchStatusRow->addWidget(outputStatus);
     patchStatusRow->addStretch();
     patchStatusRow->addWidget(lblPatchStatus);
@@ -263,13 +270,11 @@ MainWindow::MainWindow(QWidget *parent)
     m_patchbayView = new isac::ui::PatchbayView(m_audioEngine, this);
     m_patchbayView->setStyleSheet("border: 1px solid #2B2F3C; border-radius: 12px;");
 
-    // ==================== 3. 插件实例化 Dock ====================
-    auto* pluginDock = new QDockWidget("DSP 模块库", this);
-    pluginDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
-    pluginDock->setMinimumWidth(270);
-    pluginDock->setStyleSheet(R"(
-        QDockWidget { color: #E5E7EF; font-weight: bold; }
-        QDockWidget::title { background: #191B22; padding: 9px; }
+    // ==================== 3. 音频路由页内的 DSP 模块库 ====================
+    auto* pluginPanel = new QWidget(patchbayContainer);
+    pluginPanel->setMinimumWidth(240);
+    pluginPanel->setMaximumWidth(280);
+    pluginPanel->setStyleSheet(R"(
         QWidget { background: #191B22; color: #D0D4E0; }
         QListWidget {
             background: #14161C; border: 1px solid #2B2F3C;
@@ -284,11 +289,12 @@ MainWindow::MainWindow(QWidget *parent)
         QPushButton:hover { background: #FA2D48; border-color: #FA2D48; color: white; }
     )");
 
-    auto* pluginPanel = new QWidget(pluginDock);
     auto* pluginLayout = new QVBoxLayout(pluginPanel);
     pluginLayout->setContentsMargins(10, 10, 10, 10);
     pluginLayout->setSpacing(8);
 
+    auto* pluginTitle = new QLabel("DSP 模块库", pluginPanel);
+    pluginTitle->setStyleSheet("font-size: 14px; font-weight: bold; color: #E5E7EF;");
     auto* pluginList = new QListWidget(pluginPanel);
     auto* pluginDescription = new QLabel(pluginPanel);
     pluginDescription->setWordWrap(true);
@@ -343,21 +349,34 @@ MainWindow::MainWindow(QWidget *parent)
     connect(pluginList, &QListWidget::itemDoubleClicked,
             this, [instantiateSelected](QListWidgetItem*) { instantiateSelected(); });
 
+    pluginLayout->addWidget(pluginTitle);
     pluginLayout->addWidget(pluginList, 1);
     pluginLayout->addWidget(pluginDescription);
     pluginLayout->addWidget(instantiateButton);
-    pluginDock->setWidget(pluginPanel);
-    addDockWidget(Qt::RightDockWidgetArea, pluginDock);
 
-    auto* inspectorDock = new QDockWidget("节点检视器", this);
-    inspectorDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
-    inspectorDock->setMinimumWidth(320);
-    auto* inspector = new isac::ui::NodeInspectorWidget(inspectorDock);
-    inspectorDock->setWidget(inspector);
-    addDockWidget(Qt::RightDockWidgetArea, inspectorDock);
-    splitDockWidget(pluginDock, inspectorDock, Qt::Vertical);
-    pluginDock->hide();
-    inspectorDock->hide();
+    auto* inspectorPanel = new QWidget(patchbayContainer);
+    inspectorPanel->setStyleSheet(
+        "QWidget { background: #191B22; color: #D0D4E0; }");
+    auto* inspectorLayout = new QVBoxLayout(inspectorPanel);
+    inspectorLayout->setContentsMargins(10, 10, 10, 10);
+    inspectorLayout->setSpacing(8);
+    auto* inspectorTitle = new QLabel("节点检视器", inspectorPanel);
+    inspectorTitle->setStyleSheet(
+        "font-size: 14px; font-weight: bold; color: #E5E7EF;");
+    auto* inspector = new isac::ui::NodeInspectorWidget(inspectorPanel);
+    inspectorLayout->addWidget(inspectorTitle);
+    inspectorLayout->addWidget(inspector, 1);
+
+    auto* sidePanel = new QSplitter(Qt::Vertical, patchbayContainer);
+    sidePanel->setChildrenCollapsible(false);
+    sidePanel->setMinimumWidth(240);
+    sidePanel->setMaximumWidth(280);
+    sidePanel->setStyleSheet(
+        "QSplitter::handle:vertical { height: 5px; background: #343846; }");
+    sidePanel->addWidget(pluginPanel);
+    sidePanel->addWidget(inspectorPanel);
+    sidePanel->setStretchFactor(0, 3);
+    sidePanel->setStretchFactor(1, 2);
 
     connect(m_patchbayView->patchbayScene(), &QGraphicsScene::selectionChanged,
             this, [this, inspector]() {
@@ -374,11 +393,15 @@ MainWindow::MainWindow(QWidget *parent)
             });
 
     patchLayout->addLayout(patchHeader);
-    patchLayout->addLayout(outputRow);
     patchLayout->addLayout(patchStatusRow);
-    patchLayout->addWidget(m_patchbayView, 1);
+    auto* patchbayBody = new QHBoxLayout();
+    patchbayBody->setSpacing(12);
+    patchbayBody->addWidget(m_patchbayView, 1);
+    patchbayBody->addWidget(sidePanel);
+    patchLayout->addLayout(patchbayBody, 1);
 
     m_stackedWidget->addWidget(m_libraryPage);
+    m_stackedWidget->addWidget(m_playlistPage);
     m_stackedWidget->addWidget(patchbayContainer);
 
     auto refreshOutputDevices = [this, outputSelector, outputStatus]() {
@@ -478,9 +501,9 @@ MainWindow::MainWindow(QWidget *parent)
     upperLayout->addWidget(sidebar);
     upperLayout->addWidget(m_stackedWidget, 1);
 
-    // ==================== 3. 底部常驻播放控制条 ====================
-    m_nowPlayingBar = new isac::ui::NowPlayingBar(this);
-    m_nowPlayingBar->setAudioInfoVisibility(
+    // ==================== 3. 顶部常驻播放工作区 ====================
+    m_nowPlayingHeader = new isac::ui::NowPlayingHeader(this);
+    m_nowPlayingHeader->setAudioInfoVisibility(
         settings.value(QStringLiteral("display/audioFormat"), true).toBool(),
         settings.value(QStringLiteral("display/sampleRate"), true).toBool(),
         settings.value(QStringLiteral("display/bitDepth"), true).toBool(),
@@ -488,25 +511,31 @@ MainWindow::MainWindow(QWidget *parent)
         settings.value(QStringLiteral("display/bitrate"), true).toBool());
     restorePlaybackQueue();
 
+    rootLayout->addWidget(m_nowPlayingHeader);
     rootLayout->addLayout(upperLayout, 1);
-    rootLayout->addWidget(m_nowPlayingBar);
 
     // ==================== 信号与槽绑定 ====================
     connect(btnNavLibrary, &QPushButton::clicked, this,
-            [this, btnNavLibrary, btnNavPatchbay, pluginDock, inspectorDock]() {
+            [this, btnNavLibrary, btnNavPlaylists, btnNavPatchbay]() {
         btnNavLibrary->setChecked(true);
+        btnNavPlaylists->setChecked(false);
         btnNavPatchbay->setChecked(false);
         m_stackedWidget->setCurrentIndex(0);
-        pluginDock->hide();
-        inspectorDock->hide();
+    });
+    connect(btnNavPlaylists, &QPushButton::clicked, this,
+            [this, btnNavLibrary, btnNavPlaylists, btnNavPatchbay]() {
+        btnNavLibrary->setChecked(false);
+        btnNavPlaylists->setChecked(true);
+        btnNavPatchbay->setChecked(false);
+        m_playlistPage->refresh();
+        m_stackedWidget->setCurrentIndex(1);
     });
     connect(btnNavPatchbay, &QPushButton::clicked, this,
-            [this, btnNavLibrary, btnNavPatchbay, pluginDock, inspectorDock]() {
+            [this, btnNavLibrary, btnNavPlaylists, btnNavPatchbay]() {
         btnNavLibrary->setChecked(false);
+        btnNavPlaylists->setChecked(false);
         btnNavPatchbay->setChecked(true);
-        m_stackedWidget->setCurrentIndex(1);
-        pluginDock->show();
-        inspectorDock->show();
+        m_stackedWidget->setCurrentIndex(2);
     });
 
 #ifdef ISAC_HAS_MPRIS
@@ -525,7 +554,7 @@ MainWindow::MainWindow(QWidget *parent)
             this, [this]() {
                 if (m_trackLoaded) {
                     m_audioEngine.setPlaying(true);
-                    m_nowPlayingBar->setPlayingState(m_audioEngine.isPlaying());
+                    m_nowPlayingHeader->setPlayingState(m_audioEngine.isPlaying());
                     m_mprisController->setPlaybackState(m_audioEngine.isPlaying());
                     return;
                 }
@@ -533,7 +562,7 @@ MainWindow::MainWindow(QWidget *parent)
                     playQueuedTrack(*current);
                     return;
                 }
-                const auto ids = m_libraryPage->trackIds();
+                const auto ids = currentTrackIds();
                 if (!ids.empty()) {
                     playTrackById(ids.front());
                 }
@@ -541,7 +570,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_mprisController, &isac::platform::MprisController::pauseRequested,
             this, [this]() {
                 m_audioEngine.setPlaying(false);
-                m_nowPlayingBar->setPlayingState(false);
+                m_nowPlayingHeader->setPlayingState(false);
                 m_mprisController->setPlaybackState(false);
             });
     connect(m_mprisController, &isac::platform::MprisController::playPauseRequested,
@@ -551,7 +580,7 @@ MainWindow::MainWindow(QWidget *parent)
                         playQueuedTrack(*current);
                         return;
                     }
-                    const auto ids = m_libraryPage->trackIds();
+                    const auto ids = currentTrackIds();
                     if (!ids.empty()) {
                         playTrackById(ids.front());
                     }
@@ -559,15 +588,15 @@ MainWindow::MainWindow(QWidget *parent)
                 }
                 const bool playing = !m_audioEngine.isPlaying();
                 m_audioEngine.setPlaying(playing);
-                m_nowPlayingBar->setPlayingState(m_audioEngine.isPlaying());
+                m_nowPlayingHeader->setPlayingState(m_audioEngine.isPlaying());
                 m_mprisController->setPlaybackState(m_audioEngine.isPlaying());
             });
     connect(m_mprisController, &isac::platform::MprisController::stopRequested,
             this, [this]() {
                 m_audioEngine.setPlaying(false);
                 m_audioEngine.seekToSeconds(0.0);
-                m_nowPlayingBar->setPlayingState(false);
-                m_nowPlayingBar->updateProgress(
+                m_nowPlayingHeader->setPlayingState(false);
+                m_nowPlayingHeader->updateProgress(
                     0.0, m_audioEngine.totalDurationSeconds());
                 m_mprisController->setPosition(0.0);
                 m_mprisController->setPlaybackState(false);
@@ -619,7 +648,7 @@ MainWindow::MainWindow(QWidget *parent)
             });
     connect(m_mprisController, &isac::platform::MprisController::volumeRequested,
             this, [this](double volume) {
-                m_nowPlayingBar->setVolume(volume);
+                m_nowPlayingHeader->setVolume(volume);
                 if (const auto gain = m_audioEngine.gainNode()) {
                     gain->setParameter("factor", static_cast<float>(volume));
                 }
@@ -631,7 +660,7 @@ MainWindow::MainWindow(QWidget *parent)
                     static_cast<isac::library::PlaybackMode>(mode);
                 m_playbackQueue.setMode(m_playbackMode);
                 persistPlaybackQueue(true);
-                m_nowPlayingBar->setPlaybackMode(mode);
+                m_nowPlayingHeader->setPlaybackMode(mode);
                 m_mprisController->setPlaybackMode(m_playbackMode);
             });
 #endif
@@ -667,14 +696,14 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_libraryPage, &isac::ui::AppleLibraryPage::trackDoubleClicked,
             this, &MainWindow::playTrackById);
 
-    // 底部控制栏事件
-    connect(m_nowPlayingBar, &isac::ui::NowPlayingBar::playPauseClicked, this, [this]() {
+    // 常驻播放工作区事件
+    connect(m_nowPlayingHeader, &isac::ui::NowPlayingHeader::playPauseClicked, this, [this]() {
         if (!m_trackLoaded) {
             if (const auto current = m_playbackQueue.currentTrackId()) {
                 playQueuedTrack(*current);
                 return;
             }
-            const auto ids = m_libraryPage->trackIds();
+            const auto ids = currentTrackIds();
             if (!ids.empty()) {
                 playTrackById(ids.front());
             }
@@ -682,24 +711,24 @@ MainWindow::MainWindow(QWidget *parent)
         }
         bool nextState = !m_audioEngine.isPlaying();
         m_audioEngine.setPlaying(nextState);
-        m_nowPlayingBar->setPlayingState(m_audioEngine.isPlaying());
+        m_nowPlayingHeader->setPlayingState(m_audioEngine.isPlaying());
 #ifdef ISAC_HAS_MPRIS
         m_mprisController->setPlaybackState(m_audioEngine.isPlaying());
 #endif
     });
-    connect(m_nowPlayingBar, &isac::ui::NowPlayingBar::prevClicked, this, [this]() {
+    connect(m_nowPlayingHeader, &isac::ui::NowPlayingHeader::prevClicked, this, [this]() {
         const auto previous = m_playbackQueue.previous();
         if (previous) {
             playQueuedTrack(*previous);
         }
     });
-    connect(m_nowPlayingBar, &isac::ui::NowPlayingBar::nextClicked, this, [this]() {
+    connect(m_nowPlayingHeader, &isac::ui::NowPlayingHeader::nextClicked, this, [this]() {
         const auto next = m_playbackQueue.next();
         if (next) {
             playQueuedTrack(*next);
         }
     });
-    connect(m_nowPlayingBar, &isac::ui::NowPlayingBar::playbackModeChanged,
+    connect(m_nowPlayingHeader, &isac::ui::NowPlayingHeader::playbackModeChanged,
             this, [this](int mode) {
                 m_playbackMode = static_cast<isac::library::PlaybackMode>(mode);
                 m_playbackQueue.setMode(m_playbackMode);
@@ -708,13 +737,13 @@ MainWindow::MainWindow(QWidget *parent)
                 m_mprisController->setPlaybackMode(m_playbackMode);
 #endif
             });
-    connect(m_nowPlayingBar, &isac::ui::NowPlayingBar::seekRequested, this, [this](double sec) {
+    connect(m_nowPlayingHeader, &isac::ui::NowPlayingHeader::seekRequested, this, [this](double sec) {
         m_audioEngine.seekToSeconds(sec);
 #ifdef ISAC_HAS_MPRIS
         m_mprisController->notifySeeked(m_audioEngine.currentPositionSeconds());
 #endif
     });
-    connect(m_nowPlayingBar, &isac::ui::NowPlayingBar::volumeChanged, this, [this](float factor) {
+    connect(m_nowPlayingHeader, &isac::ui::NowPlayingHeader::volumeChanged, this, [this](float factor) {
         if (const auto gain = m_audioEngine.gainNode()) {
             gain->setParameter("factor", factor);
         }
@@ -811,7 +840,7 @@ MainWindow::MainWindow(QWidget *parent)
         if (m_audioEngine.isPlaying()) {
             const double position = m_audioEngine.currentPositionSeconds();
             const double duration = m_audioEngine.totalDurationSeconds();
-            m_nowPlayingBar->updateProgress(
+            m_nowPlayingHeader->updateProgress(
                 position, duration);
 #ifdef ISAC_HAS_MPRIS
             m_mprisController->setPosition(position);
@@ -822,7 +851,7 @@ MainWindow::MainWindow(QWidget *parent)
                 if (m_playbackMode == isac::library::PlaybackMode::RepeatOne) {
                     m_audioEngine.seekToSeconds(0.0);
                     m_currentTrackEndHandled = false;
-                    m_nowPlayingBar->updateProgress(
+                    m_nowPlayingHeader->updateProgress(
                         0.0, m_audioEngine.totalDurationSeconds());
                 } else {
                     const bool startedNextTrack =
@@ -836,11 +865,11 @@ MainWindow::MainWindow(QWidget *parent)
                             m_audioEngine.seekToSeconds(0.0);
                         }
                         m_currentTrackEndHandled = false;
-                        m_nowPlayingBar->setPlayingState(false);
+                        m_nowPlayingHeader->setPlayingState(false);
 #ifdef ISAC_HAS_MPRIS
                         m_mprisController->setPlaybackState(false);
 #endif
-                        m_nowPlayingBar->updateProgress(
+                        m_nowPlayingHeader->updateProgress(
                             0.0, m_audioEngine.totalDurationSeconds());
                         persistPlaybackQueue(false);
                     }
@@ -849,6 +878,26 @@ MainWindow::MainWindow(QWidget *parent)
         }
     });
     m_progressTimer->start(200);
+
+    m_visualizationTimer = new QTimer(this);
+    m_visualizationTimer->setTimerType(Qt::PreciseTimer);
+    connect(m_visualizationTimer, &QTimer::timeout, this, [this]() {
+        const auto preFrames = m_audioEngine.readPreDspSamples(
+            m_preVisualizationLeft.data(), m_preVisualizationRight.data(),
+            m_preVisualizationLeft.size());
+        const auto postFrames = m_audioEngine.readPostDspSamples(
+            m_postVisualizationLeft.data(), m_postVisualizationRight.data(),
+            m_postVisualizationLeft.size());
+        const auto frames = std::min(preFrames, postFrames);
+        if (frames == 0) {
+            return;
+        }
+        m_nowPlayingHeader->updateVisualization(
+            m_preVisualizationLeft.data(), m_preVisualizationRight.data(),
+            m_postVisualizationLeft.data(), m_postVisualizationRight.data(),
+            frames, m_audioEngine.outputSampleRate());
+    });
+    m_visualizationTimer->start(33);
 }
 
 void MainWindow::playTrackById(qint64 trackId) {
@@ -863,9 +912,18 @@ void MainWindow::playTrackById(qint64 trackId) {
 }
 
 void MainWindow::rebuildPlaybackQueue(qint64 currentTrackId) {
-    std::vector<qint64> trackIds = m_libraryPage->trackIds();
+    std::vector<qint64> trackIds = currentTrackIds();
     m_playbackQueue.reset(std::move(trackIds), currentTrackId, m_playbackMode);
     m_playbackQueueNeedsSave = true;
+}
+
+std::vector<qint64> MainWindow::currentTrackIds() const {
+    if (m_stackedWidget && m_stackedWidget->currentIndex() == 1 &&
+        m_playlistPage) {
+        return m_playlistPage->trackIds();
+    }
+    return m_libraryPage ? m_libraryPage->trackIds()
+                         : std::vector<qint64>{};
 }
 
 bool MainWindow::playQueuedTrack(qint64 trackId) {
@@ -883,9 +941,8 @@ bool MainWindow::playQueuedTrack(qint64 trackId) {
         m_currentTrackEndHandled = false;
         m_currentTrackId = trackId;
         m_trackLoaded = true;
-        m_libraryPage->updateHeroBanner(displayTrack);
-        m_nowPlayingBar->setTrackInfo(displayTrack);
-        m_nowPlayingBar->setPlayingState(true);
+        m_nowPlayingHeader->setTrackInfo(displayTrack);
+        m_nowPlayingHeader->setPlayingState(true);
 #ifdef ISAC_HAS_MPRIS
         m_mprisController->setTrack(*track);
         m_mprisController->setPosition(0.0);
@@ -897,7 +954,7 @@ bool MainWindow::playQueuedTrack(qint64 trackId) {
     m_lastPlaybackError = QString::fromStdString(playbackError);
     m_trackLoaded = false;
     m_currentTrackEndHandled = false;
-    m_nowPlayingBar->setPlayingState(false);
+    m_nowPlayingHeader->setPlayingState(false);
 #ifdef ISAC_HAS_MPRIS
     m_mprisController->setPlaybackState(false);
 #endif
@@ -931,13 +988,12 @@ void MainWindow::restorePlaybackQueue() {
         saved->trackIds, saved->position, saved->mode);
     m_currentTrackId =
         m_playbackQueue.currentTrackId().value_or(0);
-    m_nowPlayingBar->setPlaybackMode(static_cast<int>(m_playbackMode));
+    m_nowPlayingHeader->setPlaybackMode(static_cast<int>(m_playbackMode));
     if (m_currentTrackId > 0) {
         if (const auto track = m_libraryRepository.trackById(m_currentTrackId)) {
             auto displayTrack = *track;
             isac::library::MetadataReader::readAudioProperties(displayTrack);
-            m_libraryPage->updateHeroBanner(displayTrack);
-            m_nowPlayingBar->setTrackInfo(displayTrack);
+            m_nowPlayingHeader->setTrackInfo(displayTrack);
         } else {
             m_currentTrackId = 0;
         }

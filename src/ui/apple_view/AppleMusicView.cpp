@@ -3,32 +3,18 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QAbstractItemView>
+#include <QDialogButtonBox>
 #include <QInputDialog>
 #include <QItemSelectionModel>
 #include <QMessageBox>
-#include <QPainter>
-#include <QPainterPath>
 #include <QSignalBlocker>
 #include <QDataStream>
 #include <QFontMetrics>
+#include <QGridLayout>
 #include <algorithm>
 #include <utility>
 
 namespace isac::ui {
-
-// Helper：将任意 QPixmap 裁剪为精致圆角图片
-static QPixmap makeRoundedPixmap(const QPixmap& src, int size, int radius) {
-    QPixmap scaled = src.scaled(size, size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-    QPixmap dest(size, size);
-    dest.fill(Qt::transparent);
-    QPainter p(&dest);
-    p.setRenderHint(QPainter::Antialiasing);
-    QPainterPath path;
-    path.addRoundedRect(0, 0, size, size, radius, radius);
-    p.setClipPath(path);
-    p.drawPixmap(0, 0, scaled);
-    return dest;
-}
 
 TrackTableModel::TrackTableModel(library::LibraryRepository* repository,
                                  const QIcon& defaultIcon,
@@ -186,11 +172,12 @@ void TrackTableModel::refresh() {
     m_trackCount = !m_repository ? 0
         : std::max<qint64>(0, m_playlistId
               ? m_repository->playlistTrackCount(*m_playlistId, m_searchText)
-              : !m_artistFilter.isEmpty()
-                  ? m_albumFilter.isEmpty()
-                      ? m_repository->artistTrackCount(m_artistFilter, m_searchText)
-                      : m_repository->albumTrackCount(
-                            m_artistFilter, m_albumFilter, m_searchText)
+              : !m_albumFilter.isEmpty()
+                  ? m_repository->albumTrackCount(
+                        m_albumFilter, m_searchText)
+                  : !m_artistFilter.isEmpty()
+                      ? m_repository->artistTrackCount(
+                            m_artistFilter, m_searchText)
                   : m_repository->trackCount(m_searchText));
     endResetModel();
 }
@@ -244,14 +231,14 @@ bool TrackTableModel::loadPage(int row) const {
     if (m_playlistId) {
         m_page = m_repository->queryPlaylistTracks(
             *m_playlistId, m_searchText, kPageSize, pageStart);
+    } else if (!m_albumFilter.isEmpty()) {
+        m_page = m_repository->queryAlbumTracks(
+            m_albumFilter, m_searchText, m_sort, m_ascending,
+            kPageSize, pageStart);
     } else if (!m_artistFilter.isEmpty()) {
-        m_page = m_albumFilter.isEmpty()
-            ? m_repository->queryArtistTracks(
-                  m_artistFilter, m_searchText, m_sort, m_ascending,
-                  kPageSize, pageStart)
-            : m_repository->queryAlbumTracks(
-                  m_artistFilter, m_albumFilter, m_searchText, m_sort,
-                  m_ascending, kPageSize, pageStart);
+        m_page = m_repository->queryArtistTracks(
+            m_artistFilter, m_searchText, m_sort, m_ascending,
+            kPageSize, pageStart);
     } else {
         m_page = m_repository->queryTracks(
             m_searchText, m_sort, m_ascending, kPageSize, pageStart);
@@ -268,7 +255,8 @@ std::optional<library::TrackInfo> TrackTableModel::trackAtRow(int row) const {
 }
 
 int TrackTableModel::rowForTrackId(qint64 id) const {
-    if (!m_repository || id <= 0 || !m_artistFilter.isEmpty()) {
+    if (!m_repository || id <= 0 ||
+        !m_artistFilter.isEmpty() || !m_albumFilter.isEmpty()) {
         return -1;
     }
     const qint64 row = m_repository->rowForTrackId(
@@ -285,14 +273,14 @@ std::vector<qint64> TrackTableModel::trackIds() const {
         if (m_playlistId) {
             page = m_repository->playlistTrackIds(
                 *m_playlistId, m_searchText, pageSize, static_cast<int>(offset));
+        } else if (!m_albumFilter.isEmpty()) {
+            page = m_repository->queryAlbumTrackIds(
+                m_albumFilter, m_searchText, m_sort, m_ascending,
+                pageSize, static_cast<int>(offset));
         } else if (!m_artistFilter.isEmpty()) {
-            page = m_albumFilter.isEmpty()
-                ? m_repository->queryArtistTrackIds(
-                      m_artistFilter, m_searchText, m_sort, m_ascending,
-                      pageSize, static_cast<int>(offset))
-                : m_repository->queryAlbumTrackIds(
-                      m_artistFilter, m_albumFilter, m_searchText, m_sort,
-                      m_ascending, pageSize, static_cast<int>(offset));
+            page = m_repository->queryArtistTrackIds(
+                m_artistFilter, m_searchText, m_sort, m_ascending,
+                pageSize, static_cast<int>(offset));
         } else {
             page = m_repository->queryTrackIds(
                 m_sort, m_ascending, pageSize, static_cast<int>(offset),
@@ -490,73 +478,7 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
     libraryControls->addWidget(m_sortDirection);
     libraryControls->addWidget(m_resultCount);
 
-    auto* playlistControls = new QHBoxLayout();
-    m_playlistSelector = new QComboBox(this);
-    m_playlistSelector->setMinimumWidth(180);
-    m_playlistSelector->setStyleSheet(
-        "QComboBox { background: #1E2028; color: #EAEAEA; border: 1px solid #343846; "
-        "border-radius: 5px; padding: 6px 8px; }");
-    m_createPlaylistButton = new QPushButton("新建歌单", this);
-    m_renamePlaylistButton = new QPushButton("重命名", this);
-    m_deletePlaylistButton = new QPushButton("删除歌单", this);
-    m_addToPlaylistButton = new QPushButton("添加所选到歌单", this);
-    m_removeFromPlaylistButton = new QPushButton("从歌单移除", this);
-    const QString playlistButtonStyle =
-        "QPushButton { background: #252834; color: #E0E4F0; border: 1px solid #343846; "
-        "border-radius: 5px; padding: 7px 10px; } "
-        "QPushButton:hover { background: #343A4B; } "
-        "QPushButton:disabled { color: #666B78; }";
-    for (QPushButton* button : {
-             m_createPlaylistButton, m_renamePlaylistButton,
-             m_deletePlaylistButton, m_addToPlaylistButton,
-             m_removeFromPlaylistButton}) {
-        button->setStyleSheet(playlistButtonStyle);
-    }
-    playlistControls->addWidget(m_playlistSelector);
-    playlistControls->addWidget(m_createPlaylistButton);
-    playlistControls->addWidget(m_renamePlaylistButton);
-    playlistControls->addWidget(m_deletePlaylistButton);
-    playlistControls->addSpacing(12);
-    playlistControls->addWidget(m_addToPlaylistButton);
-    playlistControls->addWidget(m_removeFromPlaylistButton);
-    playlistControls->addStretch();
-
-    // 2. 顶部正在播放巨幅卡片 (Hero Banner)
-    auto* heroCard = new QWidget(this);
-    heroCard->setStyleSheet(R"(
-        QWidget {
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2A2438, stop:1 #1A1C24);
-            border-radius: 14px;
-        }
-    )");
-    auto* heroLayout = new QHBoxLayout(heroCard);
-    heroLayout->setContentsMargins(20, 18, 20, 18);
-    heroLayout->setSpacing(22);
-
-    m_heroCover = new QLabel(this);
-    m_heroCover->setFixedSize(110, 110);
-    const QPixmap defaultHeroCover = library::MetadataReader::generateDefaultCover("ISAC", 220);
-    m_heroCover->setPixmap(makeRoundedPixmap(
-        defaultHeroCover, 110, 12));
-
-    auto* heroTextLayout = new QVBoxLayout();
-    auto* badge = new QLabel("NOW PLAYING WORKSTATION", this);
-    badge->setStyleSheet("color: #FA2D48; font-size: 11px; font-weight: bold; background: transparent;");
-    m_heroTitle = new QLabel("欢迎使用 ISACPlayer", this);
-    m_heroTitle->setStyleSheet("color: white; font-size: 22px; font-weight: bold; background: transparent;");
-    m_heroArtist = new QLabel("点击右上角导入 MP3 / FLAC 曲库，双击歌曲开始播放", this);
-    m_heroArtist->setStyleSheet("color: #A0A5B5; font-size: 14px; background: transparent;");
-
-    heroTextLayout->addStretch();
-    heroTextLayout->addWidget(badge);
-    heroTextLayout->addWidget(m_heroTitle);
-    heroTextLayout->addWidget(m_heroArtist);
-    heroTextLayout->addStretch();
-
-    heroLayout->addWidget(m_heroCover);
-    heroLayout->addLayout(heroTextLayout, 1);
-
-    // 3. 歌曲列表表格 (Apple Music 极简无竖线风格)
+    // 2. 歌曲列表表格 (Apple Music 极简无竖线风格)
     const QPixmap defaultRowCover = library::MetadataReader::generateDefaultCover("ISAC", 80);
     m_table = new QTableView(this);
     m_tableModel = new TrackTableModel(repository, QIcon(defaultRowCover), m_table);
@@ -614,18 +536,13 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
     m_groupBackButton->hide();
 
     mainLayout->addLayout(topBar);
-    mainLayout->addWidget(heroCard);
     mainLayout->addLayout(libraryControls);
-    mainLayout->addLayout(playlistControls);
     auto* viewBar = new QHBoxLayout();
     viewBar->addWidget(m_libraryTabs);
     viewBar->addWidget(m_groupBackButton);
     viewBar->addStretch();
     mainLayout->addLayout(viewBar);
     mainLayout->addWidget(m_table, 1);
-
-    refreshPlaylists();
-    updatePlaylistControls();
 
     m_searchTimer = new QTimer(this);
     m_searchTimer->setSingleShot(true);
@@ -652,132 +569,6 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
             this, [updateSort](int) { updateSort(); });
     connect(m_sortDirection, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [updateSort](int) { updateSort(); });
-    connect(m_playlistSelector, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int index) {
-                const qint64 playlistId =
-                    m_playlistSelector->itemData(index).toLongLong();
-                if (playlistId > 0 && m_showingGroupTracks) {
-                    m_libraryTabs->setCurrentIndex(0);
-                }
-                m_tableModel->setPlaylistId(
-                    playlistId > 0 ? std::optional<qint64>(playlistId) : std::nullopt);
-                const bool allTracks = playlistId == 0;
-                m_sortSelector->setEnabled(allTracks);
-                m_sortDirection->setEnabled(allTracks);
-                updatePlaylistControls();
-                updateResultCount();
-            });
-    connect(m_createPlaylistButton, &QPushButton::clicked, this, [this]() {
-        bool accepted = false;
-        const QString name = QInputDialog::getText(
-            this, "新建歌单", "歌单名称", QLineEdit::Normal, {}, &accepted);
-        if (!accepted) {
-            return;
-        }
-        const auto id = m_repository->createPlaylist(name);
-        if (!id) {
-            QMessageBox::warning(this, "无法创建歌单", m_repository->lastError());
-            return;
-        }
-        refreshPlaylists(*id);
-    });
-    connect(m_renamePlaylistButton, &QPushButton::clicked, this, [this]() {
-        const auto selectedId = selectedPlaylistId();
-        if (!selectedId) {
-            return;
-        }
-        const QString currentName =
-            m_playlistSelector->currentData(Qt::UserRole + 1).toString();
-        bool accepted = false;
-        const QString name = QInputDialog::getText(
-            this, "重命名歌单", "歌单名称", QLineEdit::Normal,
-            currentName, &accepted);
-        if (!accepted) {
-            return;
-        }
-        if (!m_repository->renamePlaylist(*selectedId, name)) {
-            QMessageBox::warning(this, "无法重命名歌单", m_repository->lastError());
-            return;
-        }
-        refreshPlaylists(*selectedId);
-    });
-    connect(m_deletePlaylistButton, &QPushButton::clicked, this, [this]() {
-        const auto selectedId = selectedPlaylistId();
-        if (!selectedId) {
-            return;
-        }
-        if (QMessageBox::question(
-                this, "删除歌单", "删除歌单？曲库中的音乐文件不会被删除。",
-                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) {
-            return;
-        }
-        if (!m_repository->deletePlaylist(*selectedId)) {
-            QMessageBox::warning(this, "无法删除歌单", m_repository->lastError());
-            return;
-        }
-        refreshPlaylists();
-    });
-    connect(m_addToPlaylistButton, &QPushButton::clicked, this, [this]() {
-        const auto rows = m_table->selectionModel()->selectedRows();
-        if (rows.empty()) {
-            return;
-        }
-        const auto playlists = m_repository->playlists();
-        if (playlists.empty()) {
-            QMessageBox::information(this, "没有歌单", "请先创建歌单。");
-            return;
-        }
-        QStringList names;
-        for (const auto& playlist : playlists) {
-            names.push_back(playlist.name);
-        }
-        bool accepted = false;
-        const QString name = QInputDialog::getItem(
-            this, "添加到歌单", "目标歌单", names, 0, false, &accepted);
-        if (!accepted) {
-            return;
-        }
-        const auto playlist = std::find_if(
-            playlists.begin(), playlists.end(),
-            [&name](const library::PlaylistInfo& item) {
-                return item.name == name;
-            });
-        if (playlist == playlists.end()) {
-            return;
-        }
-        int added = 0;
-        for (const QModelIndex& row : rows) {
-            const auto track = m_tableModel->trackAtRow(row.row());
-            if (track && m_repository->addTrackToPlaylist(playlist->id, track->id)) {
-                ++added;
-            }
-        }
-        refreshPlaylists(selectedPlaylistId());
-        if (added == 0) {
-            m_scanStatus->setText("所选曲目已在歌单中或添加失败");
-        } else {
-            m_scanStatus->setText(QString("已添加 %1 首到“%2”").arg(added).arg(name));
-        }
-    });
-    connect(m_removeFromPlaylistButton, &QPushButton::clicked, this, [this]() {
-        const auto playlistId = selectedPlaylistId();
-        if (!playlistId) {
-            return;
-        }
-        const auto rows = m_table->selectionModel()->selectedRows();
-        int removed = 0;
-        for (const QModelIndex& row : rows) {
-            const auto track = m_tableModel->trackAtRow(row.row());
-            if (track &&
-                m_repository->removeTrackFromPlaylist(*playlistId, track->id)) {
-                ++removed;
-            }
-        }
-        refreshPlaylists(*playlistId);
-        m_scanStatus->setText(QString("已从歌单移除 %1 首").arg(removed));
-    });
-    connect(m_table->selectionModel(), &QItemSelectionModel::selectionChanged,
-            this, [this]() { updatePlaylistControls(); });
     connect(m_libraryTabs, &QTabBar::currentChanged,
             this, [this](int index) { showLibraryView(index); });
     connect(m_groupBackButton, &QPushButton::clicked, this, [this]() {
@@ -809,12 +600,10 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
 }
 
 void AppleLibraryPage::refreshTracks() {
-    refreshPlaylists(selectedPlaylistId());
     m_tableModel->refresh();
     m_artistModel->refresh();
     m_albumModel->refresh();
     updateResultCount();
-    updatePlaylistControls();
 }
 
 void AppleLibraryPage::setScanStatus(const QString& status) {
@@ -833,69 +622,8 @@ std::vector<qint64> AppleLibraryPage::trackIds() const {
     return m_tableModel->trackIds();
 }
 
-std::optional<qint64> AppleLibraryPage::selectedPlaylistId() const {
-    if (!m_playlistSelector) {
-        return std::nullopt;
-    }
-    const qint64 id = m_playlistSelector->currentData().toLongLong();
-    return id > 0 ? std::optional<qint64>(id) : std::nullopt;
-}
-
 int AppleLibraryPage::rowForTrackId(qint64 id) const {
     return m_tableModel->rowForTrackId(id);
-}
-
-void AppleLibraryPage::refreshPlaylists(std::optional<qint64> preferredPlaylist) {
-    const qint64 previousId = preferredPlaylist.value_or(
-        selectedPlaylistId().value_or(0));
-    const QSignalBlocker blocker(m_playlistSelector);
-    m_playlistSelector->clear();
-    m_playlistSelector->addItem("全部曲目", 0);
-    int selectedIndex = 0;
-    for (const auto& playlist : m_repository->playlists()) {
-        m_playlistSelector->addItem(
-            QString("%1 (%2)").arg(playlist.name).arg(playlist.trackCount),
-            playlist.id);
-        m_playlistSelector->setItemData(
-            m_playlistSelector->count() - 1, playlist.name, Qt::UserRole + 1);
-        if (playlist.id == previousId) {
-            selectedIndex = m_playlistSelector->count() - 1;
-        }
-    }
-    m_playlistSelector->setCurrentIndex(selectedIndex);
-    const qint64 playlistId =
-        m_playlistSelector->currentData().toLongLong();
-    m_tableModel->setPlaylistId(
-        playlistId > 0 ? std::optional<qint64>(playlistId) : std::nullopt);
-    const bool allTracks = playlistId == 0;
-    m_sortSelector->setEnabled(allTracks);
-    m_sortDirection->setEnabled(allTracks);
-    m_resultCount->setText(QString("%1 首曲目").arg(m_tableModel->trackCount()));
-    updatePlaylistControls();
-}
-
-void AppleLibraryPage::updatePlaylistControls() {
-    if (!m_playlistSelector || !m_table) {
-        return;
-    }
-    const bool hasPlaylist = selectedPlaylistId().has_value();
-    const bool hasSelection =
-        m_table->selectionModel() &&
-        !m_table->selectionModel()->selectedRows().isEmpty();
-    const bool hasAnyPlaylist = !m_repository->playlists().empty();
-    const bool showControls = m_libraryView == 0 && !m_showingGroupTracks;
-    const QList<QWidget*> playlistControls{
-        m_playlistSelector, m_createPlaylistButton, m_renamePlaylistButton,
-        m_deletePlaylistButton, m_addToPlaylistButton,
-        m_removeFromPlaylistButton
-    };
-    for (QWidget* control : playlistControls) {
-        control->setVisible(showControls);
-    }
-    m_renamePlaylistButton->setEnabled(hasPlaylist);
-    m_deletePlaylistButton->setEnabled(hasPlaylist);
-    m_addToPlaylistButton->setEnabled(!hasPlaylist && hasSelection && hasAnyPlaylist);
-    m_removeFromPlaylistButton->setEnabled(hasPlaylist && hasSelection);
 }
 
 void AppleLibraryPage::showLibraryView(int view) {
@@ -904,40 +632,24 @@ void AppleLibraryPage::showLibraryView(int view) {
     m_groupBackButton->hide();
     if (m_libraryView == 0) {
         m_tableModel->setCategoryFilter({}, {});
-        const qint64 playlistId = m_playlistSelector->currentData().toLongLong();
-        m_tableModel->setPlaylistId(
-            playlistId > 0 ? std::optional<qint64>(playlistId) : std::nullopt);
         m_table->setModel(m_tableModel);
     } else {
-        {
-            const QSignalBlocker blocker(m_playlistSelector);
-            m_playlistSelector->setCurrentIndex(0);
-        }
         m_tableModel->setCategoryFilter({}, {});
         m_tableModel->setPlaylistId(std::nullopt);
         m_table->setModel(m_libraryView == 1 ? m_artistModel : m_albumModel);
     }
-    connect(m_table->selectionModel(),
-            &QItemSelectionModel::selectionChanged,
-            this, [this]() { updatePlaylistControls(); });
     m_sortSelector->setVisible(m_libraryView == 0);
-    m_sortSelector->setEnabled(m_libraryView == 0 &&
-                               !m_tableModel->playlistId().has_value());
-    m_sortDirection->setEnabled(
-        m_libraryView != 0 || !m_tableModel->playlistId().has_value());
-    updatePlaylistControls();
+    m_sortSelector->setEnabled(m_libraryView == 0);
+    m_sortDirection->setEnabled(true);
     updateResultCount();
 }
 
 void AppleLibraryPage::showGroupTracks(const library::LibraryGroup& group) {
     m_showingGroupTracks = true;
-    const QString artist = m_libraryView == 1 ? group.name : group.artist;
+    const QString artist = m_libraryView == 1 ? group.name : QString{};
     const QString album = m_libraryView == 2 ? group.name : QString{};
     m_tableModel->setCategoryFilter(artist, album);
     m_table->setModel(m_tableModel);
-    connect(m_table->selectionModel(),
-            &QItemSelectionModel::selectionChanged,
-            this, [this]() { updatePlaylistControls(); });
     m_groupBackButton->setText(
         QStringLiteral("返回%1").arg(m_libraryView == 1
             ? QStringLiteral("艺人") : QStringLiteral("专辑")));
@@ -945,7 +657,6 @@ void AppleLibraryPage::showGroupTracks(const library::LibraryGroup& group) {
     m_sortSelector->show();
     m_sortSelector->setEnabled(true);
     m_sortDirection->setEnabled(true);
-    updatePlaylistControls();
     updateResultCount();
 }
 
@@ -962,159 +673,470 @@ void AppleLibraryPage::updateResultCount() {
     }
 }
 
-void AppleLibraryPage::updateHeroBanner(const library::TrackInfo& track) {
-    m_heroCover->setPixmap(makeRoundedPixmap(
-        library::MetadataReader::loadCoverArt(track, 220), 110, 12));
-    m_heroTitle->setText(track.title);
-    m_heroArtist->setText(track.artist + " — " + track.album);
+// ==================== PlaylistPage ====================
+PlaylistPage::PlaylistPage(library::LibraryRepository* repository,
+                           QWidget* parent)
+    : QWidget(parent)
+    , m_repository(repository)
+{
+    auto* root = new QVBoxLayout(this);
+    root->setContentsMargins(32, 24, 32, 16);
+    root->setSpacing(14);
+
+    auto* title = new QLabel(QStringLiteral("歌单管理"), this);
+    title->setStyleSheet(
+        "font-size: 26px; font-weight: bold; color: #FFFFFF;");
+    root->addWidget(title);
+
+    auto* body = new QHBoxLayout();
+    body->setSpacing(14);
+
+    auto* playlistPanel = new QWidget(this);
+    playlistPanel->setFixedWidth(220);
+    playlistPanel->setStyleSheet(
+        "QWidget { background: #191B22; }"
+        "QListWidget { background: #14161C; color: #D0D4E0; "
+        "border: 1px solid #2B2F3C; padding: 4px; }"
+        "QListWidget::item { padding: 10px 8px; }"
+        "QListWidget::item:selected { background: #343A4B; color: white; }");
+    auto* playlistLayout = new QVBoxLayout(playlistPanel);
+    playlistLayout->setContentsMargins(10, 10, 10, 10);
+    playlistLayout->setSpacing(8);
+
+    m_playlistList = new QListWidget(playlistPanel);
+    auto* createButton = new QPushButton(QStringLiteral("新建歌单"), playlistPanel);
+    m_renameButton = new QPushButton(QStringLiteral("重命名"), playlistPanel);
+    m_deleteButton = new QPushButton(QStringLiteral("删除歌单"), playlistPanel);
+    for (auto* button : {createButton, m_renameButton, m_deleteButton}) {
+        button->setStyleSheet(
+            "QPushButton { background: #252834; color: #E0E4F0; "
+            "border: 1px solid #343846; border-radius: 5px; padding: 7px; }"
+            "QPushButton:hover { background: #343A4B; }"
+            "QPushButton:disabled { color: #666B78; }");
+    }
+    playlistLayout->addWidget(m_playlistList, 1);
+    playlistLayout->addWidget(createButton);
+    playlistLayout->addWidget(m_renameButton);
+    playlistLayout->addWidget(m_deleteButton);
+    body->addWidget(playlistPanel);
+
+    auto* tracksPanel = new QWidget(this);
+    auto* tracksLayout = new QVBoxLayout(tracksPanel);
+    tracksLayout->setContentsMargins(0, 0, 0, 0);
+    tracksLayout->setSpacing(8);
+    auto* toolbar = new QHBoxLayout();
+    m_searchInput = new QLineEdit(tracksPanel);
+    m_searchInput->setPlaceholderText(QStringLiteral("筛选当前歌单"));
+    m_searchInput->setClearButtonEnabled(true);
+    m_searchInput->setStyleSheet(
+        "QLineEdit { background: #1E2028; color: #EAEAEA; "
+        "border: 1px solid #343846; border-radius: 5px; padding: 7px 9px; }");
+    m_addTracksButton = new QPushButton(QStringLiteral("添加曲目"), tracksPanel);
+    m_removeTracksButton = new QPushButton(QStringLiteral("从歌单移除"), tracksPanel);
+    for (auto* button : {m_addTracksButton, m_removeTracksButton}) {
+        button->setStyleSheet(
+            "QPushButton { background: #252834; color: #E0E4F0; "
+            "border: 1px solid #343846; border-radius: 5px; padding: 7px 10px; }"
+            "QPushButton:hover { background: #343A4B; }"
+            "QPushButton:disabled { color: #666B78; }");
+    }
+    toolbar->addWidget(m_searchInput, 1);
+    toolbar->addWidget(m_addTracksButton);
+    toolbar->addWidget(m_removeTracksButton);
+    tracksLayout->addLayout(toolbar);
+
+    const QPixmap defaultCover =
+        library::MetadataReader::generateDefaultCover("ISAC", 80);
+    m_table = new QTableView(tracksPanel);
+    m_tableModel = new TrackTableModel(
+        m_repository, QIcon(defaultCover), m_table);
+    m_table->setModel(m_tableModel);
+    m_table->verticalHeader()->setVisible(false);
+    m_table->verticalHeader()->setDefaultSectionSize(52);
+    m_table->setShowGrid(false);
+    m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_table->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_table->setDragEnabled(true);
+    m_table->setAcceptDrops(true);
+    m_table->setDropIndicatorShown(true);
+    m_table->setDragDropMode(QAbstractItemView::InternalMove);
+    m_table->setDefaultDropAction(Qt::MoveAction);
+    m_table->setIconSize(QSize(40, 40));
+    m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Interactive);
+    m_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Interactive);
+    m_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Fixed);
+    m_table->setColumnWidth(1, 180);
+    m_table->setColumnWidth(2, 200);
+    m_table->setColumnWidth(3, 75);
+    m_table->setStyleSheet(
+        "QTableView { background: transparent; border: none; color: #EAEAEA; "
+        "font-size: 13px; alternate-background-color: #1A1C22; }"
+        "QHeaderView::section { background: transparent; color: #8A8F9E; "
+        "font-weight: bold; border: none; border-bottom: 1px solid #2A2E39; "
+        "padding: 6px; }"
+        "QTableView::item { padding: 6px; border-bottom: 1px solid #1E2129; }"
+        "QTableView::item:selected { background: #FA2D48; color: white; }");
+    tracksLayout->addWidget(m_table, 1);
+    body->addWidget(tracksPanel, 1);
+    root->addLayout(body, 1);
+
+    m_statusLabel = new QLabel(this);
+    m_statusLabel->setStyleSheet("color: #9499A6; font-size: 12px;");
+    root->addWidget(m_statusLabel);
+
+    connect(createButton, &QPushButton::clicked, this, [this]() {
+        bool accepted = false;
+        const QString name = QInputDialog::getText(
+            this, QStringLiteral("新建歌单"), QStringLiteral("歌单名称"),
+            QLineEdit::Normal, {}, &accepted);
+        if (!accepted) {
+            return;
+        }
+        const auto id = m_repository->createPlaylist(name);
+        if (!id) {
+            m_statusLabel->setText(m_repository->lastError());
+            return;
+        }
+        refreshPlaylistList(*id);
+    });
+    connect(m_renameButton, &QPushButton::clicked, this, [this]() {
+        const auto id = selectedPlaylistId();
+        if (!id) {
+            return;
+        }
+        const QString current =
+            m_playlistList->currentItem()->data(Qt::UserRole + 1).toString();
+        bool accepted = false;
+        const QString name = QInputDialog::getText(
+            this, QStringLiteral("重命名歌单"), QStringLiteral("歌单名称"),
+            QLineEdit::Normal, current, &accepted);
+        if (accepted && m_repository->renamePlaylist(*id, name)) {
+            refreshPlaylistList(*id);
+        }
+    });
+    connect(m_deleteButton, &QPushButton::clicked, this, [this]() {
+        const auto id = selectedPlaylistId();
+        if (!id || QMessageBox::question(
+                this, QStringLiteral("删除歌单"),
+                QStringLiteral("删除歌单？曲库中的音乐文件不会被删除。"),
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::No) != QMessageBox::Yes) {
+            return;
+        }
+        if (m_repository->deletePlaylist(*id)) {
+            refreshPlaylistList();
+        }
+    });
+    connect(m_playlistList, &QListWidget::currentRowChanged,
+            this, [this](int) {
+                const auto id = selectedPlaylistId();
+                m_tableModel->setPlaylistId(id);
+                m_searchInput->clear();
+                updateControls();
+            });
+    connect(m_searchInput, &QLineEdit::textChanged, this,
+            [this](const QString& text) {
+                m_tableModel->setSearchText(text);
+                updateControls();
+            });
+    connect(m_table->selectionModel(), &QItemSelectionModel::selectionChanged,
+            this, [this]() { updateControls(); });
+    connect(m_addTracksButton, &QPushButton::clicked, this,
+            [this]() { openAddTracksDialog(); });
+    connect(m_removeTracksButton, &QPushButton::clicked, this, [this]() {
+        const auto id = selectedPlaylistId();
+        if (!id) {
+            return;
+        }
+        int removed = 0;
+        for (const auto& index : m_table->selectionModel()->selectedRows()) {
+            const auto track = m_tableModel->trackAtRow(index.row());
+            if (track && m_repository->removeTrackFromPlaylist(*id, track->id)) {
+                ++removed;
+            }
+        }
+        refreshPlaylistList(*id);
+        m_statusLabel->setText(QStringLiteral("已移除 %1 首曲目").arg(removed));
+    });
+    connect(m_table, &QTableView::doubleClicked, this,
+            [this](const QModelIndex& index) {
+                const auto track = m_tableModel->trackAtRow(index.row());
+                if (track) {
+                    emit trackDoubleClicked(track->id);
+                }
+            });
+
+    refresh();
 }
 
-// ==================== NowPlayingBar ====================
-NowPlayingBar::NowPlayingBar(QWidget* parent) : QWidget(parent) {
-    setFixedHeight(98);
-    setStyleSheet(R"(
-        NowPlayingBar {
-            background-color: #1E2028;
-            border-top: 1px solid #2E323E;
+void PlaylistPage::refresh()
+{
+    refreshPlaylistList(selectedPlaylistId());
+}
+
+std::vector<qint64> PlaylistPage::trackIds() const
+{
+    return m_tableModel->trackIds();
+}
+
+std::optional<qint64> PlaylistPage::selectedPlaylistId() const
+{
+    if (!m_playlistList || !m_playlistList->currentItem()) {
+        return std::nullopt;
+    }
+    const qint64 id =
+        m_playlistList->currentItem()->data(Qt::UserRole).toLongLong();
+    return id > 0 ? std::optional<qint64>(id) : std::nullopt;
+}
+
+void PlaylistPage::refreshPlaylistList(std::optional<qint64> preferred)
+{
+    const qint64 preferredId = preferred.value_or(
+        selectedPlaylistId().value_or(0));
+    const QSignalBlocker blocker(m_playlistList);
+    m_playlistList->clear();
+    int selectedRow = -1;
+    const auto playlists = m_repository->playlists();
+    for (int index = 0; index < static_cast<int>(playlists.size()); ++index) {
+        const auto& playlist = playlists[static_cast<std::size_t>(index)];
+        auto* item = new QListWidgetItem(
+            QStringLiteral("%1 (%2)").arg(playlist.name).arg(playlist.trackCount),
+            m_playlistList);
+        item->setData(Qt::UserRole, playlist.id);
+        item->setData(Qt::UserRole + 1, playlist.name);
+        if (playlist.id == preferredId) {
+            selectedRow = index;
         }
+    }
+    if (selectedRow < 0 && !playlists.empty()) {
+        selectedRow = 0;
+    }
+    m_playlistList->setCurrentRow(selectedRow);
+    const auto id = selectedPlaylistId();
+    m_tableModel->setPlaylistId(id);
+    updateControls();
+}
+
+void PlaylistPage::updateControls()
+{
+    const bool hasPlaylist = selectedPlaylistId().has_value();
+    const bool hasSelection = m_table->selectionModel() &&
+        !m_table->selectionModel()->selectedRows().isEmpty();
+    m_renameButton->setEnabled(hasPlaylist);
+    m_deleteButton->setEnabled(hasPlaylist);
+    m_addTracksButton->setEnabled(hasPlaylist);
+    m_removeTracksButton->setEnabled(hasPlaylist && hasSelection);
+}
+
+void PlaylistPage::openAddTracksDialog()
+{
+    const auto playlistId = selectedPlaylistId();
+    if (!playlistId) {
+        return;
+    }
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("添加曲目到歌单"));
+    dialog.resize(760, 520);
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* search = new QLineEdit(&dialog);
+    search->setPlaceholderText(QStringLiteral("搜索歌曲、艺人或专辑"));
+    auto* list = new QListWidget(&dialog);
+    list->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    list->setUniformItemSizes(true);
+    layout->addWidget(search);
+    layout->addWidget(list, 1);
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+
+    auto populate = [this, list, playlistId](const QString& text) {
+        list->clear();
+        const auto tracks = m_repository->queryTracks(
+            text, library::TrackSort::AddedAt, true, 1000, 0);
+        for (const auto& track : tracks) {
+            if (m_repository->playlistContainsTrack(*playlistId, track.id)) {
+                continue;
+            }
+            auto* item = new QListWidgetItem(
+                QStringLiteral("%1 — %2").arg(track.title, track.artist), list);
+            item->setData(Qt::UserRole, track.id);
+        }
+    };
+    connect(search, &QLineEdit::textChanged, &dialog, populate);
+    populate({});
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    int added = 0;
+    for (const auto* item : list->selectedItems()) {
+        if (m_repository->addTrackToPlaylist(
+                *playlistId, item->data(Qt::UserRole).toLongLong())) {
+            ++added;
+        }
+    }
+    refreshPlaylistList(*playlistId);
+    m_statusLabel->setText(QStringLiteral("已添加 %1 首曲目").arg(added));
+}
+
+// ==================== NowPlayingHeader ====================
+NowPlayingHeader::NowPlayingHeader(QWidget* parent) : QWidget(parent) {
+    setObjectName(QStringLiteral("nowPlayingHeader"));
+    setMinimumHeight(160);
+    setMaximumHeight(180);
+    setStyleSheet(R"(
+        QWidget#nowPlayingHeader { background: #181A20; }
         QLabel { color: #EAEAEA; background: transparent; }
         QPushButton {
-            background-color: #2B2F3C; color: white; border: none;
-            border-radius: 18px; font-size: 14px; font-weight: bold;
+            color: #E6E8ED; background: #292C34; border: none;
+            border-radius: 0; margin: 0; padding: 0; font-size: 16px;
         }
-        QPushButton:hover { background-color: #FA2D48; }
-        QSlider::groove:horizontal {
-            height: 4px; background: #353946; border-radius: 2px;
-        }
-        QSlider::sub-page:horizontal {
-            background: #FA2D48; border-radius: 2px;
-        }
-        QSlider::handle:horizontal {
-            background: #FFFFFF; width: 12px; height: 12px;
-            margin: -4px 0; border-radius: 6px;
+        QSlider::groove:vertical { width: 24px; background: #42454E; border: none; }
+        QSlider::add-page:vertical,
+        QSlider::sub-page:vertical { background: #42454E; border: none; }
+        QSlider::handle:vertical {
+            background: #E6E8ED; height: 12px; width: 24px; margin: 0;
+            border: none; border-radius: 0;
         }
     )");
 
-    auto* layout = new QHBoxLayout(this);
-    layout->setContentsMargins(24, 10, 24, 10);
-    layout->setSpacing(20);
+    auto* root = new QVBoxLayout(this);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(0);
 
-    // 1. 左侧：迷你封面 + 歌名/歌手
-    m_coverThumb = new QLabel(this);
-    m_coverThumb->setFixedSize(54, 54);
-    const QPixmap defaultCover = library::MetadataReader::generateDefaultCover("ISAC", 108);
-    m_coverThumb->setPixmap(makeRoundedPixmap(
-        defaultCover, 54, 8));
+    auto* contentWidget = new QWidget(this);
+    contentWidget->setFixedHeight(140);
+    auto* content = new QHBoxLayout(contentWidget);
+    content->setContentsMargins(0, 0, 0, 0);
+    content->setSpacing(0);
+    auto* controlGroup = new QWidget(this);
+    controlGroup->setFixedSize(140, 140);
+    controlGroup->setStyleSheet(QStringLiteral("background: #292C34;"));
+    auto* controlGrid = new QGridLayout(controlGroup);
+    controlGrid->setContentsMargins(0, 0, 0, 0);
+    controlGrid->setHorizontalSpacing(0);
+    controlGrid->setVerticalSpacing(0);
+    m_playbackModeButton = new QPushButton(this);
+    m_btnPrev = new QPushButton(QStringLiteral("|◀"), this);
+    m_btnPlayPause = new QPushButton(QStringLiteral("▶"), this);
+    m_btnNext = new QPushButton(QStringLiteral("▶|"), this);
+    const QList<QPushButton*> controls{
+        m_playbackModeButton, m_btnPrev, m_btnPlayPause, m_btnNext};
+    for (auto* button : controls) {
+        button->setFixedSize(70, 70);
+        button->setStyleSheet(R"(
+            QPushButton {
+                color: #E6E8ED; background: #292C34; border: none;
+                border-radius: 0; margin: 0; padding: 0; font-size: 16px;
+            }
+            QPushButton:hover { background: #454952; }
+            QPushButton:pressed { background: #565A64; }
+        )");
+    }
+    controlGrid->addWidget(m_btnPlayPause, 0, 0);
+    controlGrid->addWidget(m_playbackModeButton, 0, 1);
+    controlGrid->addWidget(m_btnPrev, 1, 0);
+    controlGrid->addWidget(m_btnNext, 1, 1);
+    content->addWidget(controlGroup);
 
-    auto* metaLayout = new QVBoxLayout();
-    m_titleLabel = new QLabel("未在播放", this);
-    m_titleLabel->setStyleSheet("font-weight: bold; font-size: 13px; color: white;");
-    m_titleLabel->setFixedWidth(240);
-    m_artistLabel = new QLabel("ISAC Audio Engine", this);
-    m_artistLabel->setStyleSheet("font-size: 12px; color: #9499A6;");
-    m_artistLabel->setFixedWidth(240);
-    m_audioInfoLabel = new QLabel(this);
-    m_audioInfoLabel->setStyleSheet("font-size: 10px; color: #858B99;");
-    m_audioInfoLabel->setFixedWidth(240);
-    m_audioInfoLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    metaLayout->addStretch();
-    metaLayout->addWidget(m_titleLabel);
-    metaLayout->addWidget(m_artistLabel);
-    metaLayout->addWidget(m_audioInfoLabel);
-    metaLayout->addStretch();
-
-    // 2. 中间：播放控制按钮 + 进度条
-    auto* centerLayout = new QVBoxLayout();
-    auto* btnRow = new QHBoxLayout();
-    m_btnPrev      = new QPushButton("⏮", this);
-    m_btnPlayPause = new QPushButton("▶", this);
-    m_btnNext      = new QPushButton("⏭", this);
-    m_playbackMode = new QComboBox(this);
-    m_playbackMode->addItem("顺序播放", 0);
-    m_playbackMode->addItem("随机播放", 1);
-    m_playbackMode->addItem("单曲循环", 2);
-    m_playbackMode->addItem("列表循环", 3);
-    m_playbackMode->setFixedWidth(96);
-    m_playbackMode->setToolTip("播放模式");
-    m_btnPrev->setFixedSize(36, 36);
-    m_btnPlayPause->setFixedSize(42, 42);
-    m_btnPlayPause->setStyleSheet("background-color: #FA2D48; border-radius: 21px; font-size: 16px;");
-    m_btnNext->setFixedSize(36, 36);
-
-    btnRow->addStretch();
-    btnRow->addWidget(m_playbackMode);
-    btnRow->addSpacing(12);
-    btnRow->addWidget(m_btnPrev);
-    btnRow->addSpacing(12);
-    btnRow->addWidget(m_btnPlayPause);
-    btnRow->addSpacing(12);
-    btnRow->addWidget(m_btnNext);
-    btnRow->addStretch();
-
-    auto* seekRow = new QHBoxLayout();
-    m_lblCurrentTime = new QLabel("0:00", this);
-    m_lblCurrentTime->setStyleSheet("font-size: 11px; color: #8A8F9E;");
-    m_seekSlider = new QSlider(Qt::Horizontal, this);
-    m_seekSlider->setRange(0, 1000);
-    m_lblTotalTime = new QLabel("0:00", this);
-    m_lblTotalTime->setStyleSheet("font-size: 11px; color: #8A8F9E;");
-    seekRow->addWidget(m_lblCurrentTime);
-    seekRow->addWidget(m_seekSlider, 1);
-    seekRow->addWidget(m_lblTotalTime);
-
-    centerLayout->addLayout(btnRow);
-    centerLayout->addLayout(seekRow);
-
-    // 3. 右侧：DSP 乘法器实时音量推子
-    auto* volLayout = new QHBoxLayout();
-    auto* volIcon = new QLabel("🔊 DSP 增益", this);
-    volIcon->setStyleSheet("font-size: 12px; color: #A0A5B5;");
-    m_volumeSlider = new QSlider(Qt::Horizontal, this);
+    m_volumeSlider = new QSlider(Qt::Vertical, this);
     m_volumeSlider->setRange(0, 200);
     m_volumeSlider->setValue(100);
-    m_volumeSlider->setFixedWidth(130);
-    volLayout->addWidget(volIcon);
-    volLayout->addWidget(m_volumeSlider);
+    m_volumeSlider->setFixedSize(24, 140);
+    m_volumeSlider->setToolTip(QStringLiteral("音量"));
+    content->addWidget(m_volumeSlider);
 
-    layout->addWidget(m_coverThumb);
-    layout->addLayout(metaLayout);
-    layout->addLayout(centerLayout, 1);
-    layout->addLayout(volLayout);
+    m_coverThumb = new QLabel(this);
+    m_coverThumb->setFixedSize(140, 140);
+    m_coverThumb->setScaledContents(true);
+    m_coverThumb->setPixmap(library::MetadataReader::generateDefaultCover("ISAC", 280));
+    content->addWidget(m_coverThumb);
 
-    connect(m_btnPlayPause, &QPushButton::clicked, this, &NowPlayingBar::playPauseClicked);
-    connect(m_btnPrev,      &QPushButton::clicked, this, &NowPlayingBar::prevClicked);
-    connect(m_btnNext,      &QPushButton::clicked, this, &NowPlayingBar::nextClicked);
-    connect(m_playbackMode, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int index) {
-                emit playbackModeChanged(m_playbackMode->itemData(index).toInt());
-            });
+    auto* visualColumn = new QVBoxLayout();
+    visualColumn->setContentsMargins(0, 0, 0, 0);
+    visualColumn->setSpacing(0);
+    m_waveform = new WaveformProgressWidget(this);
+    m_waveform->setMinimumHeight(36);
+    auto* spectrumRow = new QHBoxLayout();
+    spectrumRow->setContentsMargins(0, 0, 0, 0);
+    spectrumRow->setSpacing(0);
+    m_preDspWaterfall = new WaterfallWidget(this);
+    m_postDspWaterfall = new WaterfallWidget(this);
+    spectrumRow->addWidget(m_preDspWaterfall, 1);
+    spectrumRow->addWidget(m_postDspWaterfall, 1);
+    visualColumn->addWidget(m_waveform);
+    visualColumn->addLayout(spectrumRow, 1);
+    content->addLayout(visualColumn, 1);
+    root->addWidget(contentWidget);
 
-    connect(m_seekSlider, &QSlider::sliderPressed, this, [this]() { m_isUserSeeking = true; });
-    connect(m_seekSlider, &QSlider::sliderReleased, this, [this]() {
-        m_isUserSeeking = false;
-        if (m_totalDuration > 0.0) {
-            double targetSec = (m_seekSlider->value() / 1000.0) * m_totalDuration;
-            emit seekRequested(targetSec);
-        }
+    auto* infoBar = new QWidget(this);
+    infoBar->setObjectName(QStringLiteral("trackInfoBar"));
+    infoBar->setStyleSheet(
+        "QWidget#trackInfoBar { background: transparent; "
+        "border-bottom: 1px solid #30333D; }");
+    auto* infoRow = new QHBoxLayout(infoBar);
+    infoRow->setContentsMargins(8, 0, 0, 2);
+    infoRow->setSpacing(8);
+    m_titleLabel = new QLabel(QStringLiteral("未在播放"), this);
+    m_titleLabel->setStyleSheet("font-size: 13px; font-weight: bold;");
+    m_titleLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_artistLabel = new QLabel(QStringLiteral("ISAC Audio Engine"), this);
+    m_artistLabel->setStyleSheet("font-size: 11px; color: #A5A8B0;");
+    m_artistLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_albumLabel = new QLabel(this);
+    m_albumLabel->setStyleSheet("font-size: 11px; color: #A5A8B0;");
+    m_albumLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_audioInfoLabel = new QLabel(this);
+    m_audioInfoLabel->setStyleSheet("font-size: 10px; color: #858992;");
+    m_audioInfoLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_audioInfoLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    infoRow->addWidget(m_titleLabel, 2);
+    infoRow->addWidget(m_artistLabel, 1);
+    infoRow->addWidget(m_albumLabel, 1);
+    infoRow->addWidget(m_audioInfoLabel, 1);
+    m_lblCurrentTime = new QLabel(QStringLiteral("0:00"), this);
+    m_lblTotalTime = new QLabel(QStringLiteral("0:00"), this);
+    for (auto* label : {m_lblCurrentTime, m_lblTotalTime}) {
+        label->setStyleSheet("font-size: 10px; color: #A5A8B0;");
+        label->setMinimumWidth(34);
+    }
+    infoRow->addWidget(m_lblCurrentTime);
+    infoRow->addWidget(m_lblTotalTime);
+    root->addWidget(infoBar, 1);
+
+    connect(m_btnPlayPause, &QPushButton::clicked, this, &NowPlayingHeader::playPauseClicked);
+    connect(m_btnPrev, &QPushButton::clicked, this, &NowPlayingHeader::prevClicked);
+    connect(m_btnNext, &QPushButton::clicked, this, &NowPlayingHeader::nextClicked);
+    connect(m_playbackModeButton, &QPushButton::clicked, this, [this]() {
+        setPlaybackMode((m_playbackModeValue + 1) % 4);
+        emit playbackModeChanged(m_playbackModeValue);
     });
-
-    connect(m_volumeSlider, &QSlider::valueChanged, this, [this](int val) {
-        emit volumeChanged(val / 100.0f);
+    connect(m_waveform, &WaveformProgressWidget::seekRequested, this,
+            [this](double progress) {
+                if (m_totalDuration > 0.0) {
+                    emit seekRequested(progress * m_totalDuration);
+                }
+            });
+    connect(m_volumeSlider, &QSlider::valueChanged, this, [this](int value) {
+        emit volumeChanged(value / 100.0f);
     });
 }
 
-void NowPlayingBar::setTrackInfo(const library::TrackInfo& info) {
+void NowPlayingHeader::setTrackInfo(const library::TrackInfo& info) {
     m_trackInfo = info;
-    m_coverThumb->setPixmap(makeRoundedPixmap(
-        library::MetadataReader::loadCoverArt(info, 108), 54, 8));
+    m_coverThumb->setPixmap(library::MetadataReader::loadCoverArt(info, 280));
     m_titleLabel->setText(info.title);
     m_artistLabel->setText(info.artist);
+    m_albumLabel->setText(info.album);
     updateAudioInfoLabel();
 }
 
-void NowPlayingBar::setAudioInfoVisibility(bool format, bool sampleRate,
-                                           bool bitDepth, bool channels,
-                                           bool bitrate)
+void NowPlayingHeader::setAudioInfoVisibility(bool format, bool sampleRate,
+                                              bool bitDepth, bool channels,
+                                              bool bitrate)
 {
     m_showAudioFormat = format;
     m_showSampleRate = sampleRate;
@@ -1124,7 +1146,7 @@ void NowPlayingBar::setAudioInfoVisibility(bool format, bool sampleRate,
     updateAudioInfoLabel();
 }
 
-void NowPlayingBar::updateAudioInfoLabel()
+void NowPlayingHeader::updateAudioInfoLabel()
 {
     QStringList details;
     if (m_showAudioFormat && !m_trackInfo.audioFormat.isEmpty()) {
@@ -1146,39 +1168,60 @@ void NowPlayingBar::updateAudioInfoLabel()
 
     const QString fullText = details.join(QStringLiteral(" · "));
     m_audioInfoLabel->setToolTip(fullText);
-    m_audioInfoLabel->setText(QFontMetrics(m_audioInfoLabel->font()).elidedText(
-        fullText, Qt::ElideRight, m_audioInfoLabel->width()));
+    m_audioInfoLabel->setText(fullText);
 }
 
-void NowPlayingBar::setPlayingState(bool playing) {
-    m_btnPlayPause->setText(playing ? "⏸" : "▶");
+void NowPlayingHeader::setPlayingState(bool playing) {
+    m_btnPlayPause->setText(playing ? QStringLiteral("Ⅱ") : QStringLiteral("▶"));
 }
 
-void NowPlayingBar::setPlaybackMode(int mode) {
-    const int index = m_playbackMode->findData(mode);
-    if (index >= 0) {
-        m_playbackMode->setCurrentIndex(index);
+void NowPlayingHeader::setPlaybackMode(int mode) {
+    static const QStringList labels{
+        QStringLiteral("SEQ"), QStringLiteral("RND"),
+        QStringLiteral("ONE"), QStringLiteral("ALL")};
+    static const QStringList descriptions{
+        QStringLiteral("顺序播放"), QStringLiteral("随机播放"),
+        QStringLiteral("单曲循环"), QStringLiteral("列表循环")};
+    if (mode < 0 || mode >= labels.size()) {
+        return;
     }
+    m_playbackModeValue = mode;
+    m_playbackModeButton->setText(labels[mode]);
+    m_playbackModeButton->setToolTip(descriptions[mode]);
 }
 
-void NowPlayingBar::setVolume(double volume) {
+void NowPlayingHeader::setVolume(double volume) {
     const QSignalBlocker blocker(m_volumeSlider);
     const int value = static_cast<int>(std::clamp(volume, 0.0, 2.0) * 100.0);
     m_volumeSlider->setValue(value);
 }
 
-void NowPlayingBar::updateProgress(double currentSec, double totalSec) {
+void NowPlayingHeader::updateProgress(double currentSec, double totalSec) {
     m_totalDuration = totalSec;
     m_lblCurrentTime->setText(formatTime(currentSec));
     m_lblTotalTime->setText(formatTime(totalSec));
+    m_waveform->setProgress(totalSec > 0.0 ? currentSec / totalSec : 0.0);
+}
 
-    if (!m_isUserSeeking && totalSec > 0.0) {
-        int pos = static_cast<int>((currentSec / totalSec) * 1000.0);
-        m_seekSlider->setValue(std::clamp(pos, 0, 1000));
+void NowPlayingHeader::updateVisualization(
+    const double* preLeft, const double* preRight,
+    const double* postLeft, const double* postRight,
+    std::size_t count, std::uint32_t sampleRate) {
+    if (!preLeft || !preRight || count == 0) {
+        return;
+    }
+    m_waveformSamples.resize(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        m_waveformSamples[index] = (preLeft[index] + preRight[index]) * 0.5;
+    }
+    m_waveform->setSamples(m_waveformSamples.data(), m_waveformSamples.size());
+    if (postLeft && postRight) {
+        m_preDspWaterfall->pushSamples(preLeft, preRight, count, sampleRate);
+        m_postDspWaterfall->pushSamples(postLeft, postRight, count, sampleRate);
     }
 }
 
-QString NowPlayingBar::formatTime(double seconds) {
+QString NowPlayingHeader::formatTime(double seconds) {
     int total = static_cast<int>(std::max(0.0, seconds));
     return QString("%1:%2").arg(total / 60).arg(total % 60, 2, 10, QChar('0'));
 }

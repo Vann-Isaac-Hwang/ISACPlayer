@@ -92,20 +92,14 @@ public:
     qint64 artistTrackCount(const QString& artist,
                             const QString& searchText = {}) const;
     std::vector<TrackInfo> queryAlbumTracks(
-        // The artist argument is retained for API compatibility; album
-        // identity is now determined by album name alone.
-        const QString& artist, const QString& album,
+        const QString& album,
         const QString& searchText = {}, TrackSort sort = TrackSort::Title,
         bool ascending = true, int limit = 256, int offset = 0) const;
     std::vector<qint64> queryAlbumTrackIds(
-        // The artist argument is retained for API compatibility; album
-        // identity is now determined by album name alone.
-        const QString& artist, const QString& album,
+        const QString& album,
         const QString& searchText = {}, TrackSort sort = TrackSort::Title,
         bool ascending = true, int limit = 10000, int offset = 0) const;
-    // The artist argument is retained for API compatibility; album identity
-    // is now determined by album name alone.
-    qint64 albumTrackCount(const QString& artist, const QString& album,
+    qint64 albumTrackCount(const QString& album,
                            const QString& searchText = {}) const;
 
     bool addDirectory(const QString& path);
@@ -116,6 +110,7 @@ public:
     bool renamePlaylist(qint64 playlistId, const QString& name);
     bool deletePlaylist(qint64 playlistId);
     bool addTrackToPlaylist(qint64 playlistId, qint64 trackId);
+    bool playlistContainsTrack(qint64 playlistId, qint64 trackId) const;
     bool removeTrackFromPlaylist(qint64 playlistId, qint64 trackId);
     bool movePlaylistTrack(qint64 playlistId, qint64 trackId,
                            int destinationIndex);

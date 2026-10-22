@@ -4,6 +4,7 @@
 #include <QMainWindow>
 #include <QStackedWidget>
 #include <QTimer>
+#include <array>
 #include <memory>
 #include "engine/graph/AudioEngine.h"
 #include "ui/apple_view/AppleMusicView.h"
@@ -32,6 +33,7 @@ private:
     void rebuildPlaybackQueue(qint64 currentTrackId);
     void persistPlaybackQueue(bool includeOrder);
     void restorePlaybackQueue();
+    std::vector<qint64> currentTrackIds() const;
 
     Ui::MainWindow *ui;
     isac::ui::PluginManager m_pluginManager;
@@ -40,9 +42,15 @@ private:
 
     QStackedWidget* m_stackedWidget = nullptr;
     isac::ui::AppleLibraryPage* m_libraryPage = nullptr;
-    isac::ui::NowPlayingBar* m_nowPlayingBar = nullptr;
+    isac::ui::PlaylistPage* m_playlistPage = nullptr;
+    isac::ui::NowPlayingHeader* m_nowPlayingHeader = nullptr;
     isac::ui::PatchbayView* m_patchbayView = nullptr;
     QTimer* m_progressTimer = nullptr;
+    QTimer* m_visualizationTimer = nullptr;
+    std::array<double, 4096> m_preVisualizationLeft{};
+    std::array<double, 4096> m_preVisualizationRight{};
+    std::array<double, 4096> m_postVisualizationLeft{};
+    std::array<double, 4096> m_postVisualizationRight{};
     isac::library::LibraryScanner* m_libraryScanner = nullptr;
     isac::library::PlaybackQueue m_playbackQueue;
     isac::library::PlaybackMode m_playbackMode =
