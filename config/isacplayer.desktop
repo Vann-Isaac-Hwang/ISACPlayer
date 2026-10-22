@@ -1,0 +1,12 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Type=Application
+Name=ISACPlayer
+GenericName=Music Player
+Comment=Local music player with a DSP audio router
+Exec=ISACPlayer
+TryExec=ISACPlayer
+Icon=isacplayer
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupWMClass=isacplayer

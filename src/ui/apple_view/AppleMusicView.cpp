@@ -9,6 +9,7 @@
 #include <QInputDialog>
 #include <QItemSelectionModel>
 #include <QListView>
+#include <QToolButton>
 #include <QMessageBox>
 #include <QSignalBlocker>
 #include <QDataStream>
@@ -1676,6 +1677,16 @@ NowPlayingHeader::NowPlayingHeader(QWidget* parent) : QWidget(parent) {
     infoRow->addWidget(m_artistLabel, 1);
     infoRow->addWidget(m_albumLabel, 1);
     infoRow->addWidget(m_audioInfoLabel, 1);
+    auto* queueButton = new QToolButton(infoBar);
+    queueButton->setIcon(style()->standardIcon(QStyle::SP_FileDialogDetailedView));
+    queueButton->setToolTip(QStringLiteral("当前播放队列"));
+    queueButton->setFixedSize(28, 28);
+    queueButton->setStyleSheet(
+        "QToolButton { color: #E6E8ED; background: transparent; border: none; }"
+        "QToolButton:hover { background: #343740; }");
+    connect(queueButton, &QToolButton::clicked, this,
+            &NowPlayingHeader::queueViewRequested);
+    infoRow->addWidget(queueButton);
     m_lblCurrentTime = new QLabel(QStringLiteral("0:00"), this);
     m_lblTotalTime = new QLabel(QStringLiteral("0:00"), this);
     for (auto* label : {m_lblCurrentTime, m_lblTotalTime}) {

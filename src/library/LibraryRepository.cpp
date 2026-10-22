@@ -169,6 +169,10 @@ bool LibraryRepository::initializeSchema()
             "position INTEGER PRIMARY KEY, "
             "track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE)"),
         QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS playback_queue_source ("
+            "position INTEGER PRIMARY KEY, "
+            "track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE)"),
+        QStringLiteral(
             "CREATE TABLE IF NOT EXISTS playback_history ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, "
             "track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE, "
@@ -1380,7 +1384,8 @@ qint64 LibraryRepository::playlistTrackCount(
 }
 
 bool LibraryRepository::savePlaybackQueue(
-    const std::vector<qint64>& trackIds, std::size_t position,
+    const std::vector<qint64>& trackIds,
+    const std::vector<qint64>& sourceTrackIds, std::size_t position,
     PlaybackMode mode)
 {
     if (!m_database.transaction()) {
@@ -1393,6 +1398,13 @@ bool LibraryRepository::savePlaybackQueue(
         m_database.rollback();
         return false;
     }
+    QSqlQuery clearSourceQuery(m_database);
+    if (!clearSourceQuery.exec(
+            QStringLiteral("DELETE FROM playback_queue_source"))) {
+        m_lastError = clearSourceQuery.lastError().text();
+        m_database.rollback();
+        return false;
+    }
 
     QSqlQuery insertQuery(m_database);
     insertQuery.prepare(QStringLiteral(
@@ -1402,6 +1414,19 @@ bool LibraryRepository::savePlaybackQueue(
         insertQuery.bindValue(1, trackIds[index]);
         if (!insertQuery.exec()) {
             m_lastError = insertQuery.lastError().text();
+            m_database.rollback();
+            return false;
+        }
+    }
+
+    QSqlQuery insertSourceQuery(m_database);
+    insertSourceQuery.prepare(QStringLiteral(
+        "INSERT INTO playback_queue_source(position, track_id) VALUES (?, ?)"));
+    for (std::size_t index = 0; index < sourceTrackIds.size(); ++index) {
+        insertSourceQuery.bindValue(0, static_cast<qlonglong>(index));
+        insertSourceQuery.bindValue(1, sourceTrackIds[index]);
+        if (!insertSourceQuery.exec()) {
+            m_lastError = insertSourceQuery.lastError().text();
             m_database.rollback();
             return false;
         }
@@ -1498,6 +1523,18 @@ LibraryRepository::loadPlaybackQueue() const
     while (queueQuery.next()) {
         state.trackIds.push_back(queueQuery.value(0).toLongLong());
     }
+    QSqlQuery sourceQuery(m_database);
+    if (!sourceQuery.exec(QStringLiteral(
+            "SELECT track_id FROM playback_queue_source ORDER BY position"))) {
+        m_lastError = sourceQuery.lastError().text();
+        return std::nullopt;
+    }
+    while (sourceQuery.next()) {
+        state.sourceTrackIds.push_back(sourceQuery.value(0).toLongLong());
+    }
+    if (state.sourceTrackIds.empty()) {
+        state.sourceTrackIds = state.trackIds;
+    }
     if (state.trackIds.empty()) {
         state.position = 0;
         return state;
@@ -1514,7 +1551,8 @@ LibraryRepository::loadPlaybackQueue() const
     return state;
 }
 
-bool LibraryRepository::recordPlayback(qint64 trackId, int maxEntries)
+bool LibraryRepository::recordPlayback(qint64 trackId, int maxEntries,
+                                       bool onlyLatestPerTrack)
 {
     if (trackId <= 0) {
         m_lastError = QStringLiteral("Invalid playback history track ID");
@@ -1523,6 +1561,18 @@ bool LibraryRepository::recordPlayback(qint64 trackId, int maxEntries)
     if (!m_database.transaction()) {
         m_lastError = m_database.lastError().text();
         return false;
+    }
+
+    if (onlyLatestPerTrack) {
+        QSqlQuery removePrevious(m_database);
+        removePrevious.prepare(QStringLiteral(
+            "DELETE FROM playback_history WHERE track_id = ?"));
+        removePrevious.addBindValue(trackId);
+        if (!removePrevious.exec()) {
+            m_lastError = removePrevious.lastError().text();
+            m_database.rollback();
+            return false;
+        }
     }
 
     QSqlQuery insert(m_database);

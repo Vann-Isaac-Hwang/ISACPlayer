@@ -22,23 +22,33 @@ public:
                PlaybackMode mode)
     {
         m_mode = mode;
-        m_order = std::move(trackIds);
+        m_sourceOrder = std::move(trackIds);
+        m_order = m_sourceOrder;
         if (m_mode == PlaybackMode::Shuffle) {
             shuffleFromCurrent(currentTrackId);
         } else {
-            const auto current =
-                std::find(m_order.begin(), m_order.end(), currentTrackId);
-            m_position = current == m_order.end()
-                ? 0
-                : static_cast<std::size_t>(std::distance(m_order.begin(), current));
+            setPositionForTrack(currentTrackId);
         }
     }
 
     void restore(std::vector<qint64> trackIds, std::size_t position,
                  PlaybackMode mode)
     {
+        auto sourceTrackIds = trackIds;
+        restore(std::move(trackIds), std::move(sourceTrackIds), position,
+                mode);
+    }
+
+    void restore(std::vector<qint64> orderedTrackIds,
+                 std::vector<qint64> sourceTrackIds, std::size_t position,
+                 PlaybackMode mode)
+    {
         m_mode = mode;
-        m_order = std::move(trackIds);
+        m_order = std::move(orderedTrackIds);
+        m_sourceOrder = std::move(sourceTrackIds);
+        if (m_sourceOrder.empty() && !m_order.empty()) {
+            m_sourceOrder = m_order;
+        }
         m_position = m_order.empty()
             ? 0 : std::min(position, m_order.size() - 1);
     }
@@ -52,6 +62,9 @@ public:
         m_mode = mode;
         if (m_mode == PlaybackMode::Shuffle) {
             shuffleFromCurrent(current);
+        } else if (m_mode == PlaybackMode::Sequential) {
+            m_order = m_sourceOrder;
+            setPositionForTrack(current);
         }
     }
 
@@ -60,7 +73,23 @@ public:
     {
         return m_order;
     }
+    const std::vector<qint64>& sourceTrackIds() const noexcept
+    {
+        return m_sourceOrder;
+    }
     std::size_t position() const noexcept { return m_position; }
+
+    bool selectTrack(qint64 trackId)
+    {
+        const auto track =
+            std::find(m_order.begin(), m_order.end(), trackId);
+        if (track == m_order.end()) {
+            return false;
+        }
+        m_position =
+            static_cast<std::size_t>(std::distance(m_order.begin(), track));
+        return true;
+    }
 
     std::optional<qint64> currentTrackId() const
     {
@@ -119,8 +148,19 @@ public:
     }
 
 private:
+    void setPositionForTrack(qint64 trackId)
+    {
+        const auto current =
+            std::find(m_order.begin(), m_order.end(), trackId);
+        m_position = current == m_order.end()
+            ? 0
+            : static_cast<std::size_t>(
+                  std::distance(m_order.begin(), current));
+    }
+
     void shuffleFromCurrent(qint64 currentTrackId)
     {
+        m_order = m_sourceOrder;
         const auto current =
             std::find(m_order.begin(), m_order.end(), currentTrackId);
         if (current != m_order.end()) {
@@ -135,6 +175,7 @@ private:
     }
 
     std::vector<qint64> m_order;
+    std::vector<qint64> m_sourceOrder;
     std::size_t m_position = 0;
     PlaybackMode m_mode = PlaybackMode::Sequential;
 };

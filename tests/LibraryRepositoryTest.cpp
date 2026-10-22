@@ -242,10 +242,15 @@ void testPersistedPlaybackQueue(const QString& databasePath)
     const std::vector<qint64> order{
         tracks[2].id, tracks[0].id, tracks[1].id
     };
-    expect(repository.savePlaybackQueue(order, 1, PlaybackMode::Shuffle),
+    const std::vector<qint64> sourceOrder{
+        tracks[0].id, tracks[1].id, tracks[2].id
+    };
+    expect(repository.savePlaybackQueue(
+               order, sourceOrder, 1, PlaybackMode::Shuffle),
            "queue order, cursor and playback mode must persist");
     auto restored = repository.loadPlaybackQueue();
     expect(restored && restored->trackIds == order &&
+               restored->sourceTrackIds == sourceOrder &&
                restored->position == 1 &&
                restored->mode == PlaybackMode::Shuffle,
            "queue state must restore exactly after persistence");
@@ -259,10 +264,15 @@ void testPersistedPlaybackQueue(const QString& databasePath)
            "cursor update must preserve the stored queue order");
 
     PlaybackQueue queue;
-    queue.restore(restored->trackIds, restored->position, restored->mode);
+    queue.restore(restored->trackIds, restored->sourceTrackIds,
+                  restored->position, restored->mode);
     expect(queue.currentTrackId() == tracks[1].id &&
                queue.next() == tracks[2].id,
            "restored queue must continue from its saved cursor");
+    queue.setMode(PlaybackMode::Sequential);
+    expect(queue.orderedTrackIds() == sourceOrder &&
+               queue.currentTrackId() == tracks[2].id,
+           "switching back to sequential must restore source order at current track");
 }
 
 void testPlaybackHistory(const QString& databasePath)
@@ -308,6 +318,23 @@ void testPlaybackHistory(const QString& databasePath)
     expect(repository.trimPlaybackHistory(4) &&
                repository.playbackHistoryCount() == 5,
            "history retention must enforce a minimum of five entries");
+
+    expect(repository.recordPlayback(tracks[0].id, 10, true) &&
+               repository.recordPlayback(tracks[1].id, 10, true) &&
+               repository.recordPlayback(tracks[0].id, 10, true),
+           "latest-only history mode must record repeated plays");
+    history = repository.queryPlaybackHistory({}, 10, 0);
+    expect(history.size() == 2 &&
+               history[0].id == tracks[0].id &&
+               history[1].id == tracks[1].id,
+           "latest-only mode must replace prior rows for the played track");
+    expect(repository.recordPlayback(tracks[0].id, 10, false),
+           "disabling latest-only must continue appending history");
+    history = repository.queryPlaybackHistory({}, 10, 0);
+    expect(history.size() == 3 &&
+               history[0].id == tracks[0].id &&
+               history[1].id == tracks[0].id,
+           "history recorded while disabled must retain repeated entries");
 }
 
 void testFilteredSortOrdering(const QString& databasePath)
@@ -584,6 +611,18 @@ void testPlaybackQueueModes()
     std::sort(shuffled.begin(), shuffled.end());
     expect(shuffled == std::vector<qint64>({11, 22, 33, 44}),
            "shuffle must visit each queued track exactly once per cycle");
+    expect(queue.selectTrack(33),
+           "queue must allow selecting a track from the visible order");
+    queue.setMode(PlaybackMode::RepeatAll);
+    queue.setMode(PlaybackMode::Sequential);
+    expect(queue.orderedTrackIds() ==
+               std::vector<qint64>({11, 22, 33, 44}) &&
+               queue.currentTrackId() == 33,
+           "sequential mode must recover canonical order after shuffle");
+    queue.setMode(PlaybackMode::Shuffle);
+    expect(queue.currentTrackId() == 33 &&
+               queue.orderedTrackIds().front() == 33,
+           "shuffle mode changes must keep the current track at the head");
 }
 
 void writeFixture(const QString& path, const QByteArray& contents)

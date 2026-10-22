@@ -6,8 +6,13 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
+#include <QUuid>
+
+#include <algorithm>
+#include <cmath>
 
 namespace isac::ui {
 namespace {
@@ -19,6 +24,130 @@ QStringList builtInResourceNames()
         QStringLiteral("swap-channels.json"),
         QStringLiteral("mono-right.json")
     };
+}
+
+bool isBuiltInId(const QString& id)
+{
+    return id == QStringLiteral("stereo") ||
+           id == QStringLiteral("swap-channels") ||
+           id == QStringLiteral("mono-right");
+}
+
+bool isSafeId(const QString& id)
+{
+    if (id.isEmpty()) {
+        return false;
+    }
+    for (const QChar character : id) {
+        if (!character.isLetterOrNumber() && character != QLatin1Char('-') &&
+            character != QLatin1Char('_')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+QJsonObject toJson(const DspPreset& preset)
+{
+    QJsonArray nodes;
+    for (const DspPresetNode& node : preset.nodes) {
+        nodes.push_back(QJsonObject{
+            {QStringLiteral("role"), node.role},
+            {QStringLiteral("plugin"), node.pluginId},
+            {QStringLiteral("x"), node.position.x()},
+            {QStringLiteral("y"), node.position.y()}
+        });
+    }
+
+    QJsonArray connections;
+    for (const DspPresetConnection& connection : preset.connections) {
+        connections.push_back(QJsonObject{
+            {QStringLiteral("from"), connection.sourceRole},
+            {QStringLiteral("output"), connection.sourcePort},
+            {QStringLiteral("to"), connection.destinationRole},
+            {QStringLiteral("input"), connection.destinationPort}
+        });
+    }
+    return {
+        {QStringLiteral("version"), preset.version},
+        {QStringLiteral("id"), preset.id},
+        {QStringLiteral("name"), preset.name},
+        {QStringLiteral("nodes"), nodes},
+        {QStringLiteral("connections"), connections}
+    };
+}
+
+bool writePreset(const QString& path, const DspPreset& preset,
+                 QString& error)
+{
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        error = file.errorString();
+        return false;
+    }
+    const QByteArray contents =
+        QJsonDocument(toJson(preset)).toJson(QJsonDocument::Indented);
+    if (file.write(contents) != contents.size() || !file.commit()) {
+        error = file.errorString();
+        return false;
+    }
+    return true;
+}
+
+bool validateEditablePreset(const DspPreset& preset, QString& error)
+{
+    if (preset.version != 2 || preset.builtIn || !isSafeId(preset.id) ||
+        preset.name.trimmed().isEmpty()) {
+        error = QStringLiteral("invalid custom preset identity");
+        return false;
+    }
+    if (preset.nodes.size() > 256 || preset.connections.size() > 256) {
+        error = QStringLiteral("preset exceeds the node or connection limit");
+        return false;
+    }
+
+    QSet<QString> roles;
+    for (const DspPresetNode& node : preset.nodes) {
+        const bool endpoint =
+            (node.role == QStringLiteral("source") ||
+             node.role == QStringLiteral("sink")) &&
+            node.pluginId.isEmpty();
+        const bool processor = !node.pluginId.trimmed().isEmpty() &&
+            node.role.startsWith(node.pluginId + QLatin1Char('#'));
+        if (node.role.isEmpty() || (!endpoint && !processor) ||
+            !std::isfinite(node.position.x()) ||
+            !std::isfinite(node.position.y()) || roles.contains(node.role)) {
+            error = QStringLiteral("invalid or duplicate node entry");
+            return false;
+        }
+        roles.insert(node.role);
+    }
+    if (!roles.contains(QStringLiteral("source")) ||
+        !roles.contains(QStringLiteral("sink"))) {
+        error = QStringLiteral("preset must contain source and sink nodes");
+        return false;
+    }
+
+    QSet<QString> connections;
+    for (const DspPresetConnection& connection : preset.connections) {
+        if (!roles.contains(connection.sourceRole) ||
+            !roles.contains(connection.destinationRole) ||
+            connection.sourcePort < 0 || connection.destinationPort < 0) {
+            error = QStringLiteral("connection refers to an invalid node or port");
+            return false;
+        }
+        const QString key = QStringLiteral("%1:%2>%3:%4")
+            .arg(connection.sourceRole)
+            .arg(connection.sourcePort)
+            .arg(connection.destinationRole)
+            .arg(connection.destinationPort);
+        if (connections.contains(key)) {
+            error = QStringLiteral("duplicate connection");
+            return false;
+        }
+        connections.insert(key);
+    }
+    return true;
 }
 
 bool readPreset(const QString& path, DspPreset& preset, QString& error)
@@ -41,19 +170,66 @@ bool readPreset(const QString& path, DspPreset& preset, QString& error)
     }
 
     const QJsonObject object = document.object();
-    if (object.value(QStringLiteral("version")).toInt() != 1 ||
+    const int version = object.value(QStringLiteral("version")).toInt();
+    if ((version != 1 && version != 2) ||
         !object.value(QStringLiteral("id")).isString() ||
         !object.value(QStringLiteral("name")).isString() ||
-        !object.value(QStringLiteral("connections")).isArray()) {
+        !object.value(QStringLiteral("connections")).isArray() ||
+        (version == 2 && !object.value(QStringLiteral("nodes")).isArray())) {
         error = QStringLiteral("invalid preset schema");
         return false;
     }
 
     preset.id = object.value(QStringLiteral("id")).toString().trimmed();
     preset.name = object.value(QStringLiteral("name")).toString().trimmed();
-    if (preset.id.isEmpty() || preset.name.isEmpty()) {
+    preset.version = version;
+    preset.builtIn = isBuiltInId(preset.id);
+    if (!isSafeId(preset.id) || preset.name.isEmpty()) {
         error = QStringLiteral("preset id and name are required");
         return false;
+    }
+
+    QSet<QString> nodeRoles;
+    if (version == 2) {
+        const QJsonArray nodes = object.value(QStringLiteral("nodes")).toArray();
+        if (nodes.size() > 256) {
+            error = QStringLiteral("preset has too many nodes");
+            return false;
+        }
+        for (const QJsonValue& value : nodes) {
+            if (!value.isObject()) {
+                error = QStringLiteral("each node must be an object");
+                return false;
+            }
+            const QJsonObject node = value.toObject();
+            const QJsonValue x = node.value(QStringLiteral("x"));
+            const QJsonValue y = node.value(QStringLiteral("y"));
+            DspPresetNode parsed{
+                node.value(QStringLiteral("role")).toString().trimmed(),
+                node.value(QStringLiteral("plugin")).toString().trimmed(),
+                QPointF(x.toDouble(), y.toDouble())
+            };
+            const bool endpoint =
+                (parsed.role == QStringLiteral("source") ||
+                 parsed.role == QStringLiteral("sink")) &&
+                parsed.pluginId.isEmpty();
+            const bool processor = !parsed.pluginId.isEmpty() &&
+                parsed.role.startsWith(parsed.pluginId + QLatin1Char('#'));
+            if ((!endpoint && !processor) || !x.isDouble() || !y.isDouble() ||
+                !std::isfinite(parsed.position.x()) ||
+                !std::isfinite(parsed.position.y()) ||
+                nodeRoles.contains(parsed.role)) {
+                error = QStringLiteral("invalid or duplicate node entry");
+                return false;
+            }
+            nodeRoles.insert(parsed.role);
+            preset.nodes.push_back(std::move(parsed));
+        }
+        if (!nodeRoles.contains(QStringLiteral("source")) ||
+            !nodeRoles.contains(QStringLiteral("sink"))) {
+            error = QStringLiteral("preset must contain source and sink nodes");
+            return false;
+        }
     }
 
     const QJsonArray connections =
@@ -84,7 +260,10 @@ bool readPreset(const QString& path, DspPreset& preset, QString& error)
         if (parsed.sourceRole.isEmpty() ||
             parsed.destinationRole.isEmpty() ||
             !sourcePort.isDouble() || !destinationPort.isDouble() ||
-            parsed.sourcePort < 0 || parsed.destinationPort < 0) {
+            parsed.sourcePort < 0 || parsed.destinationPort < 0 ||
+            (version == 2 &&
+             (!nodeRoles.contains(parsed.sourceRole) ||
+              !nodeRoles.contains(parsed.destinationRole)))) {
             error = QStringLiteral("connection endpoints and ports are required");
             return false;
         }
@@ -170,10 +349,126 @@ QVector<DspPreset> DspPresetCatalog::load(const QString& directory,
         presets.push_back(std::move(preset));
     }
 
+    std::sort(presets.begin(), presets.end(),
+              [](const DspPreset& left, const DspPreset& right) {
+        const int order =
+            QString::compare(left.name, right.name, Qt::CaseInsensitive);
+        return order == 0 ? left.id < right.id : order < 0;
+    });
+
     if (error) {
         *error = failures.join(QStringLiteral("; "));
     }
     return presets;
+}
+
+bool DspPresetCatalog::save(const QString& directory, DspPreset& preset,
+                            QString* error)
+{
+    preset.version = 2;
+    preset.builtIn = false;
+    preset.name = preset.name.trimmed();
+    if (preset.id.isEmpty()) {
+        preset.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    }
+
+    QString validationError;
+    if (!validateEditablePreset(preset, validationError)) {
+        if (error) {
+            *error = validationError;
+        }
+        return false;
+    }
+    if (QFile::exists(QDir(directory).filePath(preset.id + ".json"))) {
+        if (error) {
+            *error = QStringLiteral("preset ID already exists");
+        }
+        return false;
+    }
+
+    const auto existing = load(directory);
+    for (const DspPreset& item : existing) {
+        if (item.name.compare(preset.name, Qt::CaseInsensitive) == 0) {
+            if (error) {
+                *error = QStringLiteral("a preset with this name already exists");
+            }
+            return false;
+        }
+    }
+    if (!QDir().mkpath(directory)) {
+        if (error) {
+            *error = QStringLiteral("cannot create preset directory");
+        }
+        return false;
+    }
+    if (!writePreset(QDir(directory).filePath(preset.id + ".json"),
+                     preset, validationError)) {
+        if (error) {
+            *error = validationError;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool DspPresetCatalog::rename(const QString& directory, const QString& id,
+                              const QString& name, QString* error)
+{
+    const QString normalizedName = name.trimmed();
+    if (!isSafeId(id) || isBuiltInId(id) || normalizedName.isEmpty()) {
+        if (error) {
+            *error = QStringLiteral("built-in presets cannot be renamed");
+        }
+        return false;
+    }
+
+    const QString path = QDir(directory).filePath(id + ".json");
+    DspPreset preset;
+    QString operationError;
+    if (!readPreset(path, preset, operationError) || preset.builtIn) {
+        if (error) {
+            *error = operationError.isEmpty()
+                ? QStringLiteral("built-in presets cannot be renamed")
+                : operationError;
+        }
+        return false;
+    }
+    for (const DspPreset& item : load(directory)) {
+        if (item.id != id &&
+            item.name.compare(normalizedName, Qt::CaseInsensitive) == 0) {
+            if (error) {
+                *error = QStringLiteral("a preset with this name already exists");
+            }
+            return false;
+        }
+    }
+    preset.name = normalizedName;
+    if (!writePreset(path, preset, operationError)) {
+        if (error) {
+            *error = operationError;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool DspPresetCatalog::remove(const QString& directory, const QString& id,
+                              QString* error)
+{
+    if (!isSafeId(id) || isBuiltInId(id)) {
+        if (error) {
+            *error = QStringLiteral("built-in presets cannot be deleted");
+        }
+        return false;
+    }
+    const QString path = QDir(directory).filePath(id + ".json");
+    if (!QFile::exists(path) || !QFile::remove(path)) {
+        if (error) {
+            *error = QStringLiteral("cannot delete preset file");
+        }
+        return false;
+    }
+    return true;
 }
 
 bool DspPresetCatalog::apply(const DspPreset& preset, AudioEngine& engine,

@@ -5,6 +5,9 @@
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QAction>
+#include <QActionGroup>
+#include <QApplication>
 #include <QPushButton>
 #include <QLabel>
 #include <QSplitter>
@@ -26,11 +29,20 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QMessageBox>
+#include <QInputDialog>
 #include <QListWidgetItem>
 #include <QAbstractItemView>
 #include <QScrollArea>
+#include <QSet>
 #include <QMenu>
+#include <QMenuBar>
+#include <QKeySequence>
+#include <QMetaObject>
 #include <QRegularExpression>
+#ifdef ISAC_HAS_MPRIS
+#include <QDBusConnection>
+#include <QDBusConnectionInterface>
+#endif
 #include <algorithm>
 
 namespace {
@@ -66,7 +78,19 @@ MainWindow::MainWindow(QWidget *parent)
 
     // 全局暗黑主题背景
     ui->centralwidget->setStyleSheet("background-color: #14161C;");
-    ui->menubar->setVisible(false);
+#if defined(Q_OS_LINUX) && defined(ISAC_HAS_MPRIS)
+    bool globalMenuAvailable = false;
+    const QDBusConnection sessionBus = QDBusConnection::sessionBus();
+    if (sessionBus.isConnected() && sessionBus.interface()) {
+        const auto registrar = sessionBus.interface()->isServiceRegistered(
+            QStringLiteral("com.canonical.AppMenu.Registrar"));
+        globalMenuAvailable = registrar.isValid() && registrar.value();
+    }
+    ui->menubar->setNativeMenuBar(globalMenuAvailable);
+#else
+    ui->menubar->setNativeMenuBar(false);
+#endif
+    ui->menubar->setVisible(true);
     ui->statusbar->setVisible(false);
 
     auto* rootLayout = new QVBoxLayout(ui->centralwidget);
@@ -326,6 +350,12 @@ MainWindow::MainWindow(QWidget *parent)
                 .toInt(),
             5, 10000));
         historyForm->addRow(QStringLiteral("保留最近播放"), historyLimit);
+        auto* onlyLatestPerTrack = new QCheckBox(
+            QStringLiteral("每首歌曲仅保留最新一次播放"), &dialog);
+        onlyLatestPerTrack->setChecked(settings.value(
+            QStringLiteral("playback/historyOnlyLatestPerTrack"), false)
+                                           .toBool());
+        historyForm->addRow(onlyLatestPerTrack);
         layout->addLayout(historyForm);
 
         addSectionTitle(QStringLiteral("曲目信息"));
@@ -370,6 +400,9 @@ MainWindow::MainWindow(QWidget *parent)
                           fadeDuration->value());
         settings.setValue(QStringLiteral("playback/historyLimit"),
                           historyLimit->value());
+        settings.setValue(
+            QStringLiteral("playback/historyOnlyLatestPerTrack"),
+            onlyLatestPerTrack->isChecked());
         if (!m_libraryRepository.trimPlaybackHistory(historyLimit->value())) {
             m_libraryPage->setScanStatus(
                 QStringLiteral("更新播放历史保留数量失败：%1")
@@ -394,6 +427,57 @@ MainWindow::MainWindow(QWidget *parent)
             showBitDepth->isChecked(), showChannels->isChecked(),
             showBitrate->isChecked());
     });
+
+    auto* fileMenu = ui->menubar->addMenu(QStringLiteral("File"));
+    QAction* quitAction = fileMenu->addAction(QStringLiteral("Quit"));
+    quitAction->setShortcut(QKeySequence::Quit);
+    connect(quitAction, &QAction::triggered, this, &QWidget::close);
+
+    auto* editMenu = ui->menubar->addMenu(QStringLiteral("Edit"));
+    QAction* selectAllAction =
+        editMenu->addAction(QStringLiteral("Select All"));
+    selectAllAction->setShortcut(QKeySequence::SelectAll);
+    connect(selectAllAction, &QAction::triggered, this, []() {
+        if (QWidget* focused = QApplication::focusWidget()) {
+            QMetaObject::invokeMethod(
+                focused, "selectAll", Qt::DirectConnection);
+        }
+    });
+
+    auto* viewMenu = ui->menubar->addMenu(QStringLiteral("View"));
+    auto* viewGroup = new QActionGroup(viewMenu);
+    viewGroup->setExclusive(true);
+    QAction* libraryAction = viewMenu->addAction(QStringLiteral("Library"));
+    QAction* playlistsAction =
+        viewMenu->addAction(QStringLiteral("Playlists"));
+    QAction* routerAction = viewMenu->addAction(QStringLiteral("DSP Router"));
+    for (QAction* action : {libraryAction, playlistsAction, routerAction}) {
+        action->setCheckable(true);
+        viewGroup->addAction(action);
+    }
+    libraryAction->setChecked(true);
+    libraryAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_1));
+    playlistsAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_2));
+    routerAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_3));
+    connect(libraryAction, &QAction::triggered, btnNavLibrary,
+            &QPushButton::click);
+    connect(playlistsAction, &QAction::triggered, btnNavPlaylists,
+            &QPushButton::click);
+    connect(routerAction, &QAction::triggered, btnNavPatchbay,
+            &QPushButton::click);
+    connect(btnNavLibrary, &QPushButton::clicked, libraryAction,
+            &QAction::setChecked);
+    connect(btnNavPlaylists, &QPushButton::clicked, playlistsAction,
+            &QAction::setChecked);
+    connect(btnNavPatchbay, &QPushButton::clicked, routerAction,
+            &QAction::setChecked);
+
+    auto* settingsMenu = ui->menubar->addMenu(QStringLiteral("Settings"));
+    QAction* preferencesAction =
+        settingsMenu->addAction(QStringLiteral("Preferences..."));
+    preferencesAction->setShortcut(QKeySequence::Preferences);
+    connect(preferencesAction, &QAction::triggered, settingsButton,
+            &QPushButton::click);
 
     // ==================== 2. 中央多页面切换容器 (QStackedWidget) ====================
     m_stackedWidget = new QStackedWidget(this);
@@ -440,6 +524,20 @@ MainWindow::MainWindow(QWidget *parent)
     presetSelector->setStyleSheet(
         "QComboBox { background: #1E2028; color: #EAEAEA; "
         "border: 1px solid #343846; border-radius: 5px; padding: 6px 8px; }");
+    auto* savePresetButton = new QPushButton("保存配置", this);
+    auto* renamePresetButton = new QPushButton("重命名", this);
+    auto* deletePresetButton = new QPushButton("删除配置", this);
+    for (auto* button : {savePresetButton, renamePresetButton,
+                         deletePresetButton}) {
+        button->setStyleSheet(
+            "QPushButton { background: #252834; color: #E0E4F0; "
+            "border: 1px solid #343846; border-radius: 5px; padding: 6px 9px; }"
+            "QPushButton:hover { background: #343A4B; }"
+            "QPushButton:disabled { color: #666B78; }");
+    }
+    savePresetButton->setToolTip("将当前画布节点和连线保存为自定义配置");
+    renamePresetButton->setToolTip("重命名选中的自定义配置");
+    deletePresetButton->setToolTip("删除选中的自定义配置文件");
     auto* clearConnectionsButton = new QPushButton("清空连线", this);
     clearConnectionsButton->setToolTip("移除画布上的全部连线");
     clearConnectionsButton->setStyleSheet(
@@ -463,6 +561,9 @@ MainWindow::MainWindow(QWidget *parent)
     outputStatus->setStyleSheet("color: #9499A6; font-size: 12px;");
     patchHeader->addWidget(new QLabel("配置", this));
     patchHeader->addWidget(presetSelector);
+    patchHeader->addWidget(savePresetButton);
+    patchHeader->addWidget(renamePresetButton);
+    patchHeader->addWidget(deletePresetButton);
     patchHeader->addWidget(clearConnectionsButton);
     patchHeader->addSpacing(16);
     patchHeader->addWidget(new QLabel("音频输出", this));
@@ -732,6 +833,23 @@ MainWindow::MainWindow(QWidget *parent)
 
     // ==================== 3. 顶部常驻播放工作区 ====================
     m_nowPlayingHeader = new isac::ui::NowPlayingHeader(this);
+    m_playbackQueueView = new isac::ui::PlaybackQueueView(
+        &m_libraryRepository, this);
+    connect(m_playbackQueueView,
+            &isac::ui::PlaybackQueueView::trackActivated, this,
+            [this](qint64 trackId) {
+        if (m_playbackQueue.selectTrack(trackId)) {
+            persistPlaybackQueue(false);
+            playQueuedTrack(trackId);
+        }
+    });
+    connect(m_nowPlayingHeader,
+            &isac::ui::NowPlayingHeader::queueViewRequested, this, [this]() {
+        m_playbackQueueView->show();
+        refreshPlaybackQueueView();
+        m_playbackQueueView->raise();
+        m_playbackQueueView->activateWindow();
+    });
     m_nowPlayingHeader->setAudioInfoVisibility(
         settings.value(QStringLiteral("display/audioFormat"), true).toBool(),
         settings.value(QStringLiteral("display/sampleRate"), true).toBool(),
@@ -888,12 +1006,8 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_mprisController,
             &isac::platform::MprisController::playbackModeRequested,
             this, [this](int mode) {
-                m_playbackMode =
-                    static_cast<isac::library::PlaybackMode>(mode);
-                m_playbackQueue.setMode(m_playbackMode);
-                persistPlaybackQueue(true);
-                m_nowPlayingHeader->setPlaybackMode(mode);
-                m_mprisController->setPlaybackMode(m_playbackMode);
+                setPlaybackMode(
+                    static_cast<isac::library::PlaybackMode>(mode));
             });
 #endif
 
@@ -1034,12 +1148,8 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(m_nowPlayingHeader, &isac::ui::NowPlayingHeader::playbackModeChanged,
             this, [this](int mode) {
-                m_playbackMode = static_cast<isac::library::PlaybackMode>(mode);
-                m_playbackQueue.setMode(m_playbackMode);
-                persistPlaybackQueue(true);
-#ifdef ISAC_HAS_MPRIS
-                m_mprisController->setPlaybackMode(m_playbackMode);
-#endif
+                setPlaybackMode(
+                    static_cast<isac::library::PlaybackMode>(mode));
             });
     connect(m_nowPlayingHeader, &isac::ui::NowPlayingHeader::seekRequested, this, [this](double sec) {
         m_audioEngine.seekToSeconds(sec);
@@ -1071,53 +1181,336 @@ MainWindow::MainWindow(QWidget *parent)
         lblPatchStatus->setText(
             QStringLiteral("内置配置安装失败：%1").arg(presetError));
     }
-    const auto presets =
-        isac::ui::DspPresetCatalog::load(presetDirectory, &presetError);
-    presetSelector->addItem(QStringLiteral("选择路由配置"));
-    for (const auto& preset : presets) {
-        presetSelector->addItem(preset.name, preset.id);
-    }
-    if (!presetError.isEmpty()) {
-        lblPatchStatus->setText(
-            QStringLiteral("部分配置无法读取：%1").arg(presetError));
-    }
-
-    connect(presetSelector, QOverload<int>::of(&QComboBox::activated),
-            this, [this, presetSelector, lblPatchStatus, presets]() {
-        const QString selectedId = presetSelector->currentData().toString();
-        const auto selectedPreset = std::find_if(
-            presets.begin(), presets.end(),
-            [&selectedId](const isac::ui::DspPreset& preset) {
-                return preset.id == selectedId;
-            });
-        if (selectedPreset == presets.end()) {
-            return;
+    auto presets = std::make_shared<QVector<isac::ui::DspPreset>>();
+    auto refreshPresetSelector =
+        [presetSelector, presets, presetDirectory, lblPatchStatus](
+            const QString& selectedId = QString{}) {
+        QString loadError;
+        *presets = isac::ui::DspPresetCatalog::load(
+            presetDirectory, &loadError);
+        const QSignalBlocker blocker(presetSelector);
+        presetSelector->clear();
+        presetSelector->addItem(QStringLiteral("选择路由配置"));
+        int selectedIndex = 0;
+        for (const auto& preset : *presets) {
+            presetSelector->addItem(preset.name, preset.id);
+            if (!selectedId.isEmpty() && preset.id == selectedId) {
+                selectedIndex = presetSelector->count() - 1;
+            }
         }
+        presetSelector->setCurrentIndex(selectedIndex);
+        if (!loadError.isEmpty()) {
+            lblPatchStatus->setText(
+                QStringLiteral("部分配置无法读取：%1").arg(loadError));
+        }
+    };
+    refreshPresetSelector();
 
-        QHash<QString, isac::NodeId> roleNodes{
+    auto selectedPreset = [presetSelector, presets]()
+        -> const isac::ui::DspPreset* {
+        const QString id = presetSelector->currentData().toString();
+        const auto found = std::find_if(
+            presets->cbegin(), presets->cend(),
+            [&id](const isac::ui::DspPreset& preset) {
+                return preset.id == id;
+            });
+        return found == presets->cend() ? nullptr : &*found;
+    };
+    auto updatePresetActions = [selectedPreset, renamePresetButton,
+                                deletePresetButton]() {
+        const auto* preset = selectedPreset();
+        const bool editable = preset && !preset->builtIn;
+        renamePresetButton->setEnabled(editable);
+        deletePresetButton->setEnabled(editable);
+    };
+    updatePresetActions();
+    connect(presetSelector, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [updatePresetActions](int) { updatePresetActions(); });
+
+    auto currentRoleNodes = [this]() {
+        QHash<QString, isac::NodeId> roles{
             {QStringLiteral("source"), m_audioEngine.sourceNodeId()},
             {QStringLiteral("sink"), m_audioEngine.sinkNodeId()}
         };
-        if (const auto node = m_audioEngine.gainNode()) {
-            roleNodes.insert(QStringLiteral("gain"), node->id());
+        const auto addLegacyRole =
+            [&roles](const QString& role,
+                     const std::shared_ptr<isac::IAudioNode>& node) {
+            if (node) {
+                roles.insert(role, node->id());
+            }
+        };
+        addLegacyRole(QStringLiteral("gain"), m_audioEngine.gainNode());
+        addLegacyRole(QStringLiteral("adder"), m_audioEngine.addNodePtr());
+        addLegacyRole(QStringLiteral("eq"), m_audioEngine.equalizerNode());
+
+        std::vector<std::pair<isac::NodeId,
+                              std::shared_ptr<isac::IAudioNode>>> nodes;
+        for (const auto& entry : m_audioEngine.nodes()) {
+            if (entry.first != m_audioEngine.sourceNodeId() &&
+                entry.first != m_audioEngine.sinkNodeId()) {
+                nodes.push_back(entry);
+            }
         }
-        if (const auto node = m_audioEngine.addNodePtr()) {
-            roleNodes.insert(QStringLiteral("adder"), node->id());
+        std::sort(nodes.begin(), nodes.end(),
+                  [](const auto& left, const auto& right) {
+            return left.first < right.first;
+        });
+        QHash<QString, int> instanceCounts;
+        for (const auto& [id, node] : nodes) {
+            const QString pluginId = m_pluginManager.pluginIdForNode(node);
+            if (pluginId.isEmpty()) {
+                continue;
+            }
+            const int instance = instanceCounts.value(pluginId, 0);
+            instanceCounts.insert(pluginId, instance + 1);
+            roles.insert(QStringLiteral("%1#%2").arg(pluginId).arg(instance),
+                         id);
         }
-        if (const auto node = m_audioEngine.equalizerNode()) {
-            roleNodes.insert(QStringLiteral("eq"), node->id());
+        return roles;
+    };
+
+    connect(presetSelector, QOverload<int>::of(&QComboBox::activated),
+            this, [this, presetSelector, lblPatchStatus, presets,
+                   currentRoleNodes]() {
+        const QString selectedId = presetSelector->currentData().toString();
+        const auto selectedIt = std::find_if(
+            presets->cbegin(), presets->cend(),
+            [&selectedId](const isac::ui::DspPreset& preset) {
+                return preset.id == selectedId;
+            });
+        if (selectedIt == presets->cend()) {
+            return;
+        }
+        const isac::ui::DspPreset preset = *selectedIt;
+        auto roleNodes = currentRoleNodes();
+        QVector<isac::NodeId> createdNodes;
+
+        if (preset.version == 2) {
+            for (const auto& nodeSpec : preset.nodes) {
+                if (nodeSpec.pluginId.isEmpty() ||
+                    roleNodes.contains(nodeSpec.role)) {
+                    continue;
+                }
+                const auto node =
+                    m_pluginManager.createNode(nodeSpec.pluginId);
+                if (!node) {
+                    for (const isac::NodeId id : createdNodes) {
+                        m_audioEngine.removeNode(id);
+                    }
+                    lblPatchStatus->setText(
+                        QStringLiteral("配置需要未安装的模块：%1")
+                            .arg(nodeSpec.pluginId));
+                    return;
+                }
+                const isac::NodeId id = m_audioEngine.addNode(node);
+                createdNodes.push_back(id);
+                roleNodes.insert(nodeSpec.role, id);
+            }
         }
 
         QString error;
         if (!isac::ui::DspPresetCatalog::apply(
-                *selectedPreset, m_audioEngine, roleNodes, &error)) {
+                preset, m_audioEngine, roleNodes, &error)) {
+            for (const isac::NodeId id : createdNodes) {
+                m_audioEngine.removeNode(id);
+            }
+            if (!createdNodes.isEmpty()) {
+                m_audioEngine.rebuildGraph();
+            }
             lblPatchStatus->setText(
                 QStringLiteral("配置未应用：%1").arg(error));
             return;
         }
-        m_patchbayView->patchbayScene()->syncFromEngine();
+
+        auto* scene = m_patchbayView->patchbayScene();
+        QString appliedStatus =
+            QStringLiteral("已加载配置：%1").arg(preset.name);
+        if (preset.version == 2) {
+            QHash<isac::NodeId, QPointF> positions;
+            QSet<isac::NodeId> configuredNodes;
+            for (const auto& nodeSpec : preset.nodes) {
+                const isac::NodeId id = roleNodes.value(nodeSpec.role);
+                positions.insert(id, nodeSpec.position);
+                configuredNodes.insert(id);
+            }
+
+            QVector<isac::NodeId> obsoleteNodes;
+            const auto protectedNode = [this](isac::NodeId id) {
+                const auto gain = m_audioEngine.gainNode();
+                const auto adder = m_audioEngine.addNodePtr();
+                const auto equalizer = m_audioEngine.equalizerNode();
+                return (gain && gain->id() == id) ||
+                       (adder && adder->id() == id) ||
+                       (equalizer && equalizer->id() == id);
+            };
+            for (const auto& entry : m_audioEngine.nodes()) {
+                const isac::NodeId id = entry.first;
+                if (id != m_audioEngine.sourceNodeId() &&
+                    id != m_audioEngine.sinkNodeId() &&
+                    !configuredNodes.contains(id) && !protectedNode(id)) {
+                    obsoleteNodes.push_back(id);
+                }
+            }
+            for (const isac::NodeId id : obsoleteNodes) {
+                m_audioEngine.removeNode(id);
+            }
+            if (!obsoleteNodes.isEmpty() && !m_audioEngine.rebuildGraph()) {
+                appliedStatus =
+                    QStringLiteral("配置已应用，但清理未使用模块失败");
+            }
+            scene->syncFromEngine();
+            scene->applyNodePositions(positions);
+        } else {
+            scene->syncFromEngine();
+        }
+        lblPatchStatus->setText(appliedStatus);
+    });
+
+    connect(savePresetButton, &QPushButton::clicked, this,
+            [this, presetDirectory, refreshPresetSelector, lblPatchStatus]() {
+        bool accepted = false;
+        const QString name = QInputDialog::getText(
+            this, QStringLiteral("保存路由配置"),
+            QStringLiteral("配置名称："), QLineEdit::Normal, {}, &accepted);
+        if (!accepted) {
+            return;
+        }
+
+        isac::ui::DspPreset preset;
+        preset.version = 2;
+        preset.name = name.trimmed();
+        auto* scene = m_patchbayView->patchbayScene();
+        const auto positions = scene->nodePositions();
+        QHash<isac::NodeId, QString> rolesByNode;
+        rolesByNode.insert(m_audioEngine.sourceNodeId(),
+                           QStringLiteral("source"));
+        rolesByNode.insert(m_audioEngine.sinkNodeId(),
+                           QStringLiteral("sink"));
+        preset.nodes.push_back({
+            QStringLiteral("source"), {},
+            positions.value(m_audioEngine.sourceNodeId())
+        });
+        preset.nodes.push_back({
+            QStringLiteral("sink"), {},
+            positions.value(m_audioEngine.sinkNodeId())
+        });
+
+        std::vector<std::pair<isac::NodeId,
+                              std::shared_ptr<isac::IAudioNode>>> nodes;
+        for (const auto& entry : m_audioEngine.nodes()) {
+            if (entry.first != m_audioEngine.sourceNodeId() &&
+                entry.first != m_audioEngine.sinkNodeId()) {
+                nodes.push_back(entry);
+            }
+        }
+        std::sort(nodes.begin(), nodes.end(),
+                  [](const auto& left, const auto& right) {
+            return left.first < right.first;
+        });
+        QHash<QString, int> instanceCounts;
+        for (const auto& [id, node] : nodes) {
+            const QString pluginId = m_pluginManager.pluginIdForNode(node);
+            if (pluginId.isEmpty()) {
+                lblPatchStatus->setText(
+                    QStringLiteral("无法保存：画布中存在未知类型的节点"));
+                return;
+            }
+            const int instance = instanceCounts.value(pluginId, 0);
+            instanceCounts.insert(pluginId, instance + 1);
+            const QString role =
+                QStringLiteral("%1#%2").arg(pluginId).arg(instance);
+            rolesByNode.insert(id, role);
+            preset.nodes.push_back({
+                role, pluginId, positions.value(id)
+            });
+        }
+        for (const isac::Connection& connection :
+             m_audioEngine.connections()) {
+            if (!rolesByNode.contains(connection.srcNode) ||
+                !rolesByNode.contains(connection.dstNode)) {
+                lblPatchStatus->setText(
+                    QStringLiteral("无法保存：连线引用了未知节点"));
+                return;
+            }
+            preset.connections.push_back({
+                rolesByNode.value(connection.srcNode), connection.srcPort,
+                rolesByNode.value(connection.dstNode), connection.dstPort
+            });
+        }
+
+        QString error;
+        if (!isac::ui::DspPresetCatalog::save(
+                presetDirectory, preset, &error)) {
+            lblPatchStatus->setText(
+                QStringLiteral("保存配置失败：%1").arg(error));
+            return;
+        }
+        refreshPresetSelector(preset.id);
         lblPatchStatus->setText(
-            QStringLiteral("已加载配置：%1").arg(selectedPreset->name));
+            QStringLiteral("已保存配置：%1").arg(preset.name));
+    });
+
+    connect(renamePresetButton, &QPushButton::clicked, this,
+            [presetDirectory, presetSelector, presets,
+             refreshPresetSelector, lblPatchStatus, this]() {
+        const QString id = presetSelector->currentData().toString();
+        const auto found = std::find_if(
+            presets->cbegin(), presets->cend(),
+            [&id](const isac::ui::DspPreset& preset) {
+                return preset.id == id;
+            });
+        if (found == presets->cend() || found->builtIn) {
+            return;
+        }
+        bool accepted = false;
+        const QString name = QInputDialog::getText(
+            this, QStringLiteral("重命名路由配置"),
+            QStringLiteral("配置名称："), QLineEdit::Normal,
+            found->name, &accepted);
+        if (!accepted) {
+            return;
+        }
+        QString error;
+        if (!isac::ui::DspPresetCatalog::rename(
+                presetDirectory, id, name, &error)) {
+            lblPatchStatus->setText(
+                QStringLiteral("重命名失败：%1").arg(error));
+            return;
+        }
+        refreshPresetSelector(id);
+        lblPatchStatus->setText(QStringLiteral("配置已重命名"));
+    });
+
+    connect(deletePresetButton, &QPushButton::clicked, this,
+            [presetDirectory, presetSelector, presets,
+             refreshPresetSelector, lblPatchStatus, this]() {
+        const QString id = presetSelector->currentData().toString();
+        const auto found = std::find_if(
+            presets->cbegin(), presets->cend(),
+            [&id](const isac::ui::DspPreset& preset) {
+                return preset.id == id;
+            });
+        if (found == presets->cend() || found->builtIn) {
+            return;
+        }
+        const QString name = found->name;
+        if (QMessageBox::question(
+                this, QStringLiteral("删除路由配置"),
+                QStringLiteral("确定删除“%1”？此操作不可撤销。").arg(name),
+                QMessageBox::Yes | QMessageBox::Cancel,
+                QMessageBox::Cancel) != QMessageBox::Yes) {
+            return;
+        }
+        QString error;
+        if (!isac::ui::DspPresetCatalog::remove(
+                presetDirectory, id, &error)) {
+            lblPatchStatus->setText(
+                QStringLiteral("删除配置失败：%1").arg(error));
+            return;
+        }
+        refreshPresetSelector();
+        lblPatchStatus->setText(
+            QStringLiteral("已删除配置：%1").arg(name));
     });
 
     connect(clearConnectionsButton, &QPushButton::clicked, this, [this, lblPatchStatus]() {
@@ -1229,6 +1622,7 @@ void MainWindow::rebuildPlaybackQueue(qint64 currentTrackId) {
     std::vector<qint64> trackIds = currentTrackIds();
     m_playbackQueue.reset(std::move(trackIds), currentTrackId, m_playbackMode);
     m_playbackQueueNeedsSave = true;
+    refreshPlaybackQueueView();
 }
 
 std::vector<qint64> MainWindow::currentTrackIds() const {
@@ -1260,7 +1654,11 @@ bool MainWindow::playQueuedTrack(qint64 trackId) {
             settings.value(QStringLiteral("playback/historyLimit"), 100)
                 .toInt(),
             5, 10000);
-        if (!m_libraryRepository.recordPlayback(trackId, historyLimit)) {
+        const bool onlyLatestPerTrack = settings.value(
+            QStringLiteral("playback/historyOnlyLatestPerTrack"), false)
+                                            .toBool();
+        if (!m_libraryRepository.recordPlayback(
+                trackId, historyLimit, onlyLatestPerTrack)) {
             qWarning() << "Unable to record playback history:"
                        << m_libraryRepository.lastError();
         } else {
@@ -1291,16 +1689,19 @@ bool MainWindow::playQueuedTrack(qint64 trackId) {
 void MainWindow::persistPlaybackQueue(bool includeOrder) {
     if (includeOrder) {
         m_playbackQueueNeedsSave = !m_libraryRepository.savePlaybackQueue(
-            m_playbackQueue.orderedTrackIds(), m_playbackQueue.position(),
-            m_playbackMode);
+            m_playbackQueue.orderedTrackIds(),
+            m_playbackQueue.sourceTrackIds(),
+            m_playbackQueue.position(), m_playbackMode);
     } else {
         if (!m_libraryRepository.savePlaybackCursor(
                 m_playbackQueue.position(), m_playbackMode)) {
             m_playbackQueueNeedsSave = !m_libraryRepository.savePlaybackQueue(
                 m_playbackQueue.orderedTrackIds(),
+                m_playbackQueue.sourceTrackIds(),
                 m_playbackQueue.position(), m_playbackMode);
         }
     }
+    refreshPlaybackQueueView();
 }
 
 void MainWindow::restorePlaybackQueue() {
@@ -1310,7 +1711,8 @@ void MainWindow::restorePlaybackQueue() {
     }
     m_playbackMode = saved->mode;
     m_playbackQueue.restore(
-        saved->trackIds, saved->position, saved->mode);
+        saved->trackIds, saved->sourceTrackIds,
+        saved->position, saved->mode);
     m_currentTrackId =
         m_playbackQueue.currentTrackId().value_or(0);
     m_nowPlayingHeader->setPlaybackMode(static_cast<int>(m_playbackMode));
@@ -1322,6 +1724,31 @@ void MainWindow::restorePlaybackQueue() {
         } else {
             m_currentTrackId = 0;
         }
+    }
+    refreshPlaybackQueueView();
+}
+
+void MainWindow::setPlaybackMode(isac::library::PlaybackMode mode)
+{
+    m_playbackMode = mode;
+    m_playbackQueue.setMode(mode);
+    persistPlaybackQueue(true);
+    if (m_playbackQueueView && !m_playbackQueueView->isVisible()) {
+        refreshPlaybackQueueView(true);
+    }
+    m_nowPlayingHeader->setPlaybackMode(static_cast<int>(mode));
+#ifdef ISAC_HAS_MPRIS
+    m_mprisController->setPlaybackMode(mode);
+#endif
+}
+
+void MainWindow::refreshPlaybackQueueView(bool force)
+{
+    if (m_playbackQueueView &&
+        (force || m_playbackQueueView->isVisible())) {
+        m_playbackQueueView->setQueue(
+            m_playbackQueue.orderedTrackIds(),
+            m_playbackQueue.currentTrackId().value_or(0));
     }
 }
 

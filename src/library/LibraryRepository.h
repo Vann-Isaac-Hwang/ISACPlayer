@@ -32,6 +32,7 @@ struct LibraryGroup {
 
 struct PersistedPlaybackQueue {
     std::vector<qint64> trackIds;
+    std::vector<qint64> sourceTrackIds;
     std::size_t position = 0;
     PlaybackMode mode = PlaybackMode::Sequential;
 };
@@ -129,10 +130,12 @@ public:
     qint64 playlistTrackCount(qint64 playlistId,
                               const QString& searchText = {}) const;
     bool savePlaybackQueue(const std::vector<qint64>& trackIds,
+                           const std::vector<qint64>& sourceTrackIds,
                            std::size_t position, PlaybackMode mode);
     bool savePlaybackCursor(std::size_t position, PlaybackMode mode);
     std::optional<PersistedPlaybackQueue> loadPlaybackQueue() const;
-    bool recordPlayback(qint64 trackId, int maxEntries);
+    bool recordPlayback(qint64 trackId, int maxEntries,
+                        bool onlyLatestPerTrack = false);
     bool trimPlaybackHistory(int maxEntries);
     std::vector<TrackInfo> queryPlaybackHistory(
         const QString& searchText = {}, int limit = 100, int offset = 0) const;

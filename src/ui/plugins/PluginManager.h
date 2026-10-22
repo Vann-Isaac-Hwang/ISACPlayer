@@ -34,6 +34,8 @@ public:
     void scanDirectory(const QString& directoryPath);
     const std::vector<PluginInfo>& plugins() const { return m_plugins; }
     std::shared_ptr<IAudioNode> createNode(const QString& pluginId) const;
+    QString pluginIdForNode(
+        const std::shared_ptr<IAudioNode>& node) const;
     QWidget* createControlWidget(const std::shared_ptr<IAudioNode>& node,
                                  QWidget* parent) const;
 
@@ -50,6 +52,7 @@ private:
 
     struct NodeBinding {
         std::weak_ptr<IAudioNode> node;
+        QString pluginId;
         IAudioPluginUi* pluginUi = nullptr;
         IAudioPluginParameters* parameters = nullptr;
     };

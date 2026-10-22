@@ -202,6 +202,7 @@ signals:
     void prevClicked();
     void nextClicked();
     void playbackModeChanged(int mode);
+    void queueViewRequested();
     void seekRequested(double targetSeconds);
     void volumeChanged(float factor);
     void coverContextMenuRequested(qint64 trackId, const QPoint& globalPosition);

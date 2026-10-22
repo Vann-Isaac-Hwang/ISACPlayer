@@ -228,6 +228,26 @@ void PatchbayScene::syncFromEngine() {
     }
 }
 
+QHash<NodeId, QPointF> PatchbayScene::nodePositions() const
+{
+    QHash<NodeId, QPointF> positions;
+    for (const auto& [id, item] : m_nodeItems) {
+        positions.insert(id, item->pos());
+    }
+    return positions;
+}
+
+void PatchbayScene::applyNodePositions(
+    const QHash<NodeId, QPointF>& positions)
+{
+    for (auto it = positions.cbegin(); it != positions.cend(); ++it) {
+        const auto item = m_nodeItems.find(it.key());
+        if (item != m_nodeItems.end()) {
+            item->second->setPos(it.value());
+        }
+    }
+}
+
 void PatchbayScene::drawBackground(QPainter* painter, const QRectF& rect) {
     painter->fillRect(rect, QColor(24, 26, 31)); // 深灰背景
 

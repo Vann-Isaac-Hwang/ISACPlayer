@@ -8,6 +8,7 @@
 #include <memory>
 #include "engine/graph/AudioEngine.h"
 #include "ui/apple_view/AppleMusicView.h"
+#include "ui/apple_view/PlaybackQueueView.h"
 #include "ui/patchbay/PatchbayView.h"
 #include "ui/plugins/PluginManager.h"
 #include "library/LibraryScanner.h"
@@ -36,6 +37,8 @@ private:
     void rebuildPlaybackQueue(qint64 currentTrackId);
     void persistPlaybackQueue(bool includeOrder);
     void restorePlaybackQueue();
+    void setPlaybackMode(isac::library::PlaybackMode mode);
+    void refreshPlaybackQueueView(bool force = false);
     std::vector<qint64> currentTrackIds() const;
 
     Ui::MainWindow *ui;
@@ -48,6 +51,7 @@ private:
     isac::ui::AppleLibraryPage* m_libraryPage = nullptr;
     isac::ui::PlaylistPage* m_playlistPage = nullptr;
     isac::ui::NowPlayingHeader* m_nowPlayingHeader = nullptr;
+    isac::ui::PlaybackQueueView* m_playbackQueueView = nullptr;
     isac::ui::PatchbayView* m_patchbayView = nullptr;
     QMainWindow* m_routerWorkspace = nullptr;
     QDockWidget* m_pluginDock = nullptr;

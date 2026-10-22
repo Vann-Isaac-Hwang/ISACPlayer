@@ -56,6 +56,8 @@ set(PROJECT_SOURCES
     src/engine/plugin/IAudioPlugin.h
     src/ui/apple_view/AppleMusicView.h
     src/ui/apple_view/AppleMusicView.cpp
+    src/ui/apple_view/PlaybackQueueView.h
+    src/ui/apple_view/PlaybackQueueView.cpp
     src/ui/player/AudioVisualization.h
     src/ui/player/AudioVisualization.cpp
     src/ui/patchbay/PatchbayView.h
@@ -113,6 +115,14 @@ install(TARGETS ISACPlayer
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+if(UNIX AND NOT APPLE)
+    install(FILES config/isacplayer.desktop
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
+    )
+    install(FILES resources/icons/isacplayer.png
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps
+    )
+endif()
 install(DIRECTORY DESTINATION ${CMAKE_INSTALL_BINDIR}/plugins)
 install(DIRECTORY plugin_sdk/include/
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/isacplayer

@@ -3,6 +3,7 @@
 #include <QGraphicsScene>
 #include <QGraphicsObject>
 #include <QGraphicsPathItem>
+#include <QHash>
 #include <unordered_map>
 #include "engine/graph/AudioEngine.h"
 
@@ -84,6 +85,8 @@ class PatchbayScene : public QGraphicsScene {
 public:
     explicit PatchbayScene(AudioEngine& engine, QObject* parent = nullptr);
     void syncFromEngine();
+    QHash<NodeId, QPointF> nodePositions() const;
+    void applyNodePositions(const QHash<NodeId, QPointF>& positions);
 
 signals:
     void topologyChanged(const QString& message);

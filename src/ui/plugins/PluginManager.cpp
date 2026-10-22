@@ -126,12 +126,28 @@ std::shared_ptr<IAudioNode> PluginManager::createNode(const QString& pluginId) c
             auto node = record.factory ? record.factory() : nullptr;
             if (node && (record.pluginUi || record.parameters)) {
                 m_nodeBindings.push_back(
-                    {node, record.pluginUi, record.parameters});
+                    {node, record.info.id, record.pluginUi,
+                     record.parameters});
             }
             return node;
         }
     }
     return nullptr;
+}
+
+QString PluginManager::pluginIdForNode(
+    const std::shared_ptr<IAudioNode>& node) const
+{
+    if (!node) {
+        return {};
+    }
+    for (const auto& binding : m_nodeBindings) {
+        const auto boundNode = binding.node.lock();
+        if (boundNode && boundNode.get() == node.get()) {
+            return binding.pluginId;
+        }
+    }
+    return {};
 }
 
 QWidget* PluginManager::createControlWidget(
