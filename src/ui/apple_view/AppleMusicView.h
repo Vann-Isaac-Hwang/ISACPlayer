@@ -9,9 +9,12 @@
 #include <QSlider>
 #include <QIcon>
 #include <QComboBox>
+#include <QListView>
 #include <QLineEdit>
+#include <QStackedWidget>
 #include <QTimer>
 #include <QTabBar>
+#include <QToolButton>
 #include <QMimeData>
 #include <optional>
 #include <vector>
@@ -59,6 +62,7 @@ private:
     mutable int m_pageStart = -1;
     qint64 m_trackCount = 0;
     std::optional<qint64> m_playlistId;
+    bool m_playlistContext = false;
     QString m_artistFilter;
     QString m_albumFilter;
     QString m_searchText;
@@ -94,6 +98,7 @@ private:
     qint64 m_groupCount = 0;
     mutable std::vector<library::LibraryGroup> m_page;
     mutable int m_pageStart = -1;
+    mutable QCache<int, QIcon> m_coverCache{64};
     static constexpr int kPageSize = 256;
 };
 
@@ -113,8 +118,6 @@ public:
 
 signals:
     void trackDoubleClicked(qint64 trackId);
-    void requestImportFiles();
-    void requestImportFolder();
 
 private:
     library::LibraryRepository* m_repository = nullptr;
@@ -126,6 +129,11 @@ private:
     LibraryGroupTableModel* m_albumModel;
     QTabBar* m_libraryTabs;
     QPushButton* m_groupBackButton;
+    QToolButton* m_albumListButton = nullptr;
+    QToolButton* m_albumCoverButton = nullptr;
+    QWidget* m_albumViewMode = nullptr;
+    QListView* m_albumCoverView = nullptr;
+    QStackedWidget* m_libraryContent = nullptr;
     int m_libraryView = 0;
     bool m_showingGroupTracks = false;
     QLineEdit* m_searchInput;
@@ -134,6 +142,7 @@ private:
     QTimer* m_searchTimer;
 
     void showLibraryView(int view);
+    void openGroupAtRow(int row);
     void showGroupTracks(const library::LibraryGroup& group);
     void updateResultCount();
 };

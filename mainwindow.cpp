@@ -21,9 +21,13 @@
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QDockWidget>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QMessageBox>
+#include <QListWidgetItem>
+#include <QAbstractItemView>
+#include <QScrollArea>
 #include <algorithm>
 
 namespace {
@@ -93,8 +97,8 @@ MainWindow::MainWindow(QWidget *parent)
     sideLayout->setContentsMargins(0, 0, 0, 0);
     sideLayout->setSpacing(0);
 
-    auto* btnNavLibrary = new QPushButton("音乐资料库", sidebar);
-    auto* btnNavPlaylists = new QPushButton("歌单管理", sidebar);
+    auto* btnNavLibrary = new QPushButton("Library", sidebar);
+    auto* btnNavPlaylists = new QPushButton("Playlists", sidebar);
     auto* btnNavPatchbay = new QPushButton("DSP Router", sidebar);
     btnNavLibrary->setCheckable(true);
     btnNavPlaylists->setCheckable(true);
@@ -110,15 +114,185 @@ MainWindow::MainWindow(QWidget *parent)
     sideLayout->addStretch();
     auto* settingsButton = new QPushButton("设置", sidebar);
     settingsButton->setFixedHeight(44);
-    settingsButton->setToolTip("播放设置");
+    settingsButton->setToolTip("设置");
     sideLayout->addWidget(settingsButton);
     connect(settingsButton, &QPushButton::clicked, this, [this]() {
         QSettings settings;
         QDialog dialog(this);
-        dialog.setWindowTitle("播放设置");
-        dialog.setMinimumWidth(360);
-        auto* layout = new QVBoxLayout(&dialog);
-        auto* form = new QFormLayout();
+        dialog.setWindowTitle("设置");
+        dialog.resize(680, 760);
+        auto* dialogLayout = new QVBoxLayout(&dialog);
+        auto* scrollArea = new QScrollArea(&dialog);
+        scrollArea->setWidgetResizable(true);
+        scrollArea->setFrameShape(QFrame::NoFrame);
+        auto* content = new QWidget(scrollArea);
+        auto* layout = new QVBoxLayout(content);
+        layout->setContentsMargins(8, 8, 8, 8);
+        layout->setSpacing(10);
+        auto addSectionTitle = [content, layout](const QString& title) {
+            auto* heading = new QLabel(title, content);
+            heading->setStyleSheet(
+                "font-size: 18px; font-weight: bold; color: #F0F1F4; "
+                "padding-top: 8px; border-bottom: 1px solid #343846;");
+            layout->addWidget(heading);
+        };
+
+        addSectionTitle(QStringLiteral("音乐库管理"));
+        auto* pathList = new QListWidget(content);
+        pathList->setSelectionMode(QAbstractItemView::SingleSelection);
+        pathList->setMinimumHeight(170);
+        pathList->setStyleSheet(
+            "QListWidget { background: #14161C; color: #D0D4E0; "
+            "border: 1px solid #343846; }"
+            "QListWidget::item { padding: 7px; }"
+            "QListWidget::item:selected { background: #343A4B; color: white; }");
+        auto* pathStatus = new QLabel(content);
+        pathStatus->setStyleSheet("color: #9499A6;");
+        auto* pathActionRow = new QHBoxLayout();
+        auto* importFilesButton =
+            new QPushButton(QStringLiteral("导入音乐文件"), content);
+        auto* addFolderButton =
+            new QPushButton(QStringLiteral("添加文件夹"), content);
+        auto* scanFolderButton =
+            new QPushButton(QStringLiteral("扫描所选"), content);
+        auto* removeFolderButton =
+            new QPushButton(QStringLiteral("移除路径"), content);
+        for (auto* button : {importFilesButton, addFolderButton,
+                             scanFolderButton, removeFolderButton}) {
+            button->setStyleSheet(
+                "QPushButton { background: #252834; color: #E0E4F0; "
+                "border: 1px solid #343846; border-radius: 0; padding: 7px 10px; }"
+                "QPushButton:hover { background: #343A4B; }"
+                "QPushButton:disabled { color: #666B78; }");
+        }
+        pathActionRow->addWidget(importFilesButton);
+        pathActionRow->addWidget(addFolderButton);
+        pathActionRow->addWidget(scanFolderButton);
+        pathActionRow->addWidget(removeFolderButton);
+        layout->addWidget(pathList);
+        layout->addLayout(pathActionRow);
+        layout->addWidget(pathStatus);
+
+        auto refreshPathList = [this, pathList](const QString& preferred = {}) {
+            const QSignalBlocker blocker(pathList);
+            pathList->clear();
+            int preferredRow = -1;
+            const auto directories = m_libraryRepository.directories();
+            for (int index = 0;
+                 index < static_cast<int>(directories.size()); ++index) {
+                const auto& directory =
+                    directories[static_cast<std::size_t>(index)];
+                const QString lastScanned = directory.lastScannedAt.isValid()
+                    ? directory.lastScannedAt.toLocalTime().toString(
+                          QStringLiteral("yyyy-MM-dd hh:mm"))
+                    : QStringLiteral("尚未扫描");
+                auto* item = new QListWidgetItem(
+                    QStringLiteral("%1\n上次扫描：%2")
+                        .arg(directory.path, lastScanned),
+                    pathList);
+                item->setData(Qt::UserRole, directory.path);
+                item->setData(Qt::UserRole + 1, directory.id);
+                item->setToolTip(directory.path);
+                if (directory.path == preferred) {
+                    preferredRow = index;
+                }
+            }
+            if (preferredRow >= 0) {
+                pathList->setCurrentRow(preferredRow);
+            } else if (pathList->count() > 0) {
+                pathList->setCurrentRow(0);
+            }
+        };
+        refreshPathList();
+
+        connect(importFilesButton, &QPushButton::clicked, &dialog,
+                [this, &dialog, pathStatus]() {
+            const QStringList files = QFileDialog::getOpenFileNames(
+                &dialog, QStringLiteral("选择音频文件"), {},
+                QStringLiteral("音频文件 (*.mp3 *.flac *.wav)"));
+            if (files.isEmpty()) {
+                return;
+            }
+            if (m_libraryScanner->isRunning()) {
+                pathStatus->setText(QStringLiteral("已有扫描任务正在运行"));
+                return;
+            }
+            pathStatus->setText(QStringLiteral("正在导入音乐文件…"));
+            m_libraryPage->setScanStatus(QStringLiteral("正在导入音乐文件…"));
+            m_libraryScanner->scanFiles(files);
+        });
+        connect(addFolderButton, &QPushButton::clicked, &dialog,
+                [this, &dialog, pathStatus, refreshPathList]() {
+            if (m_libraryScanner->isRunning()) {
+                pathStatus->setText(QStringLiteral("扫描期间不能修改路径"));
+                return;
+            }
+            const QString path = QFileDialog::getExistingDirectory(
+                &dialog, QStringLiteral("选择音乐文件夹"));
+            if (path.isEmpty()) {
+                return;
+            }
+            const QString absolutePath = QDir(path).absolutePath();
+            if (!m_libraryRepository.addDirectory(absolutePath)) {
+                pathStatus->setText(m_libraryRepository.lastError());
+                return;
+            }
+            refreshPathList(absolutePath);
+            pathStatus->setText(QStringLiteral("文件夹路径已添加"));
+        });
+        connect(removeFolderButton, &QPushButton::clicked, &dialog,
+                [this, pathList, pathStatus, refreshPathList]() {
+            const auto* item = pathList->currentItem();
+            if (!item) {
+                pathStatus->setText(QStringLiteral("请先选择一个文件夹路径"));
+                return;
+            }
+            if (m_libraryScanner->isRunning()) {
+                pathStatus->setText(QStringLiteral("扫描期间不能移除路径"));
+                return;
+            }
+            const qint64 id = item->data(Qt::UserRole + 1).toLongLong();
+            if (!m_libraryRepository.removeDirectory(id)) {
+                pathStatus->setText(m_libraryRepository.lastError());
+                return;
+            }
+            refreshPathList();
+            pathStatus->setText(
+                QStringLiteral("路径已移除；曲库中已导入的曲目保留"));
+        });
+        connect(scanFolderButton, &QPushButton::clicked, &dialog,
+                [this, pathList, pathStatus]() {
+            const auto* item = pathList->currentItem();
+            if (!item) {
+                pathStatus->setText(QStringLiteral("请先添加并选择文件夹路径"));
+                return;
+            }
+            if (m_libraryScanner->isRunning()) {
+                pathStatus->setText(QStringLiteral("已有扫描任务正在运行"));
+                return;
+            }
+            const QString path = item->data(Qt::UserRole).toString();
+            pathStatus->setText(QStringLiteral("正在扫描文件夹…"));
+            m_libraryPage->setScanStatus(QStringLiteral("正在扫描音乐文件夹…"));
+            m_libraryScanner->scanDirectory(path);
+        });
+        connect(m_libraryScanner,
+                &isac::library::LibraryScanner::scanFinished, &dialog,
+                [pathStatus, refreshPathList](bool cancelled,
+                                              const QString& error) {
+            refreshPathList();
+            if (!error.isEmpty()) {
+                pathStatus->setText(
+                    QStringLiteral("扫描失败：%1").arg(error));
+            } else if (cancelled) {
+                pathStatus->setText(QStringLiteral("扫描已取消"));
+            } else {
+                pathStatus->setText(QStringLiteral("扫描完成"));
+            }
+        });
+
+        addSectionTitle(QStringLiteral("播放"));
+        auto* playbackForm = new QFormLayout();
         auto* fadeEnabled = new QCheckBox("启用淡入淡出", &dialog);
         fadeEnabled->setChecked(
             settings.value(QStringLiteral("playback/fadeEnabled"), false).toBool());
@@ -133,8 +307,12 @@ MainWindow::MainWindow(QWidget *parent)
         fadeDuration->setEnabled(fadeEnabled->isChecked());
         connect(fadeEnabled, &QCheckBox::toggled,
                 fadeDuration, &QDoubleSpinBox::setEnabled);
-        form->addRow(fadeEnabled);
-        form->addRow("淡入/淡出时长", fadeDuration);
+        playbackForm->addRow(fadeEnabled);
+        playbackForm->addRow("淡入/淡出时长", fadeDuration);
+        layout->addLayout(playbackForm);
+
+        addSectionTitle(QStringLiteral("曲目信息"));
+        auto* infoForm = new QFormLayout();
         auto makeInfoOption = [&settings, &dialog](const QString& label,
                                                    const QString& key) {
             auto* option = new QCheckBox(&dialog);
@@ -151,18 +329,20 @@ MainWindow::MainWindow(QWidget *parent)
             makeInfoOption("声道数", QStringLiteral("display/channels"));
         const auto [bitrateLabel, showBitrate] =
             makeInfoOption("比特率", QStringLiteral("display/bitrate"));
-        form->addRow(new QLabel("曲目信息显示", &dialog));
-        form->addRow(formatLabel, showFormat);
-        form->addRow(sampleRateLabel, showSampleRate);
-        form->addRow(bitDepthLabel, showBitDepth);
-        form->addRow(channelsLabel, showChannels);
-        form->addRow(bitrateLabel, showBitrate);
-        layout->addLayout(form);
+        infoForm->addRow(formatLabel, showFormat);
+        infoForm->addRow(sampleRateLabel, showSampleRate);
+        infoForm->addRow(bitDepthLabel, showBitDepth);
+        infoForm->addRow(channelsLabel, showChannels);
+        infoForm->addRow(bitrateLabel, showBitrate);
+        layout->addLayout(infoForm);
+        layout->addStretch();
+        scrollArea->setWidget(content);
+        dialogLayout->addWidget(scrollArea, 1);
         auto* buttons = new QDialogButtonBox(
             QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
         connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
         connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-        layout->addWidget(buttons);
+        dialogLayout->addWidget(buttons);
         if (dialog.exec() != QDialog::Accepted) {
             return;
         }
@@ -271,9 +451,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_patchbayView->setStyleSheet("border: 1px solid #2B2F3C; border-radius: 12px;");
 
     // ==================== 3. 音频路由页内的 DSP 模块库 ====================
-    auto* pluginPanel = new QWidget(patchbayContainer);
-    pluginPanel->setMinimumWidth(240);
-    pluginPanel->setMaximumWidth(280);
+    auto* pluginPanel = new QWidget();
     pluginPanel->setStyleSheet(R"(
         QWidget { background: #191B22; color: #D0D4E0; }
         QListWidget {
@@ -293,8 +471,6 @@ MainWindow::MainWindow(QWidget *parent)
     pluginLayout->setContentsMargins(10, 10, 10, 10);
     pluginLayout->setSpacing(8);
 
-    auto* pluginTitle = new QLabel("DSP 模块库", pluginPanel);
-    pluginTitle->setStyleSheet("font-size: 14px; font-weight: bold; color: #E5E7EF;");
     auto* pluginList = new QListWidget(pluginPanel);
     auto* pluginDescription = new QLabel(pluginPanel);
     pluginDescription->setWordWrap(true);
@@ -349,34 +525,65 @@ MainWindow::MainWindow(QWidget *parent)
     connect(pluginList, &QListWidget::itemDoubleClicked,
             this, [instantiateSelected](QListWidgetItem*) { instantiateSelected(); });
 
-    pluginLayout->addWidget(pluginTitle);
     pluginLayout->addWidget(pluginList, 1);
     pluginLayout->addWidget(pluginDescription);
     pluginLayout->addWidget(instantiateButton);
 
-    auto* inspectorPanel = new QWidget(patchbayContainer);
+    m_pluginDock = new QDockWidget("DSP 模块库", this);
+    m_pluginDock->setObjectName(QStringLiteral("dspPluginLibraryDock"));
+    m_pluginDock->setAllowedAreas(Qt::RightDockWidgetArea);
+    m_pluginDock->setFeatures(QDockWidget::DockWidgetMovable |
+                              QDockWidget::DockWidgetFloatable |
+                              QDockWidget::DockWidgetClosable);
+    m_pluginDock->setMinimumWidth(240);
+    m_pluginDock->setWidget(pluginPanel);
+    m_pluginDock->setStyleSheet(R"(
+        QDockWidget { background: #191B22; color: #E5E7EF; }
+        QDockWidget::title {
+            background: #252834; color: #E5E7EF;
+            padding: 8px 10px; border-bottom: 1px solid #343846;
+        }
+    )");
+
+    auto* inspectorPanel = new QWidget();
     inspectorPanel->setStyleSheet(
         "QWidget { background: #191B22; color: #D0D4E0; }");
     auto* inspectorLayout = new QVBoxLayout(inspectorPanel);
     inspectorLayout->setContentsMargins(10, 10, 10, 10);
     inspectorLayout->setSpacing(8);
-    auto* inspectorTitle = new QLabel("节点检视器", inspectorPanel);
-    inspectorTitle->setStyleSheet(
-        "font-size: 14px; font-weight: bold; color: #E5E7EF;");
     auto* inspector = new isac::ui::NodeInspectorWidget(inspectorPanel);
-    inspectorLayout->addWidget(inspectorTitle);
     inspectorLayout->addWidget(inspector, 1);
 
-    auto* sidePanel = new QSplitter(Qt::Vertical, patchbayContainer);
-    sidePanel->setChildrenCollapsible(false);
-    sidePanel->setMinimumWidth(240);
-    sidePanel->setMaximumWidth(280);
-    sidePanel->setStyleSheet(
-        "QSplitter::handle:vertical { height: 5px; background: #343846; }");
-    sidePanel->addWidget(pluginPanel);
-    sidePanel->addWidget(inspectorPanel);
-    sidePanel->setStretchFactor(0, 3);
-    sidePanel->setStretchFactor(1, 2);
+    m_inspectorDock = new QDockWidget("节点检视器", this);
+    m_inspectorDock->setObjectName(QStringLiteral("dspNodeInspectorDock"));
+    m_inspectorDock->setAllowedAreas(Qt::RightDockWidgetArea);
+    m_inspectorDock->setFeatures(QDockWidget::DockWidgetMovable |
+                                 QDockWidget::DockWidgetFloatable |
+                                 QDockWidget::DockWidgetClosable);
+    m_inspectorDock->setMinimumWidth(240);
+    m_inspectorDock->setWidget(inspectorPanel);
+    m_inspectorDock->setStyleSheet(R"(
+        QDockWidget { background: #191B22; color: #E5E7EF; }
+        QDockWidget::title {
+            background: #252834; color: #E5E7EF;
+            padding: 8px 10px; border-bottom: 1px solid #343846;
+        }
+    )");
+
+    m_routerWorkspace = new QMainWindow(patchbayContainer);
+    m_routerWorkspace->setObjectName(QStringLiteral("dspRouterWorkspace"));
+    m_routerWorkspace->setWindowFlags(Qt::Widget);
+    m_routerWorkspace->setDockOptions(QMainWindow::AnimatedDocks |
+                                      QMainWindow::AllowTabbedDocks);
+    m_routerWorkspace->setCentralWidget(m_patchbayView);
+    m_routerWorkspace->addDockWidget(Qt::RightDockWidgetArea, m_pluginDock);
+    m_routerWorkspace->addDockWidget(Qt::RightDockWidgetArea, m_inspectorDock);
+    m_routerWorkspace->splitDockWidget(m_pluginDock, m_inspectorDock,
+                                       Qt::Vertical);
+    m_routerWorkspace->resizeDocks(
+        {m_pluginDock, m_inspectorDock}, {360, 260}, Qt::Vertical);
+    m_pluginDock->hide();
+    m_inspectorDock->hide();
 
     connect(m_patchbayView->patchbayScene(), &QGraphicsScene::selectionChanged,
             this, [this, inspector]() {
@@ -394,11 +601,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     patchLayout->addLayout(patchHeader);
     patchLayout->addLayout(patchStatusRow);
-    auto* patchbayBody = new QHBoxLayout();
-    patchbayBody->setSpacing(12);
-    patchbayBody->addWidget(m_patchbayView, 1);
-    patchbayBody->addWidget(sidePanel);
-    patchLayout->addLayout(patchbayBody, 1);
+    patchLayout->addWidget(m_routerWorkspace, 1);
 
     m_stackedWidget->addWidget(m_libraryPage);
     m_stackedWidget->addWidget(m_playlistPage);
@@ -520,6 +723,7 @@ MainWindow::MainWindow(QWidget *parent)
         btnNavLibrary->setChecked(true);
         btnNavPlaylists->setChecked(false);
         btnNavPatchbay->setChecked(false);
+        setRouterDockWidgetsVisible(false);
         m_stackedWidget->setCurrentIndex(0);
     });
     connect(btnNavPlaylists, &QPushButton::clicked, this,
@@ -527,6 +731,7 @@ MainWindow::MainWindow(QWidget *parent)
         btnNavLibrary->setChecked(false);
         btnNavPlaylists->setChecked(true);
         btnNavPatchbay->setChecked(false);
+        setRouterDockWidgetsVisible(false);
         m_playlistPage->refresh();
         m_stackedWidget->setCurrentIndex(1);
     });
@@ -535,6 +740,7 @@ MainWindow::MainWindow(QWidget *parent)
         btnNavLibrary->setChecked(false);
         btnNavPlaylists->setChecked(false);
         btnNavPatchbay->setChecked(true);
+        setRouterDockWidgetsVisible(true);
         m_stackedWidget->setCurrentIndex(2);
     });
 
@@ -664,33 +870,6 @@ MainWindow::MainWindow(QWidget *parent)
                 m_mprisController->setPlaybackMode(m_playbackMode);
             });
 #endif
-
-    // 导入单首或多首音乐
-    connect(m_libraryPage, &isac::ui::AppleLibraryPage::requestImportFiles, this, [this]() {
-        QStringList files = QFileDialog::getOpenFileNames(
-            this, "选择音频文件", "", "Audio Files (*.mp3 *.flac *.wav)");
-        if (!files.isEmpty()) {
-            if (m_libraryScanner->isRunning()) {
-                m_libraryPage->setScanStatus("已有扫描任务正在运行");
-                return;
-            }
-            m_libraryPage->setScanStatus("正在读取音频元数据...");
-            m_libraryScanner->scanFiles(files);
-        }
-    });
-
-    // 递归扫描整个音乐文件夹
-    connect(m_libraryPage, &isac::ui::AppleLibraryPage::requestImportFolder, this, [this]() {
-        QString dir = QFileDialog::getExistingDirectory(this, "选择音乐目录");
-        if (!dir.isEmpty()) {
-            if (m_libraryScanner->isRunning()) {
-                m_libraryPage->setScanStatus("已有扫描任务正在运行");
-                return;
-            }
-            m_libraryPage->setScanStatus("正在扫描文件夹...");
-            m_libraryScanner->scanDirectory(dir);
-        }
-    });
 
     // 双击表格歌曲播放
     connect(m_libraryPage, &isac::ui::AppleLibraryPage::trackDoubleClicked,
@@ -898,6 +1077,16 @@ MainWindow::MainWindow(QWidget *parent)
             frames, m_audioEngine.outputSampleRate());
     });
     m_visualizationTimer->start(33);
+}
+
+void MainWindow::setRouterDockWidgetsVisible(bool visible)
+{
+    if (m_pluginDock) {
+        m_pluginDock->setVisible(visible);
+    }
+    if (m_inspectorDock) {
+        m_inspectorDock->setVisible(visible);
+    }
 }
 
 void MainWindow::playTrackById(qint64 trackId) {

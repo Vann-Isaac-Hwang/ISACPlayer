@@ -1,0 +1,15 @@
+<RCC>
+  <qresource prefix="/icons">
+    <file alias="isacplayer.png">../resources/icons/isacplayer.png</file>
+  </qresource>
+  <qresource prefix="/buttons">
+    <file alias="play.png">../resources/buttons/play.png</file>
+    <file alias="pause.png">../resources/buttons/pause.png</file>
+    <file alias="previous.png">../resources/buttons/previous.png</file>
+    <file alias="next.png">../resources/buttons/next.png</file>
+    <file alias="sequential.png">../resources/buttons/sequential.png</file>
+    <file alias="shuffle.png">../resources/buttons/shuffle.png</file>
+    <file alias="repeat-all.png">../resources/buttons/repeat-all.png</file>
+    <file alias="repeat-one.png">../resources/buttons/repeat-one.png</file>
+  </qresource>
+</RCC>

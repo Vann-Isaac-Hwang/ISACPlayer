@@ -132,6 +132,12 @@ void testDirectoriesAndPlaylists(const QString& databasePath)
     const auto directories = repository.directories();
     expect(directories.size() == 1 && directories.front().lastScannedAt.isValid(),
            "directory state must be queryable");
+    expect(repository.removeDirectory(directories.front().id),
+           "managed directory removal must succeed");
+    expect(repository.directories().empty(),
+           "removed directory must leave the managed path list");
+    expect(repository.addDirectory(directoryPath),
+           "directory can be re-added after removal");
 
     auto first = makeTrack("/music/playlist-a.flac", "Playlist A", "Artist",
                            "Album", 100);
@@ -153,6 +159,18 @@ void testDirectoriesAndPlaylists(const QString& databasePath)
            "playlist membership query must identify existing tracks");
     expect(!repository.addTrackToPlaylist(*playlistId, tracks[0].id),
            "duplicate playlist tracks must be rejected");
+    const auto batchAdded = repository.addTracksToPlaylist(
+        *playlistId, {tracks[0].id, tracks[1].id});
+    expect(batchAdded && *batchAdded == 0,
+           "batch playlist insertion must skip existing tracks");
+    const auto secondPlaylistId = repository.createPlaylist("Batch");
+    expect(secondPlaylistId.has_value(),
+           "batch playlist must be created");
+    const auto insertedBatch = repository.addTracksToPlaylist(
+        *secondPlaylistId, {tracks[0].id, tracks[1].id, tracks[0].id});
+    expect(insertedBatch && *insertedBatch == 2 &&
+               repository.playlistTrackCount(*secondPlaylistId) == 2,
+           "batch playlist insertion must add unique tracks in one operation");
 
     auto playlistTracks = repository.playlistTracks(*playlistId);
     expect(playlistTracks.size() == 2 &&
@@ -204,6 +222,8 @@ void testDirectoriesAndPlaylists(const QString& databasePath)
     expect(repository.playlists().front().name == "Commute",
            "renamed playlist must be returned");
     expect(repository.deletePlaylist(*playlistId), "playlist deletion must succeed");
+    expect(repository.deletePlaylist(*secondPlaylistId),
+           "batch playlist deletion must succeed");
     expect(repository.playlists().empty(), "deleted playlist must not remain");
 }
 

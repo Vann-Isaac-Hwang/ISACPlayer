@@ -103,6 +103,7 @@ public:
                            const QString& searchText = {}) const;
 
     bool addDirectory(const QString& path);
+    bool removeDirectory(qint64 directoryId);
     bool markDirectoryScanned(const QString& path, const QDateTime& scannedAt);
     std::vector<LibraryDirectory> directories() const;
 
@@ -110,6 +111,8 @@ public:
     bool renamePlaylist(qint64 playlistId, const QString& name);
     bool deletePlaylist(qint64 playlistId);
     bool addTrackToPlaylist(qint64 playlistId, qint64 trackId);
+    std::optional<int> addTracksToPlaylist(
+        qint64 playlistId, const std::vector<qint64>& trackIds);
     bool playlistContainsTrack(qint64 playlistId, qint64 trackId) const;
     bool removeTrackFromPlaylist(qint64 playlistId, qint64 trackId);
     bool movePlaylistTrack(qint64 playlistId, qint64 trackId,

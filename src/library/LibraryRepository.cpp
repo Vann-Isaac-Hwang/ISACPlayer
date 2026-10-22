@@ -949,6 +949,19 @@ bool LibraryRepository::addDirectory(const QString& path)
     return true;
 }
 
+bool LibraryRepository::removeDirectory(qint64 directoryId)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "DELETE FROM library_directories WHERE id = ?"));
+    query.addBindValue(directoryId);
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return false;
+    }
+    return query.numRowsAffected() == 1;
+}
+
 bool LibraryRepository::markDirectoryScanned(const QString& path,
                                              const QDateTime& scannedAt)
 {
@@ -1047,6 +1060,46 @@ bool LibraryRepository::addTrackToPlaylist(qint64 playlistId, qint64 trackId)
         return false;
     }
     return query.numRowsAffected() == 1;
+}
+
+std::optional<int> LibraryRepository::addTracksToPlaylist(
+    qint64 playlistId, const std::vector<qint64>& trackIds)
+{
+    if (playlistId <= 0 || !m_database.transaction()) {
+        m_lastError = m_database.lastError().text();
+        return std::nullopt;
+    }
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "INSERT OR IGNORE INTO playlist_tracks(playlist_id, track_id, position) "
+        "SELECT ?, ?, COALESCE(MAX(position) + 1, 0) "
+        "FROM playlist_tracks WHERE playlist_id = ?"));
+    int insertedCount = 0;
+    for (const qint64 trackId : trackIds) {
+        if (trackId <= 0) {
+            m_lastError = QStringLiteral("Invalid track ID");
+            m_database.rollback();
+            return std::nullopt;
+        }
+        query.bindValue(0, playlistId);
+        query.bindValue(1, trackId);
+        query.bindValue(2, playlistId);
+        if (!query.exec()) {
+            m_lastError = query.lastError().text();
+            m_database.rollback();
+            return std::nullopt;
+        }
+        insertedCount += static_cast<int>(query.numRowsAffected() == 1);
+        query.finish();
+    }
+
+    if (!m_database.commit()) {
+        m_lastError = m_database.lastError().text();
+        m_database.rollback();
+        return std::nullopt;
+    }
+    return insertedCount;
 }
 
 bool LibraryRepository::playlistContainsTrack(

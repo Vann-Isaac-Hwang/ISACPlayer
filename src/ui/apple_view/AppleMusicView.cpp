@@ -4,15 +4,79 @@
 #include <QHeaderView>
 #include <QAbstractItemView>
 #include <QDialogButtonBox>
+#include <QAction>
+#include <QMenu>
 #include <QInputDialog>
 #include <QItemSelectionModel>
+#include <QListView>
 #include <QMessageBox>
 #include <QSignalBlocker>
 #include <QDataStream>
 #include <QFontMetrics>
 #include <QGridLayout>
+#include <QResizeEvent>
+#include <QStyledItemDelegate>
+#include <QStyle>
+#include <QToolButton>
 #include <algorithm>
 #include <utility>
+
+namespace {
+
+class ResponsiveAlbumView final : public QListView {
+public:
+    using QListView::QListView;
+
+protected:
+    void resizeEvent(QResizeEvent* event) override
+    {
+        QListView::resizeEvent(event);
+        updateGrid();
+    }
+
+private:
+    void updateGrid()
+    {
+        const int availableWidth = viewport()->width();
+        if (availableWidth <= 0 || availableWidth == m_lastWidth) {
+            return;
+        }
+        m_lastWidth = availableWidth;
+
+        constexpr int targetCellWidth = 210;
+        constexpr int gap = 14;
+        const int columns = std::max(
+            1, (availableWidth + gap) / (targetCellWidth + gap));
+        const int cellWidth =
+            (availableWidth - gap * (columns - 1)) / columns;
+        const int coverSize = std::clamp(cellWidth - 24, 128, 196);
+        setSpacing(gap);
+        setIconSize(QSize(coverSize, coverSize));
+        setGridSize(QSize(cellWidth, coverSize + 62));
+    }
+
+    int m_lastWidth = -1;
+};
+
+class AlbumCardDelegate final : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+protected:
+    void initStyleOption(QStyleOptionViewItem* option,
+                         const QModelIndex& index) const override
+    {
+        QStyledItemDelegate::initStyleOption(option, index);
+        const QString artist = index.data(Qt::UserRole).toString();
+        if (!artist.isEmpty()) {
+            option->text += QLatin1Char('\n') + artist;
+        }
+        option->features |= QStyleOptionViewItem::WrapText;
+        option->displayAlignment = Qt::AlignHCenter;
+    }
+};
+
+}
 
 namespace isac::ui {
 
@@ -169,16 +233,20 @@ void TrackTableModel::refresh() {
     m_page.clear();
     m_pageStart = -1;
     m_coverCache.clear();
-    m_trackCount = !m_repository ? 0
-        : std::max<qint64>(0, m_playlistId
-              ? m_repository->playlistTrackCount(*m_playlistId, m_searchText)
-              : !m_albumFilter.isEmpty()
-                  ? m_repository->albumTrackCount(
-                        m_albumFilter, m_searchText)
-                  : !m_artistFilter.isEmpty()
-                      ? m_repository->artistTrackCount(
-                            m_artistFilter, m_searchText)
-                  : m_repository->trackCount(m_searchText));
+    if (!m_repository || (m_playlistContext && !m_playlistId)) {
+        m_trackCount = 0;
+    } else if (m_playlistContext) {
+        m_trackCount = std::max<qint64>(
+            0, m_repository->playlistTrackCount(*m_playlistId, m_searchText));
+    } else if (!m_albumFilter.isEmpty()) {
+        m_trackCount = m_repository->albumTrackCount(
+            m_albumFilter, m_searchText);
+    } else if (!m_artistFilter.isEmpty()) {
+        m_trackCount = m_repository->artistTrackCount(
+            m_artistFilter, m_searchText);
+    } else {
+        m_trackCount = m_repository->trackCount(m_searchText);
+    }
     endResetModel();
 }
 
@@ -199,12 +267,11 @@ void TrackTableModel::setSort(library::TrackSort sort, bool ascending) {
 }
 
 void TrackTableModel::setPlaylistId(std::optional<qint64> playlistId) {
-    if (m_playlistId != playlistId) {
+    if (!m_playlistContext || m_playlistId != playlistId) {
+        m_playlistContext = true;
         m_playlistId = playlistId;
-        if (playlistId) {
-            m_artistFilter.clear();
-            m_albumFilter.clear();
-        }
+        m_artistFilter.clear();
+        m_albumFilter.clear();
         refresh();
     }
 }
@@ -212,7 +279,8 @@ void TrackTableModel::setPlaylistId(std::optional<qint64> playlistId) {
 void TrackTableModel::setCategoryFilter(const QString& artist,
                                         const QString& album) {
     if (m_artistFilter != artist || m_albumFilter != album ||
-        m_playlistId.has_value()) {
+        m_playlistContext) {
+        m_playlistContext = false;
         m_playlistId.reset();
         m_artistFilter = artist;
         m_albumFilter = album;
@@ -228,9 +296,11 @@ bool TrackTableModel::loadPage(int row) const {
     if (pageStart == m_pageStart) {
         return true;
     }
-    if (m_playlistId) {
-        m_page = m_repository->queryPlaylistTracks(
-            *m_playlistId, m_searchText, kPageSize, pageStart);
+    if (m_playlistContext) {
+        m_page = m_playlistId
+            ? m_repository->queryPlaylistTracks(
+                  *m_playlistId, m_searchText, kPageSize, pageStart)
+            : std::vector<library::TrackInfo>{};
     } else if (!m_albumFilter.isEmpty()) {
         m_page = m_repository->queryAlbumTracks(
             m_albumFilter, m_searchText, m_sort, m_ascending,
@@ -270,7 +340,10 @@ std::vector<qint64> TrackTableModel::trackIds() const {
     constexpr int pageSize = 10000;
     for (qint64 offset = 0; offset < m_trackCount; offset += pageSize) {
         std::vector<qint64> page;
-        if (m_playlistId) {
+        if (m_playlistContext) {
+            if (!m_playlistId) {
+                break;
+            }
             page = m_repository->playlistTrackIds(
                 *m_playlistId, m_searchText, pageSize, static_cast<int>(offset));
         } else if (!m_albumFilter.isEmpty()) {
@@ -321,12 +394,38 @@ int LibraryGroupTableModel::columnCount(const QModelIndex& parent) const {
 }
 
 QVariant LibraryGroupTableModel::data(const QModelIndex& index, int role) const {
-    if (!index.isValid() || role != Qt::DisplayRole ||
-        !loadPage(index.row())) {
+    if (!index.isValid() || !loadPage(index.row())) {
         return {};
     }
     const auto& group =
         m_page[static_cast<std::size_t>(index.row() - m_pageStart)];
+    if (m_albums && index.column() == 0 &&
+        (role == Qt::DecorationRole || role == Qt::ToolTipRole)) {
+        if (role == Qt::ToolTipRole) {
+            return QStringLiteral("%1\n%2 位曲目")
+                .arg(group.artist)
+                .arg(group.trackCount);
+        }
+        if (const auto* cached = m_coverCache.object(index.row())) {
+            return *cached;
+        }
+        const auto tracks = m_repository->queryAlbumTracks(
+            group.name, {}, library::TrackSort::Title, true, 1, 0);
+        const QPixmap cover = tracks.empty()
+            ? library::MetadataReader::generateDefaultCover(group.name, 180)
+            : library::MetadataReader::loadCoverArt(tracks.front(), 180);
+        const QIcon icon(cover.isNull()
+            ? library::MetadataReader::generateDefaultCover(group.name, 180)
+            : cover);
+        m_coverCache.insert(index.row(), new QIcon(icon));
+        return icon;
+    }
+    if (m_albums && index.column() == 0 && role == Qt::UserRole) {
+        return group.artist;
+    }
+    if (role != Qt::DisplayRole) {
+        return {};
+    }
     if (m_albums) {
         switch (index.column()) {
         case 0: return group.name;
@@ -366,6 +465,7 @@ void LibraryGroupTableModel::refresh() {
     beginResetModel();
     m_page.clear();
     m_pageStart = -1;
+    m_coverCache.clear();
     m_groupCount = !m_repository ? 0
         : m_albums ? m_repository->albumCount(m_searchText)
                    : m_repository->artistCount(m_searchText);
@@ -427,27 +527,14 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
 
     // 1. 顶部标题与导入按钮栏
     auto* topBar = new QHBoxLayout();
-    auto* pageTitle = new QLabel("音乐资料库", this);
+    auto* pageTitle = new QLabel("Library", this);
     pageTitle->setStyleSheet("font-size: 26px; font-weight: bold; color: #FFFFFF;");
 
-    auto* btnAddFiles  = new QPushButton("+ 添加音乐文件", this);
-    auto* btnAddFolder = new QPushButton("+ 扫描音乐文件夹", this);
-    QString btnStyle = R"(
-        QPushButton {
-            background-color: #FA2D48; color: white; border: none;
-            border-radius: 6px; padding: 7px 14px; font-weight: bold;
-        }
-        QPushButton:hover { background-color: #FF455E; }
-    )";
-    btnAddFiles->setStyleSheet(btnStyle);
-    btnAddFolder->setStyleSheet(btnStyle);
     m_scanStatus = new QLabel(this);
     m_scanStatus->setStyleSheet("color: #9499A6; font-size: 12px;");
 
     topBar->addWidget(pageTitle);
     topBar->addStretch();
-    topBar->addWidget(btnAddFiles);
-    topBar->addWidget(btnAddFolder);
     topBar->addWidget(m_scanStatus);
 
     auto* libraryControls = new QHBoxLayout();
@@ -519,7 +606,7 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
             padding: 6px; border-bottom: 1px solid #1E2129;
         }
         QTableView::item:selected {
-            background-color: #FA2D48; color: white; border-radius: 6px;
+            background-color: #FA2D48; color: white; border-radius: 0;
         }
     )");
 
@@ -535,14 +622,70 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
     m_groupBackButton = new QPushButton(QStringLiteral("返回分类"), this);
     m_groupBackButton->hide();
 
+    m_albumViewMode = new QWidget(this);
+    auto* albumViewModeLayout = new QHBoxLayout(m_albumViewMode);
+    albumViewModeLayout->setContentsMargins(0, 0, 0, 0);
+    albumViewModeLayout->setSpacing(0);
+    m_albumListButton = new QToolButton(m_albumViewMode);
+    m_albumCoverButton = new QToolButton(m_albumViewMode);
+    m_albumListButton->setIcon(style()->standardIcon(QStyle::SP_FileDialogListView));
+    m_albumCoverButton->setIcon(style()->standardIcon(QStyle::SP_FileDialogDetailedView));
+    m_albumListButton->setToolTip(QStringLiteral("列表视图"));
+    m_albumCoverButton->setToolTip(QStringLiteral("封面视图"));
+    for (auto* button : {m_albumListButton, m_albumCoverButton}) {
+        button->setCheckable(true);
+        button->setFixedSize(34, 32);
+        button->setStyleSheet(
+            "QToolButton { background: #1E2028; color: #D0D4E0; "
+            "border: 1px solid #343846; border-radius: 0; }"
+            "QToolButton:checked { background: #393C45; color: white; }");
+    }
+    m_albumListButton->setChecked(true);
+    albumViewModeLayout->addWidget(m_albumListButton);
+    albumViewModeLayout->addWidget(m_albumCoverButton);
+    m_albumViewMode->hide();
+
+    m_albumCoverView = new ResponsiveAlbumView(this);
+    m_albumCoverView->setModel(m_albumModel);
+    m_albumCoverView->setItemDelegate(new AlbumCardDelegate(m_albumCoverView));
+    m_albumCoverView->setModelColumn(0);
+    m_albumCoverView->setViewMode(QListView::IconMode);
+    m_albumCoverView->setResizeMode(QListView::Adjust);
+    m_albumCoverView->setMovement(QListView::Static);
+    m_albumCoverView->setWrapping(true);
+    m_albumCoverView->setWordWrap(true);
+    m_albumCoverView->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_albumCoverView->setIconSize(QSize(164, 164));
+    m_albumCoverView->setUniformItemSizes(true);
+    m_albumCoverView->setStyleSheet(
+        "QListView { background: transparent; border: none; color: #EAEAEA; "
+        "font-size: 13px; outline: none; }"
+        "QListView::item { padding: 7px; }"
+        "QListView::item:selected { background: #343A4B; color: white; }");
+    m_libraryContent = new QStackedWidget(this);
+    m_libraryContent->addWidget(m_table);
+    m_libraryContent->addWidget(m_albumCoverView);
+
     mainLayout->addLayout(topBar);
     mainLayout->addLayout(libraryControls);
     auto* viewBar = new QHBoxLayout();
     viewBar->addWidget(m_libraryTabs);
     viewBar->addWidget(m_groupBackButton);
+    viewBar->addWidget(m_albumViewMode);
     viewBar->addStretch();
     mainLayout->addLayout(viewBar);
-    mainLayout->addWidget(m_table, 1);
+    mainLayout->addWidget(m_libraryContent, 1);
+
+    connect(m_albumListButton, &QToolButton::clicked, this, [this]() {
+        m_albumListButton->setChecked(true);
+        m_albumCoverButton->setChecked(false);
+        m_libraryContent->setCurrentWidget(m_table);
+    });
+    connect(m_albumCoverButton, &QToolButton::clicked, this, [this]() {
+        m_albumListButton->setChecked(false);
+        m_albumCoverButton->setChecked(true);
+        m_libraryContent->setCurrentWidget(m_albumCoverView);
+    });
 
     m_searchTimer = new QTimer(this);
     m_searchTimer->setSingleShot(true);
@@ -578,8 +721,6 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
     });
     updateResultCount();
 
-    connect(btnAddFiles,  &QPushButton::clicked, this, &AppleLibraryPage::requestImportFiles);
-    connect(btnAddFolder, &QPushButton::clicked, this, &AppleLibraryPage::requestImportFolder);
     connect(m_table, &QTableView::doubleClicked, this, [this](const QModelIndex& index) {
         if (!index.isValid()) {
             return;
@@ -591,11 +732,101 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
             }
             return;
         }
-        const auto* model = m_libraryView == 1 ? m_artistModel : m_albumModel;
-        const auto group = model->groupAtRow(index.row());
-        if (group) {
-            showGroupTracks(*group);
+        openGroupAtRow(index.row());
+    });
+    connect(m_albumCoverView, &QListView::doubleClicked, this,
+            [this](const QModelIndex& index) {
+        if (m_libraryView == 2 && !m_showingGroupTracks) {
+            openGroupAtRow(index.row());
         }
+    });
+
+    m_table->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_table, &QTableView::customContextMenuRequested, this,
+            [this](const QPoint& position) {
+        if (m_libraryView != 0 || m_showingGroupTracks) {
+            return;
+        }
+        const QModelIndex clickedIndex = m_table->indexAt(position);
+        if (!clickedIndex.isValid()) {
+            return;
+        }
+        if (!m_table->selectionModel()->isSelected(clickedIndex)) {
+            m_table->selectRow(clickedIndex.row());
+        }
+        std::vector<qint64> selectedTrackIds;
+        const QModelIndexList selectedRows =
+            m_table->selectionModel()->selectedRows();
+        selectedTrackIds.reserve(static_cast<std::size_t>(selectedRows.size()));
+        for (const QModelIndex& selected : selectedRows) {
+            if (const auto track = m_tableModel->trackAtRow(selected.row())) {
+                selectedTrackIds.push_back(track->id);
+            }
+        }
+        if (selectedTrackIds.empty()) {
+            return;
+        }
+
+        QMenu menu(this);
+        menu.setStyleSheet(R"(
+            QMenu {
+                background: #20232B;
+                color: #EAECEF;
+                border: 1px solid #454A56;
+                padding: 4px;
+            }
+            QMenu::item {
+                color: #EAECEF;
+                padding: 7px 34px 7px 12px;
+                margin: 1px;
+                background: transparent;
+            }
+            QMenu::item:selected {
+                background: #FA2D48;
+                color: #FFFFFF;
+            }
+            QMenu::item:disabled {
+                color: #858B98;
+            }
+            QMenu::right-arrow {
+                width: 10px;
+                height: 10px;
+                subcontrol-origin: padding;
+                subcontrol-position: right center;
+                right: 8px;
+            }
+        )");
+        QMenu* addMenu = menu.addMenu(
+            QStringLiteral("添加到歌单"));
+        const auto playlists = m_repository->playlists();
+        if (playlists.empty()) {
+            QAction* emptyAction = addMenu->addAction(
+                QStringLiteral("没有可用歌单"));
+            emptyAction->setEnabled(false);
+        } else {
+            for (const auto& playlist : playlists) {
+                QAction* action = addMenu->addAction(playlist.name);
+                connect(action, &QAction::triggered, this,
+                        [this, playlistId = playlist.id,
+                         selectedTrackIds]() {
+                    const auto added =
+                        m_repository->addTracksToPlaylist(
+                            playlistId, selectedTrackIds);
+                    if (!added) {
+                        m_scanStatus->setText(
+                            QStringLiteral("添加到歌单失败：%1")
+                                .arg(m_repository->lastError()));
+                        return;
+                    }
+                    m_scanStatus->setText(
+                        QStringLiteral("已添加 %1 首，跳过重复项 %2 首")
+                            .arg(*added)
+                            .arg(static_cast<qint64>(selectedTrackIds.size()) -
+                                 *added));
+                });
+            }
+        }
+        menu.exec(m_table->viewport()->mapToGlobal(position));
     });
 }
 
@@ -633,15 +864,31 @@ void AppleLibraryPage::showLibraryView(int view) {
     if (m_libraryView == 0) {
         m_tableModel->setCategoryFilter({}, {});
         m_table->setModel(m_tableModel);
+        m_libraryContent->setCurrentWidget(m_table);
     } else {
         m_tableModel->setCategoryFilter({}, {});
-        m_tableModel->setPlaylistId(std::nullopt);
         m_table->setModel(m_libraryView == 1 ? m_artistModel : m_albumModel);
+        m_libraryContent->setCurrentWidget(
+            m_libraryView == 2 && m_albumCoverButton->isChecked()
+                ? static_cast<QWidget*>(m_albumCoverView)
+                : static_cast<QWidget*>(m_table));
+    }
+    m_albumViewMode->setVisible(m_libraryView == 2);
+    if (m_libraryView != 2) {
+        m_libraryContent->setCurrentWidget(m_table);
     }
     m_sortSelector->setVisible(m_libraryView == 0);
     m_sortSelector->setEnabled(m_libraryView == 0);
     m_sortDirection->setEnabled(true);
     updateResultCount();
+}
+
+void AppleLibraryPage::openGroupAtRow(int row) {
+    const auto* model = m_libraryView == 1 ? m_artistModel : m_albumModel;
+    const auto group = model->groupAtRow(row);
+    if (group) {
+        showGroupTracks(*group);
+    }
 }
 
 void AppleLibraryPage::showGroupTracks(const library::LibraryGroup& group) {
@@ -650,6 +897,8 @@ void AppleLibraryPage::showGroupTracks(const library::LibraryGroup& group) {
     const QString album = m_libraryView == 2 ? group.name : QString{};
     m_tableModel->setCategoryFilter(artist, album);
     m_table->setModel(m_tableModel);
+    m_libraryContent->setCurrentWidget(m_table);
+    m_albumViewMode->hide();
     m_groupBackButton->setText(
         QStringLiteral("返回%1").arg(m_libraryView == 1
             ? QStringLiteral("艺人") : QStringLiteral("专辑")));
@@ -683,7 +932,7 @@ PlaylistPage::PlaylistPage(library::LibraryRepository* repository,
     root->setContentsMargins(32, 24, 32, 16);
     root->setSpacing(14);
 
-    auto* title = new QLabel(QStringLiteral("歌单管理"), this);
+    auto* title = new QLabel(QStringLiteral("Playlists"), this);
     title->setStyleSheet(
         "font-size: 26px; font-weight: bold; color: #FFFFFF;");
     root->addWidget(title);
@@ -916,6 +1165,7 @@ void PlaylistPage::refreshPlaylistList(std::optional<qint64> preferred)
     m_playlistList->setCurrentRow(selectedRow);
     const auto id = selectedPlaylistId();
     m_tableModel->setPlaylistId(id);
+    m_tableModel->refresh();
     updateControls();
 }
 
@@ -1020,9 +1270,20 @@ NowPlayingHeader::NowPlayingHeader(QWidget* parent) : QWidget(parent) {
     controlGrid->setHorizontalSpacing(0);
     controlGrid->setVerticalSpacing(0);
     m_playbackModeButton = new QPushButton(this);
-    m_btnPrev = new QPushButton(QStringLiteral("|◀"), this);
-    m_btnPlayPause = new QPushButton(QStringLiteral("▶"), this);
-    m_btnNext = new QPushButton(QStringLiteral("▶|"), this);
+    m_btnPrev = new QPushButton(this);
+    m_btnPlayPause = new QPushButton(this);
+    m_btnNext = new QPushButton(this);
+    m_btnPrev->setIcon(QIcon(QStringLiteral(":/buttons/previous.png")));
+    m_btnNext->setIcon(QIcon(QStringLiteral(":/buttons/next.png")));
+    m_btnPlayPause->setIcon(QIcon(QStringLiteral(":/buttons/play.png")));
+    for (auto* button : {m_btnPrev, m_btnPlayPause, m_btnNext,
+                         m_playbackModeButton}) {
+        button->setIconSize(QSize(31, 31));
+    }
+    m_btnPrev->setToolTip(QStringLiteral("上一首"));
+    m_btnNext->setToolTip(QStringLiteral("下一首"));
+    m_btnPlayPause->setToolTip(QStringLiteral("播放"));
+    setPlaybackMode(0);
     const QList<QPushButton*> controls{
         m_playbackModeButton, m_btnPrev, m_btnPlayPause, m_btnNext};
     for (auto* button : controls) {
@@ -1172,21 +1433,27 @@ void NowPlayingHeader::updateAudioInfoLabel()
 }
 
 void NowPlayingHeader::setPlayingState(bool playing) {
-    m_btnPlayPause->setText(playing ? QStringLiteral("Ⅱ") : QStringLiteral("▶"));
+    m_btnPlayPause->setIcon(QIcon(playing
+        ? QStringLiteral(":/buttons/pause.png")
+        : QStringLiteral(":/buttons/play.png")));
+    m_btnPlayPause->setToolTip(
+        playing ? QStringLiteral("暂停") : QStringLiteral("播放"));
 }
 
 void NowPlayingHeader::setPlaybackMode(int mode) {
-    static const QStringList labels{
-        QStringLiteral("SEQ"), QStringLiteral("RND"),
-        QStringLiteral("ONE"), QStringLiteral("ALL")};
     static const QStringList descriptions{
         QStringLiteral("顺序播放"), QStringLiteral("随机播放"),
         QStringLiteral("单曲循环"), QStringLiteral("列表循环")};
-    if (mode < 0 || mode >= labels.size()) {
+    static const QStringList icons{
+        QStringLiteral(":/buttons/sequential.png"),
+        QStringLiteral(":/buttons/shuffle.png"),
+        QStringLiteral(":/buttons/repeat-one.png"),
+        QStringLiteral(":/buttons/repeat-all.png")};
+    if (mode < 0 || mode >= icons.size()) {
         return;
     }
     m_playbackModeValue = mode;
-    m_playbackModeButton->setText(labels[mode]);
+    m_playbackModeButton->setIcon(QIcon(icons[mode]));
     m_playbackModeButton->setToolTip(descriptions[mode]);
 }
 

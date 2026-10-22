@@ -66,6 +66,7 @@ set(PROJECT_SOURCES
     src/ui/inspector/NodeInspectorWidget.cpp
     src/ui/plugins/PluginManager.h
     src/ui/plugins/PluginManager.cpp
+    config/app-icons.qrc
     config/dsp-presets.qrc
 )
 

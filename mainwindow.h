@@ -20,6 +20,8 @@ QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
 QT_END_NAMESPACE
 
+class QDockWidget;
+
 class MainWindow : public QMainWindow {
     Q_OBJECT
 
@@ -28,6 +30,7 @@ public:
     ~MainWindow() override;
 
 private:
+    void setRouterDockWidgetsVisible(bool visible);
     void playTrackById(qint64 trackId);
     bool playQueuedTrack(qint64 trackId);
     void rebuildPlaybackQueue(qint64 currentTrackId);
@@ -45,6 +48,9 @@ private:
     isac::ui::PlaylistPage* m_playlistPage = nullptr;
     isac::ui::NowPlayingHeader* m_nowPlayingHeader = nullptr;
     isac::ui::PatchbayView* m_patchbayView = nullptr;
+    QMainWindow* m_routerWorkspace = nullptr;
+    QDockWidget* m_pluginDock = nullptr;
+    QDockWidget* m_inspectorDock = nullptr;
     QTimer* m_progressTimer = nullptr;
     QTimer* m_visualizationTimer = nullptr;
     std::array<double, 4096> m_preVisualizationLeft{};
