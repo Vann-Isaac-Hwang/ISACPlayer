@@ -47,6 +47,7 @@ QString sortColumn(TrackSort sort)
     case TrackSort::Title: return QStringLiteral("title");
     case TrackSort::Artist: return QStringLiteral("artist");
     case TrackSort::Album: return QStringLiteral("album");
+    case TrackSort::Duration: return QStringLiteral("duration_seconds");
     case TrackSort::AddedAt: return QStringLiteral("added_at");
     }
     return QStringLiteral("added_at");
@@ -55,9 +56,12 @@ QString sortColumn(TrackSort sort)
 QString sortExpression(TrackSort sort)
 {
     const QString column = sortColumn(sort);
-    return sort == TrackSort::AddedAt
-        ? column
-        : column + QStringLiteral(" COLLATE NOCASE");
+    const bool textSort = sort == TrackSort::Title ||
+                          sort == TrackSort::Artist ||
+                          sort == TrackSort::Album;
+    return textSort
+        ? column + QStringLiteral(" COLLATE NOCASE")
+        : column;
 }
 
 QString escapedSearchPattern(const QString& text)
@@ -164,6 +168,14 @@ bool LibraryRepository::initializeSchema()
             "CREATE TABLE IF NOT EXISTS playback_queue ("
             "position INTEGER PRIMARY KEY, "
             "track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE)"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS playback_history ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE, "
+            "played_at TEXT NOT NULL)"),
+        QStringLiteral(
+            "CREATE INDEX IF NOT EXISTS idx_playback_history_track "
+            "ON playback_history(track_id)"),
         QStringLiteral(
             "CREATE TABLE IF NOT EXISTS playback_state ("
             "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), "
@@ -1500,6 +1512,109 @@ LibraryRepository::loadPlaybackQueue() const
               static_cast<std::size_t>(storedPosition),
               state.trackIds.size() - 1);
     return state;
+}
+
+bool LibraryRepository::recordPlayback(qint64 trackId, int maxEntries)
+{
+    if (trackId <= 0) {
+        m_lastError = QStringLiteral("Invalid playback history track ID");
+        return false;
+    }
+    if (!m_database.transaction()) {
+        m_lastError = m_database.lastError().text();
+        return false;
+    }
+
+    QSqlQuery insert(m_database);
+    insert.prepare(QStringLiteral(
+        "INSERT INTO playback_history(track_id, played_at) VALUES (?, ?)"));
+    insert.addBindValue(trackId);
+    insert.addBindValue(QDateTime::currentDateTimeUtc().toString(
+        Qt::ISODateWithMs));
+    if (!insert.exec()) {
+        m_lastError = insert.lastError().text();
+        m_database.rollback();
+        return false;
+    }
+
+    QSqlQuery prune(m_database);
+    prune.prepare(QStringLiteral(
+        "DELETE FROM playback_history WHERE id NOT IN ("
+        "SELECT id FROM playback_history ORDER BY id DESC LIMIT ?)"));
+    prune.addBindValue(std::clamp(maxEntries, 5, 10000));
+    if (!prune.exec() || !m_database.commit()) {
+        m_lastError = prune.lastError().isValid()
+            ? prune.lastError().text()
+            : m_database.lastError().text();
+        m_database.rollback();
+        return false;
+    }
+    return true;
+}
+
+bool LibraryRepository::trimPlaybackHistory(int maxEntries)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "DELETE FROM playback_history WHERE id NOT IN ("
+        "SELECT id FROM playback_history ORDER BY id DESC LIMIT ?)"));
+    query.addBindValue(std::clamp(maxEntries, 5, 10000));
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+std::vector<TrackInfo> LibraryRepository::queryPlaybackHistory(
+    const QString& searchText, int limit, int offset) const
+{
+    std::vector<TrackInfo> tracks;
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT t.* FROM playback_history AS h "
+        "JOIN tracks AS t ON t.id = h.track_id "
+        "WHERE (? = '' OR t.title LIKE ? ESCAPE '\\' COLLATE NOCASE "
+        "OR t.artist LIKE ? ESCAPE '\\' COLLATE NOCASE "
+        "OR t.album LIKE ? ESCAPE '\\' COLLATE NOCASE) "
+        "ORDER BY h.id DESC LIMIT ? OFFSET ?"));
+    const QString pattern = escapedSearchPattern(searchText);
+    query.addBindValue(searchText);
+    query.addBindValue(pattern);
+    query.addBindValue(pattern);
+    query.addBindValue(pattern);
+    query.addBindValue(std::clamp(limit, 1, 10000));
+    query.addBindValue(std::max(0, offset));
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return tracks;
+    }
+    while (query.next()) {
+        tracks.push_back(readTrackRow(query));
+    }
+    return tracks;
+}
+
+qint64 LibraryRepository::playbackHistoryCount(
+    const QString& searchText) const
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT COUNT(*) FROM playback_history AS h "
+        "JOIN tracks AS t ON t.id = h.track_id "
+        "WHERE (? = '' OR t.title LIKE ? ESCAPE '\\' COLLATE NOCASE "
+        "OR t.artist LIKE ? ESCAPE '\\' COLLATE NOCASE "
+        "OR t.album LIKE ? ESCAPE '\\' COLLATE NOCASE)"));
+    const QString pattern = escapedSearchPattern(searchText);
+    query.addBindValue(searchText);
+    query.addBindValue(pattern);
+    query.addBindValue(pattern);
+    query.addBindValue(pattern);
+    if (!query.exec() || !query.next()) {
+        m_lastError = query.lastError().text();
+        return -1;
+    }
+    return query.value(0).toLongLong();
 }
 
 } // namespace isac::library

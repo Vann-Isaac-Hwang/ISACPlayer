@@ -20,6 +20,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QSpinBox>
 #include <QFormLayout>
 #include <QDockWidget>
 #include <QSettings>
@@ -28,6 +29,8 @@
 #include <QListWidgetItem>
 #include <QAbstractItemView>
 #include <QScrollArea>
+#include <QMenu>
+#include <QRegularExpression>
 #include <algorithm>
 
 namespace {
@@ -97,7 +100,8 @@ MainWindow::MainWindow(QWidget *parent)
     sideLayout->setContentsMargins(0, 0, 0, 0);
     sideLayout->setSpacing(0);
 
-    auto* btnNavLibrary = new QPushButton("Library", sidebar);
+    m_navLibraryButton = new QPushButton("Library", sidebar);
+    auto* btnNavLibrary = m_navLibraryButton;
     auto* btnNavPlaylists = new QPushButton("Playlists", sidebar);
     auto* btnNavPatchbay = new QPushButton("DSP Router", sidebar);
     btnNavLibrary->setCheckable(true);
@@ -311,6 +315,19 @@ MainWindow::MainWindow(QWidget *parent)
         playbackForm->addRow("淡入/淡出时长", fadeDuration);
         layout->addLayout(playbackForm);
 
+        addSectionTitle(QStringLiteral("播放历史"));
+        auto* historyForm = new QFormLayout();
+        auto* historyLimit = new QSpinBox(&dialog);
+        historyLimit->setRange(5, 10000);
+        historyLimit->setSingleStep(5);
+        historyLimit->setSuffix(QStringLiteral(" 首"));
+        historyLimit->setValue(std::clamp(
+            settings.value(QStringLiteral("playback/historyLimit"), 100)
+                .toInt(),
+            5, 10000));
+        historyForm->addRow(QStringLiteral("保留最近播放"), historyLimit);
+        layout->addLayout(historyForm);
+
         addSectionTitle(QStringLiteral("曲目信息"));
         auto* infoForm = new QFormLayout();
         auto makeInfoOption = [&settings, &dialog](const QString& label,
@@ -351,6 +368,15 @@ MainWindow::MainWindow(QWidget *parent)
                           fadeEnabled->isChecked());
         settings.setValue(QStringLiteral("playback/fadeDurationSeconds"),
                           fadeDuration->value());
+        settings.setValue(QStringLiteral("playback/historyLimit"),
+                          historyLimit->value());
+        if (!m_libraryRepository.trimPlaybackHistory(historyLimit->value())) {
+            m_libraryPage->setScanStatus(
+                QStringLiteral("更新播放历史保留数量失败：%1")
+                    .arg(m_libraryRepository.lastError()));
+        } else {
+            m_libraryPage->refreshPlaybackHistory();
+        }
         m_audioEngine.setFadeDurationSeconds(fadeDuration->value());
         m_audioEngine.setFadeEnabled(fadeEnabled->isChecked());
         settings.setValue(QStringLiteral("display/audioFormat"),
@@ -875,6 +901,105 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_libraryPage, &isac::ui::AppleLibraryPage::trackDoubleClicked,
             this, &MainWindow::playTrackById);
 
+    connect(m_nowPlayingHeader,
+            &isac::ui::NowPlayingHeader::coverContextMenuRequested,
+            this, [this](qint64 trackId, const QPoint& globalPosition) {
+        const auto track = m_libraryRepository.trackById(trackId);
+        if (!track) {
+            return;
+        }
+
+        QMenu menu(this);
+        menu.setStyleSheet(R"(
+            QMenu {
+                background: #20232B;
+                color: #EAECEF;
+                border: 1px solid #454A56;
+                padding: 4px;
+            }
+            QMenu::item {
+                color: #EAECEF;
+                padding: 7px 34px 7px 12px;
+                margin: 1px;
+                background: transparent;
+            }
+            QMenu::item:selected {
+                background: #FA2D48;
+                color: #FFFFFF;
+            }
+            QMenu::item:disabled {
+                color: #858B98;
+            }
+            QMenu::right-arrow {
+                width: 10px;
+                height: 10px;
+                subcontrol-origin: padding;
+                subcontrol-position: right center;
+                right: 8px;
+            }
+        )");
+
+        QAction* viewAlbum = menu.addAction(QStringLiteral("查看专辑"));
+        connect(viewAlbum, &QAction::triggered, this,
+                [this, album = track->album]() {
+            m_navLibraryButton->click();
+            m_libraryPage->showAlbum(
+                album.trimmed().isEmpty()
+                    ? QStringLiteral("Unknown Album") : album);
+        });
+
+        QMenu* artistMenu = menu.addMenu(QStringLiteral("查看作者"));
+        QStringList artists = track->artist.split(
+            QRegularExpression(QStringLiteral("\\s*/\\s*")),
+            Qt::SkipEmptyParts);
+        for (QString& artist : artists) {
+            artist = artist.trimmed();
+        }
+        artists.removeAll(QString{});
+        if (artists.isEmpty()) {
+            artists.push_back(QStringLiteral("Unknown Artist"));
+        }
+        for (const QString& artist : artists) {
+            QAction* action = artistMenu->addAction(artist);
+            connect(action, &QAction::triggered, this,
+                    [this, artist]() {
+                m_navLibraryButton->click();
+                m_libraryPage->showArtist(artist);
+            });
+        }
+
+        menu.addSeparator();
+        QMenu* addMenu = menu.addMenu(QStringLiteral("添加到歌单"));
+        const auto playlists = m_libraryRepository.playlists();
+        if (playlists.empty()) {
+            QAction* emptyAction = addMenu->addAction(
+                QStringLiteral("没有可用歌单"));
+            emptyAction->setEnabled(false);
+        } else {
+            for (const auto& playlist : playlists) {
+                QAction* action = addMenu->addAction(playlist.name);
+                connect(action, &QAction::triggered, this,
+                        [this, playlistId = playlist.id,
+                         trackId = track->id]() {
+                    const auto added = m_libraryRepository.addTracksToPlaylist(
+                        playlistId, {trackId});
+                    if (!added) {
+                        m_libraryPage->setScanStatus(
+                            QStringLiteral("添加到歌单失败：%1")
+                                .arg(m_libraryRepository.lastError()));
+                        return;
+                    }
+                    m_playlistPage->refresh();
+                    m_libraryPage->setScanStatus(
+                        *added > 0
+                            ? QStringLiteral("已添加到歌单")
+                            : QStringLiteral("歌曲已在该歌单中"));
+                });
+            }
+        }
+        menu.exec(globalPosition);
+    });
+
     // 常驻播放工作区事件
     connect(m_nowPlayingHeader, &isac::ui::NowPlayingHeader::playPauseClicked, this, [this]() {
         if (!m_trackLoaded) {
@@ -1130,6 +1255,17 @@ bool MainWindow::playQueuedTrack(qint64 trackId) {
         m_currentTrackEndHandled = false;
         m_currentTrackId = trackId;
         m_trackLoaded = true;
+        QSettings settings;
+        const int historyLimit = std::clamp(
+            settings.value(QStringLiteral("playback/historyLimit"), 100)
+                .toInt(),
+            5, 10000);
+        if (!m_libraryRepository.recordPlayback(trackId, historyLimit)) {
+            qWarning() << "Unable to record playback history:"
+                       << m_libraryRepository.lastError();
+        } else {
+            m_libraryPage->refreshPlaybackHistory();
+        }
         m_nowPlayingHeader->setTrackInfo(displayTrack);
         m_nowPlayingHeader->setPlayingState(true);
 #ifdef ISAC_HAS_MPRIS

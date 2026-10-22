@@ -44,6 +44,7 @@ private:
     isac::AudioEngine m_audioEngine;
 
     QStackedWidget* m_stackedWidget = nullptr;
+    QPushButton* m_navLibraryButton = nullptr;
     isac::ui::AppleLibraryPage* m_libraryPage = nullptr;
     isac::ui::PlaylistPage* m_playlistPage = nullptr;
     isac::ui::NowPlayingHeader* m_nowPlayingHeader = nullptr;

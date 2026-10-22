@@ -8,7 +8,6 @@
 #include <QPushButton>
 #include <QSlider>
 #include <QIcon>
-#include <QComboBox>
 #include <QListView>
 #include <QLineEdit>
 #include <QStackedWidget>
@@ -47,6 +46,7 @@ public:
     void setSort(library::TrackSort sort, bool ascending);
     void setPlaylistId(std::optional<qint64> playlistId);
     void setCategoryFilter(const QString& artist, const QString& album);
+    void setHistoryMode(bool enabled);
     std::optional<library::TrackInfo> trackAtRow(int row) const;
     int rowForTrackId(qint64 id) const;
     std::vector<qint64> trackIds() const;
@@ -63,6 +63,7 @@ private:
     qint64 m_trackCount = 0;
     std::optional<qint64> m_playlistId;
     bool m_playlistContext = false;
+    bool m_historyContext = false;
     QString m_artistFilter;
     QString m_albumFilter;
     QString m_searchText;
@@ -110,7 +111,10 @@ public:
                               QWidget* parent = nullptr);
 
     void refreshTracks();
+    void refreshPlaybackHistory();
     void setScanStatus(const QString& status);
+    void showArtist(const QString& artist);
+    void showAlbum(const QString& album);
     std::optional<library::TrackInfo> trackAtRow(int row) const;
     int trackCount() const;
     int rowForTrackId(qint64 id) const;
@@ -137,9 +141,9 @@ private:
     int m_libraryView = 0;
     bool m_showingGroupTracks = false;
     QLineEdit* m_searchInput;
-    QComboBox* m_sortSelector;
-    QComboBox* m_sortDirection;
     QTimer* m_searchTimer;
+    library::TrackSort m_trackSort = library::TrackSort::AddedAt;
+    bool m_trackSortAscending = true;
 
     void showLibraryView(int view);
     void openGroupAtRow(int row);
@@ -200,6 +204,7 @@ signals:
     void playbackModeChanged(int mode);
     void seekRequested(double targetSeconds);
     void volumeChanged(float factor);
+    void coverContextMenuRequested(qint64 trackId, const QPoint& globalPosition);
 
 private:
     static QString formatTime(double seconds);

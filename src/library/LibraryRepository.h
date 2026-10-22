@@ -40,6 +40,7 @@ enum class TrackSort {
     Title,
     Artist,
     Album,
+    Duration,
     AddedAt
 };
 
@@ -131,6 +132,11 @@ public:
                            std::size_t position, PlaybackMode mode);
     bool savePlaybackCursor(std::size_t position, PlaybackMode mode);
     std::optional<PersistedPlaybackQueue> loadPlaybackQueue() const;
+    bool recordPlayback(qint64 trackId, int maxEntries);
+    bool trimPlaybackHistory(int maxEntries);
+    std::vector<TrackInfo> queryPlaybackHistory(
+        const QString& searchText = {}, int limit = 100, int offset = 0) const;
+    qint64 playbackHistoryCount(const QString& searchText = {}) const;
 
 private:
     bool initializeSchema();

@@ -101,7 +101,7 @@ void WaveformProgressWidget::paintEvent(QPaintEvent*)
                          QPointF(xPosition, centerY + amplitude));
     }
 
-    painter.setPen(QPen(QColor(255, 255, 255, 220), 1.0));
+    painter.setPen(QPen(QColor(255, 255, 255, 128), 4.0));
     painter.drawLine(QPointF(progressX, bounds.top()),
                      QPointF(progressX, bounds.bottom()));
     painter.setPen(QPen(QColor(70, 73, 81), 1.0));

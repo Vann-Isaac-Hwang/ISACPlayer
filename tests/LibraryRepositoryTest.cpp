@@ -265,6 +265,51 @@ void testPersistedPlaybackQueue(const QString& databasePath)
            "restored queue must continue from its saved cursor");
 }
 
+void testPlaybackHistory(const QString& databasePath)
+{
+    using namespace isac::library;
+    LibraryRepository repository(databasePath);
+    expect(repository.isOpen(), "playback history repository must open");
+    std::vector<TrackInfo> tracks{
+        makeTrack("/history/one.flac", "History One", "Artist A",
+                  "Album A", 100),
+        makeTrack("/history/two.flac", "History Two", "Artist B",
+                  "Album B", 100)
+    };
+    expect(repository.upsertTracks(tracks),
+           "playback history fixtures must insert");
+
+    expect(repository.recordPlayback(tracks[0].id, 5) &&
+               repository.recordPlayback(tracks[1].id, 5) &&
+               repository.recordPlayback(tracks[0].id, 5),
+           "each successful play must append an independent history entry");
+    auto history = repository.queryPlaybackHistory({}, 10, 0);
+    expect(history.size() == 3 &&
+               history[0].id == tracks[0].id &&
+               history[1].id == tracks[1].id &&
+               history[2].id == tracks[0].id,
+           "history must retain repeated plays in newest-first order");
+
+    for (int i = 0; i < 5; ++i) {
+        expect(repository.recordPlayback(tracks[1].id, 5),
+               "history append and retention must succeed");
+    }
+    history = repository.queryPlaybackHistory({}, 10, 0);
+    expect(repository.playbackHistoryCount() == 5 &&
+               history.size() == 5 &&
+               std::all_of(history.begin(), history.end(),
+                           [&tracks](const TrackInfo& track) {
+                               return track.id == tracks[1].id;
+                           }),
+           "history retention must keep only the newest configured plays");
+    expect(repository.playbackHistoryCount("Artist A") == 0 &&
+               repository.playbackHistoryCount("Artist B") == 5,
+           "playback history search must filter track metadata");
+    expect(repository.trimPlaybackHistory(4) &&
+               repository.playbackHistoryCount() == 5,
+           "history retention must enforce a minimum of five entries");
+}
+
 void testFilteredSortOrdering(const QString& databasePath)
 {
     using namespace isac::library;
@@ -277,8 +322,24 @@ void testFilteredSortOrdering(const QString& databasePath)
                             "Album", 200);
     auto third = makeTrack("/sort/third.flac", "Other Title", "Elsewhere",
                            "Album", 300);
+    first.durationSeconds = 310;
+    second.durationSeconds = 120;
+    third.durationSeconds = 205;
     std::vector<TrackInfo> tracks{first, second, third};
     expect(repository.upsertTracks(tracks), "sort fixtures must insert");
+
+    const auto durationAscending = repository.queryTracks(
+        {}, TrackSort::Duration, true, 10, 0);
+    const auto durationDescending = repository.queryTracks(
+        {}, TrackSort::Duration, false, 10, 0);
+    expect(durationAscending.size() == 3 &&
+               durationAscending[0].id == tracks[1].id &&
+               durationAscending[1].id == tracks[2].id &&
+               durationAscending[2].id == tracks[0].id &&
+               durationDescending[0].id == tracks[0].id &&
+               durationDescending[1].id == tracks[2].id &&
+               durationDescending[2].id == tracks[1].id,
+           "duration sort must use numeric seconds in both directions");
 
     for (const bool ascending : {true, false}) {
         const auto sorted = repository.queryTracks(
@@ -669,6 +730,8 @@ int main(int argc, char** argv)
         QDir(temporaryDirectory.path()).filePath("normalization.sqlite"));
     testPersistedPlaybackQueue(
         QDir(temporaryDirectory.path()).filePath("playback.sqlite"));
+    testPlaybackHistory(
+        QDir(temporaryDirectory.path()).filePath("history.sqlite"));
     testPlaybackQueueModes();
     testAudioProperties(temporaryDirectory.path());
     testDirectoriesAndPlaylists(databasePath);

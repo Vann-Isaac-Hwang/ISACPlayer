@@ -18,7 +18,9 @@
 #include <QStyledItemDelegate>
 #include <QStyle>
 #include <QToolButton>
+#include <QRegularExpression>
 #include <algorithm>
+#include <array>
 #include <utility>
 
 namespace {
@@ -47,15 +49,110 @@ private:
         constexpr int gap = 14;
         const int columns = std::max(
             1, (availableWidth + gap) / (targetCellWidth + gap));
-        const int cellWidth =
-            (availableWidth - gap * (columns - 1)) / columns;
+        const int cellWidth = availableWidth / columns;
         const int coverSize = std::clamp(cellWidth - 24, 128, 196);
-        setSpacing(gap);
+        setSpacing(0);
         setIconSize(QSize(coverSize, coverSize));
         setGridSize(QSize(cellWidth, coverSize + 62));
     }
 
     int m_lastWidth = -1;
+};
+
+class BalancedTrackHeader final : public QHeaderView {
+public:
+    explicit BalancedTrackHeader(QWidget* parent = nullptr)
+        : QHeaderView(Qt::Horizontal, parent)
+    {}
+
+    void applyAutomaticWidths()
+    {
+        const int availableWidth = viewport()->width();
+        if (availableWidth <= 0 || count() < 4 ||
+            availableWidth == m_lastAvailableWidth) {
+            return;
+        }
+        m_lastAvailableWidth = availableWidth;
+        const int minimumWidth = std::min(
+            minimumSectionSize(), availableWidth / 4);
+        const int durationWidth = std::clamp(
+            kDurationWidth, minimumWidth,
+            std::max(minimumWidth, availableWidth - minimumWidth * 3));
+        int flexibleWidth = availableWidth - durationWidth;
+        std::array<int, 3> widths{};
+        std::array<bool, 3> active{true, true, true};
+        int remainingWeight = kColumnWeights[0] +
+                              kColumnWeights[1] +
+                              kColumnWeights[2];
+
+        while (remainingWeight > 0) {
+            bool clamped = false;
+            for (std::size_t i = 0; i < widths.size(); ++i) {
+                if (!active[i]) {
+                    continue;
+                }
+                const int proposed =
+                    flexibleWidth * kColumnWeights[i] / remainingWeight;
+                if (proposed < minimumWidth) {
+                    widths[i] = minimumWidth;
+                    flexibleWidth -= minimumWidth;
+                    remainingWeight -= kColumnWeights[i];
+                    active[i] = false;
+                    clamped = true;
+                    break;
+                }
+            }
+            if (clamped) {
+                continue;
+            }
+
+            int remainingWidth = flexibleWidth;
+            std::size_t lastActive = widths.size() - 1;
+            while (!active[lastActive]) {
+                --lastActive;
+            }
+            for (std::size_t i = 0; i < widths.size(); ++i) {
+                if (!active[i]) {
+                    continue;
+                }
+                widths[i] = i == lastActive
+                    ? remainingWidth
+                    : flexibleWidth * kColumnWeights[i] / remainingWeight;
+                remainingWidth -= widths[i];
+            }
+            break;
+        }
+
+        resizeSection(0, widths[0]);
+        resizeSection(1, widths[1]);
+        resizeSection(2, widths[2]);
+        resizeSection(3, durationWidth);
+    }
+
+protected:
+    void resizeEvent(QResizeEvent* event) override
+    {
+        QHeaderView::resizeEvent(event);
+        applyAutomaticWidths();
+    }
+
+private:
+    static constexpr std::array<int, 3> kColumnWeights{4, 2, 3};
+    static constexpr int kDurationWidth = 76;
+    int m_lastAvailableWidth = -1;
+};
+
+class ResponsiveTrackTableView final : public QTableView {
+public:
+    using QTableView::QTableView;
+
+protected:
+    void resizeEvent(QResizeEvent* event) override
+    {
+        QTableView::resizeEvent(event);
+        static_cast<BalancedTrackHeader*>(horizontalHeader())
+            ->applyAutomaticWidths();
+    }
 };
 
 class AlbumCardDelegate final : public QStyledItemDelegate {
@@ -75,6 +172,18 @@ protected:
         option->displayAlignment = Qt::AlignHCenter;
     }
 };
+
+void configureTrackTableColumns(QTableView* table)
+{
+    auto* header = table->horizontalHeader();
+    header->setSectionsClickable(true);
+    header->setStretchLastSection(false);
+    for (int column = 0; column < 4; ++column) {
+        header->setSectionResizeMode(column, QHeaderView::Interactive);
+    }
+    header->setMinimumSectionSize(1);
+    static_cast<BalancedTrackHeader*>(header)->applyAutomaticWidths();
+}
 
 }
 
@@ -235,6 +344,9 @@ void TrackTableModel::refresh() {
     m_coverCache.clear();
     if (!m_repository || (m_playlistContext && !m_playlistId)) {
         m_trackCount = 0;
+    } else if (m_historyContext) {
+        m_trackCount = std::max<qint64>(
+            0, m_repository->playbackHistoryCount(m_searchText));
     } else if (m_playlistContext) {
         m_trackCount = std::max<qint64>(
             0, m_repository->playlistTrackCount(*m_playlistId, m_searchText));
@@ -269,6 +381,7 @@ void TrackTableModel::setSort(library::TrackSort sort, bool ascending) {
 void TrackTableModel::setPlaylistId(std::optional<qint64> playlistId) {
     if (!m_playlistContext || m_playlistId != playlistId) {
         m_playlistContext = true;
+        m_historyContext = false;
         m_playlistId = playlistId;
         m_artistFilter.clear();
         m_albumFilter.clear();
@@ -279,11 +392,23 @@ void TrackTableModel::setPlaylistId(std::optional<qint64> playlistId) {
 void TrackTableModel::setCategoryFilter(const QString& artist,
                                         const QString& album) {
     if (m_artistFilter != artist || m_albumFilter != album ||
-        m_playlistContext) {
+        m_playlistContext || m_historyContext) {
         m_playlistContext = false;
+        m_historyContext = false;
         m_playlistId.reset();
         m_artistFilter = artist;
         m_albumFilter = album;
+        refresh();
+    }
+}
+
+void TrackTableModel::setHistoryMode(bool enabled) {
+    if (m_historyContext != enabled || m_playlistContext) {
+        m_historyContext = enabled;
+        m_playlistContext = false;
+        m_playlistId.reset();
+        m_artistFilter.clear();
+        m_albumFilter.clear();
         refresh();
     }
 }
@@ -296,7 +421,10 @@ bool TrackTableModel::loadPage(int row) const {
     if (pageStart == m_pageStart) {
         return true;
     }
-    if (m_playlistContext) {
+    if (m_historyContext) {
+        m_page = m_repository->queryPlaybackHistory(
+            m_searchText, kPageSize, pageStart);
+    } else if (m_playlistContext) {
         m_page = m_playlistId
             ? m_repository->queryPlaylistTracks(
                   *m_playlistId, m_searchText, kPageSize, pageStart)
@@ -325,7 +453,7 @@ std::optional<library::TrackInfo> TrackTableModel::trackAtRow(int row) const {
 }
 
 int TrackTableModel::rowForTrackId(qint64 id) const {
-    if (!m_repository || id <= 0 ||
+    if (!m_repository || id <= 0 || m_historyContext ||
         !m_artistFilter.isEmpty() || !m_albumFilter.isEmpty()) {
         return -1;
     }
@@ -340,7 +468,17 @@ std::vector<qint64> TrackTableModel::trackIds() const {
     constexpr int pageSize = 10000;
     for (qint64 offset = 0; offset < m_trackCount; offset += pageSize) {
         std::vector<qint64> page;
-        if (m_playlistContext) {
+        if (m_historyContext) {
+            const auto page = m_repository->queryPlaybackHistory(
+                m_searchText, pageSize, static_cast<int>(offset));
+            for (const auto& track : page) {
+                ids.push_back(track.id);
+            }
+            if (page.empty()) {
+                break;
+            }
+            continue;
+        } else if (m_playlistContext) {
             if (!m_playlistId) {
                 break;
             }
@@ -545,29 +683,15 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
     m_searchInput->setStyleSheet(
         "QLineEdit { background: #1E2028; color: #EAEAEA; border: 1px solid #343846; "
         "border-radius: 5px; padding: 7px 9px; }");
-    m_sortSelector = new QComboBox(this);
-    m_sortSelector->addItem("加入时间", static_cast<int>(library::TrackSort::AddedAt));
-    m_sortSelector->addItem("标题", static_cast<int>(library::TrackSort::Title));
-    m_sortSelector->addItem("艺人", static_cast<int>(library::TrackSort::Artist));
-    m_sortSelector->addItem("专辑", static_cast<int>(library::TrackSort::Album));
-    m_sortDirection = new QComboBox(this);
-    m_sortDirection->addItem("升序", true);
-    m_sortDirection->addItem("降序", false);
-    for (QComboBox* selector : {m_sortSelector, m_sortDirection}) {
-        selector->setStyleSheet(
-            "QComboBox { background: #1E2028; color: #EAEAEA; border: 1px solid #343846; "
-            "border-radius: 5px; padding: 6px 8px; }");
-    }
     m_resultCount = new QLabel(this);
     m_resultCount->setStyleSheet("color: #9499A6; font-size: 12px;");
     libraryControls->addWidget(m_searchInput, 1);
-    libraryControls->addWidget(m_sortSelector);
-    libraryControls->addWidget(m_sortDirection);
     libraryControls->addWidget(m_resultCount);
 
     // 2. 歌曲列表表格 (Apple Music 极简无竖线风格)
     const QPixmap defaultRowCover = library::MetadataReader::generateDefaultCover("ISAC", 80);
-    m_table = new QTableView(this);
+    m_table = new ResponsiveTrackTableView(this);
+    m_table->setHorizontalHeader(new BalancedTrackHeader(m_table));
     m_tableModel = new TrackTableModel(repository, QIcon(defaultRowCover), m_table);
     m_artistModel = new LibraryGroupTableModel(repository, false, m_table);
     m_albumModel = new LibraryGroupTableModel(repository, true, m_table);
@@ -585,13 +709,8 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
     m_table->setDragDropMode(QAbstractItemView::InternalMove);
     m_table->setDefaultDropAction(Qt::MoveAction);
     m_table->setIconSize(QSize(40, 40));
-    m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    m_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Interactive);
-    m_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Interactive);
-    m_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Fixed);
-    m_table->setColumnWidth(1, 180);
-    m_table->setColumnWidth(2, 200);
-    m_table->setColumnWidth(3, 75);
+    configureTrackTableColumns(m_table);
+    m_table->horizontalHeader()->setSortIndicatorShown(false);
 
     m_table->setStyleSheet(R"(
         QTableView {
@@ -614,6 +733,7 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
     m_libraryTabs->addTab(QStringLiteral("歌曲"));
     m_libraryTabs->addTab(QStringLiteral("艺人"));
     m_libraryTabs->addTab(QStringLiteral("专辑"));
+    m_libraryTabs->addTab(QStringLiteral("播放历史"));
     m_libraryTabs->setExpanding(false);
     m_libraryTabs->setStyleSheet(
         "QTabBar::tab { color: #A5AAB8; background: transparent; "
@@ -662,6 +782,117 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
         "font-size: 13px; outline: none; }"
         "QListView::item { padding: 7px; }"
         "QListView::item:selected { background: #343A4B; color: white; }");
+    m_albumCoverView->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_albumCoverView, &QListView::customContextMenuRequested,
+            this, [this](const QPoint& position) {
+        const QModelIndex index = m_albumCoverView->indexAt(position);
+        if (!index.isValid()) {
+            return;
+        }
+        const auto album = m_albumModel->groupAtRow(index.row());
+        if (!album) {
+            return;
+        }
+        m_albumCoverView->setCurrentIndex(index);
+
+        QMenu menu(this);
+        menu.setStyleSheet(R"(
+            QMenu {
+                background: #20232B;
+                color: #EAECEF;
+                border: 1px solid #454A56;
+                padding: 4px;
+            }
+            QMenu::item {
+                color: #EAECEF;
+                padding: 7px 34px 7px 12px;
+                margin: 1px;
+                background: transparent;
+            }
+            QMenu::item:selected {
+                background: #FA2D48;
+                color: #FFFFFF;
+            }
+            QMenu::right-arrow {
+                width: 10px;
+                height: 10px;
+                subcontrol-origin: padding;
+                subcontrol-position: right center;
+                right: 8px;
+            }
+        )");
+
+        QAction* viewAlbum = menu.addAction(QStringLiteral("查看专辑"));
+        connect(viewAlbum, &QAction::triggered, this, [this, album]() {
+            m_libraryTabs->setCurrentIndex(2);
+            showGroupTracks(*album);
+        });
+
+        QMenu* artistMenu = menu.addMenu(QStringLiteral("查看作者"));
+        QStringList artists = album->artist.split(
+            QRegularExpression(QStringLiteral("\\s*/\\s*")),
+            Qt::SkipEmptyParts);
+        for (QString& artist : artists) {
+            artist = artist.trimmed();
+        }
+        artists.removeAll(QString{});
+        if (artists.isEmpty()) {
+            artists.push_back(QStringLiteral("Unknown Artist"));
+        }
+        for (const QString& artist : artists) {
+            QAction* action = artistMenu->addAction(artist);
+            connect(action, &QAction::triggered, this, [this, artist]() {
+                m_libraryTabs->setCurrentIndex(1);
+                showGroupTracks({artist, {}, 0});
+            });
+        }
+
+        menu.addSeparator();
+        QMenu* addMenu = menu.addMenu(QStringLiteral("添加到歌单"));
+        const auto playlists = m_repository->playlists();
+        if (playlists.empty()) {
+            QAction* emptyAction = addMenu->addAction(
+                QStringLiteral("没有可用歌单"));
+            emptyAction->setEnabled(false);
+        } else {
+            for (const auto& playlist : playlists) {
+                QAction* action = addMenu->addAction(playlist.name);
+                connect(action, &QAction::triggered, this,
+                        [this, albumName = album->name,
+                         playlistId = playlist.id]() {
+                    constexpr int pageSize = 10000;
+                    std::vector<qint64> trackIds;
+                    for (int offset = 0;; offset += pageSize) {
+                        const auto page = m_repository->queryAlbumTrackIds(
+                            albumName, {}, library::TrackSort::Title, true,
+                            pageSize, offset);
+                        if (page.empty()) {
+                            break;
+                        }
+                        trackIds.insert(trackIds.end(),
+                                        page.begin(), page.end());
+                        if (static_cast<int>(page.size()) < pageSize) {
+                            break;
+                        }
+                    }
+                    const auto added = m_repository->addTracksToPlaylist(
+                        playlistId, trackIds);
+                    if (!added) {
+                        m_scanStatus->setText(
+                            QStringLiteral("添加到歌单失败：%1")
+                                .arg(m_repository->lastError()));
+                        return;
+                    }
+                    m_scanStatus->setText(
+                        QStringLiteral("已添加 %1 首，跳过重复项 %2 首")
+                            .arg(*added)
+                            .arg(static_cast<qint64>(trackIds.size()) -
+                                 *added));
+                });
+            }
+        }
+        menu.exec(m_albumCoverView->viewport()->mapToGlobal(position));
+    });
     m_libraryContent = new QStackedWidget(this);
     m_libraryContent->addWidget(m_table);
     m_libraryContent->addWidget(m_albumCoverView);
@@ -698,20 +929,42 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
         m_albumModel->setSearchText(m_searchInput->text());
         updateResultCount();
     });
-    auto updateSort = [this]() {
-        m_tableModel->setSort(
-            static_cast<library::TrackSort>(
-                m_sortSelector->currentData().toInt()),
-            m_sortDirection->currentData().toBool());
-        const bool ascending = m_sortDirection->currentData().toBool();
-        m_artistModel->setAscending(ascending);
-        m_albumModel->setAscending(ascending);
+    connect(m_table->horizontalHeader(), &QHeaderView::sectionClicked,
+            this, [this](int section) {
+        if ((m_libraryView != 0 && !m_showingGroupTracks) ||
+            section < 0 || section > 3) {
+            return;
+        }
+        const library::TrackSort sort = [&]() {
+            switch (section) {
+            case 0: return library::TrackSort::Title;
+            case 1: return library::TrackSort::Artist;
+            case 2: return library::TrackSort::Album;
+            default: return library::TrackSort::Duration;
+            }
+        }();
+        if (sort == library::TrackSort::Title &&
+            m_trackSort == library::TrackSort::Title &&
+            !m_trackSortAscending) {
+            m_trackSort = library::TrackSort::AddedAt;
+            m_trackSortAscending = true;
+            m_table->horizontalHeader()->setSortIndicatorShown(false);
+        } else if (m_trackSort == sort) {
+            m_trackSortAscending = !m_trackSortAscending;
+            m_table->horizontalHeader()->setSortIndicator(
+                section, m_trackSortAscending
+                    ? Qt::AscendingOrder : Qt::DescendingOrder);
+            m_table->horizontalHeader()->setSortIndicatorShown(true);
+        } else {
+            m_trackSort = sort;
+            m_trackSortAscending = true;
+            m_table->horizontalHeader()->setSortIndicator(
+                section, Qt::AscendingOrder);
+            m_table->horizontalHeader()->setSortIndicatorShown(true);
+        }
+        m_tableModel->setSort(m_trackSort, m_trackSortAscending);
         updateResultCount();
-    };
-    connect(m_sortSelector, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [updateSort](int) { updateSort(); });
-    connect(m_sortDirection, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [updateSort](int) { updateSort(); });
+    });
     connect(m_libraryTabs, &QTabBar::currentChanged,
             this, [this](int index) { showLibraryView(index); });
     connect(m_groupBackButton, &QPushButton::clicked, this, [this]() {
@@ -725,7 +978,8 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
         if (!index.isValid()) {
             return;
         }
-        if (m_libraryView == 0 || m_showingGroupTracks) {
+        if (m_libraryView == 0 || m_libraryView == 3 ||
+            m_showingGroupTracks) {
             const auto track = m_tableModel->trackAtRow(index.row());
             if (track) {
                 emit trackDoubleClicked(track->id);
@@ -744,7 +998,8 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
     m_table->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_table, &QTableView::customContextMenuRequested, this,
             [this](const QPoint& position) {
-        if (m_libraryView != 0 || m_showingGroupTracks) {
+        if (m_libraryView != 0 && m_libraryView != 3 &&
+            !m_showingGroupTracks) {
             return;
         }
         const QModelIndex clickedIndex = m_table->indexAt(position);
@@ -766,6 +1021,9 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
         if (selectedTrackIds.empty()) {
             return;
         }
+        const auto selectedTrack = selectedTrackIds.size() == 1
+            ? m_tableModel->trackAtRow(selectedRows.front().row())
+            : std::optional<library::TrackInfo>{};
 
         QMenu menu(this);
         menu.setStyleSheet(R"(
@@ -826,6 +1084,38 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
                 });
             }
         }
+        if (selectedTrack) {
+            menu.addSeparator();
+            QMenu* artistMenu = menu.addMenu(QStringLiteral("查看艺人"));
+            QStringList artists = selectedTrack->artist.split(
+                QRegularExpression(QStringLiteral("\\s*/\\s*")),
+                Qt::SkipEmptyParts);
+            for (QString& artist : artists) {
+                artist = artist.trimmed();
+            }
+            artists.removeAll(QString{});
+            if (artists.isEmpty()) {
+                artists.push_back(QStringLiteral("Unknown Artist"));
+            }
+            for (const QString& name : artists) {
+                QAction* action = artistMenu->addAction(name);
+                connect(action, &QAction::triggered, this, [this, name]() {
+                    m_libraryTabs->setCurrentIndex(1);
+                    showGroupTracks({name, {}, 0});
+                });
+            }
+            const QString albumName = selectedTrack->album.trimmed().isEmpty()
+                ? QStringLiteral("Unknown Album")
+                : selectedTrack->album;
+            QAction* albumAction = menu.addAction(
+                QStringLiteral("查看专辑：%1").arg(
+                    albumName));
+            connect(albumAction, &QAction::triggered, this,
+                    [this, albumName]() {
+                m_libraryTabs->setCurrentIndex(2);
+                showGroupTracks({albumName, {}, 0});
+            });
+        }
         menu.exec(m_table->viewport()->mapToGlobal(position));
     });
 }
@@ -837,8 +1127,25 @@ void AppleLibraryPage::refreshTracks() {
     updateResultCount();
 }
 
+void AppleLibraryPage::refreshPlaybackHistory() {
+    if (m_libraryView == 3) {
+        m_tableModel->refresh();
+        updateResultCount();
+    }
+}
+
 void AppleLibraryPage::setScanStatus(const QString& status) {
     m_scanStatus->setText(status);
+}
+
+void AppleLibraryPage::showArtist(const QString& artist) {
+    m_libraryTabs->setCurrentIndex(1);
+    showGroupTracks({artist, {}, 0});
+}
+
+void AppleLibraryPage::showAlbum(const QString& album) {
+    m_libraryTabs->setCurrentIndex(2);
+    showGroupTracks({album, {}, 0});
 }
 
 std::optional<library::TrackInfo> AppleLibraryPage::trackAtRow(int row) const {
@@ -858,11 +1165,17 @@ int AppleLibraryPage::rowForTrackId(qint64 id) const {
 }
 
 void AppleLibraryPage::showLibraryView(int view) {
-    m_libraryView = std::clamp(view, 0, 2);
+    m_libraryView = std::clamp(view, 0, 3);
     m_showingGroupTracks = false;
     m_groupBackButton->hide();
+    m_tableModel->setHistoryMode(m_libraryView == 3);
     if (m_libraryView == 0) {
         m_tableModel->setCategoryFilter({}, {});
+        m_table->setModel(m_tableModel);
+        static_cast<BalancedTrackHeader*>(m_table->horizontalHeader())
+            ->applyAutomaticWidths();
+        m_libraryContent->setCurrentWidget(m_table);
+    } else if (m_libraryView == 3) {
         m_table->setModel(m_tableModel);
         m_libraryContent->setCurrentWidget(m_table);
     } else {
@@ -877,9 +1190,9 @@ void AppleLibraryPage::showLibraryView(int view) {
     if (m_libraryView != 2) {
         m_libraryContent->setCurrentWidget(m_table);
     }
-    m_sortSelector->setVisible(m_libraryView == 0);
-    m_sortSelector->setEnabled(m_libraryView == 0);
-    m_sortDirection->setEnabled(true);
+    m_table->horizontalHeader()->setSectionsClickable(m_libraryView == 0);
+    m_table->horizontalHeader()->setSortIndicatorShown(
+        m_libraryView == 0 && m_trackSort != library::TrackSort::AddedAt);
     updateResultCount();
 }
 
@@ -903,9 +1216,9 @@ void AppleLibraryPage::showGroupTracks(const library::LibraryGroup& group) {
         QStringLiteral("返回%1").arg(m_libraryView == 1
             ? QStringLiteral("艺人") : QStringLiteral("专辑")));
     m_groupBackButton->show();
-    m_sortSelector->show();
-    m_sortSelector->setEnabled(true);
-    m_sortDirection->setEnabled(true);
+    m_table->horizontalHeader()->setSectionsClickable(true);
+    m_table->horizontalHeader()->setSortIndicatorShown(
+        m_trackSort != library::TrackSort::AddedAt);
     updateResultCount();
 }
 
@@ -913,6 +1226,9 @@ void AppleLibraryPage::updateResultCount() {
     if (m_showingGroupTracks || m_libraryView == 0) {
         m_resultCount->setText(
             QStringLiteral("%1 首曲目").arg(m_tableModel->trackCount()));
+    } else if (m_libraryView == 3) {
+        m_resultCount->setText(
+            QStringLiteral("%1 次播放").arg(m_tableModel->trackCount()));
     } else if (m_libraryView == 1) {
         m_resultCount->setText(
             QStringLiteral("%1 位艺人").arg(m_artistModel->groupCount()));
@@ -996,7 +1312,8 @@ PlaylistPage::PlaylistPage(library::LibraryRepository* repository,
 
     const QPixmap defaultCover =
         library::MetadataReader::generateDefaultCover("ISAC", 80);
-    m_table = new QTableView(tracksPanel);
+    m_table = new ResponsiveTrackTableView(tracksPanel);
+    m_table->setHorizontalHeader(new BalancedTrackHeader(m_table));
     m_tableModel = new TrackTableModel(
         m_repository, QIcon(defaultCover), m_table);
     m_table->setModel(m_tableModel);
@@ -1012,13 +1329,8 @@ PlaylistPage::PlaylistPage(library::LibraryRepository* repository,
     m_table->setDragDropMode(QAbstractItemView::InternalMove);
     m_table->setDefaultDropAction(Qt::MoveAction);
     m_table->setIconSize(QSize(40, 40));
-    m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    m_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Interactive);
-    m_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Interactive);
-    m_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Fixed);
-    m_table->setColumnWidth(1, 180);
-    m_table->setColumnWidth(2, 200);
-    m_table->setColumnWidth(3, 75);
+    configureTrackTableColumns(m_table);
+    m_table->horizontalHeader()->setSectionsClickable(false);
     m_table->setStyleSheet(
         "QTableView { background: transparent; border: none; color: #EAEAEA; "
         "font-size: 13px; alternate-background-color: #1A1C22; }"
@@ -1314,6 +1626,12 @@ NowPlayingHeader::NowPlayingHeader(QWidget* parent) : QWidget(parent) {
     m_coverThumb->setFixedSize(140, 140);
     m_coverThumb->setScaledContents(true);
     m_coverThumb->setPixmap(library::MetadataReader::generateDefaultCover("ISAC", 280));
+    m_coverThumb->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_coverThumb, &QLabel::customContextMenuRequested, this,
+            [this](const QPoint& position) {
+        emit coverContextMenuRequested(
+            m_trackInfo.id, m_coverThumb->mapToGlobal(position));
+    });
     content->addWidget(m_coverThumb);
 
     auto* visualColumn = new QVBoxLayout();
