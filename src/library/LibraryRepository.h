@@ -92,13 +92,19 @@ public:
     qint64 artistTrackCount(const QString& artist,
                             const QString& searchText = {}) const;
     std::vector<TrackInfo> queryAlbumTracks(
+        // The artist argument is retained for API compatibility; album
+        // identity is now determined by album name alone.
         const QString& artist, const QString& album,
         const QString& searchText = {}, TrackSort sort = TrackSort::Title,
         bool ascending = true, int limit = 256, int offset = 0) const;
     std::vector<qint64> queryAlbumTrackIds(
+        // The artist argument is retained for API compatibility; album
+        // identity is now determined by album name alone.
         const QString& artist, const QString& album,
         const QString& searchText = {}, TrackSort sort = TrackSort::Title,
         bool ascending = true, int limit = 10000, int offset = 0) const;
+    // The artist argument is retained for API compatibility; album identity
+    // is now determined by album name alone.
     qint64 albumTrackCount(const QString& artist, const QString& album,
                            const QString& searchText = {}) const;
 
@@ -130,6 +136,8 @@ public:
 
 private:
     bool initializeSchema();
+    bool syncTrackRelations(qint64 trackId, const QString& artist,
+                            const QString& album);
     static TrackInfo readTrackRow(const QSqlQuery& query);
 
     QString m_connectionName;

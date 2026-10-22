@@ -7,8 +7,11 @@
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QUuid>
 #include <algorithm>
 #include <cstdlib>
 #include <functional>
@@ -291,38 +294,94 @@ void testArtistAndAlbumQueries(const QString& databasePath)
     expect(repository.isOpen(), "category test repository must open");
 
     std::vector<TrackInfo> tracks{
-        makeTrack("/category/a1.flac", "A One", "Artist A", "Shared Album", 100),
-        makeTrack("/category/a2.flac", "A Two", "artist a", "Shared Album", 100),
+        makeTrack("/category/a1.flac", "A One", "Artist A / Guest A",
+                  "Shared Album", 100),
+        makeTrack("/category/a2.flac", "A Two", "artist a / Guest B",
+                  "Shared Album", 100),
         makeTrack("/category/a3.flac", "A Three", "Artist A", "Other Album", 100),
         makeTrack("/category/b1.flac", "B One", "Artist B", "Shared Album", 100)
     };
     expect(repository.upsertTracks(tracks), "category fixtures must insert");
 
     const auto artists = repository.queryArtists({}, true, 1, 0);
-    expect(repository.artistCount() == 2 && artists.size() == 1 &&
+    expect(repository.artistCount() == 4 && artists.size() == 1 &&
                artists.front().name.compare("Artist A", Qt::CaseInsensitive) == 0 &&
                artists.front().trackCount == 3,
-           "artists must aggregate case-insensitively and paginate");
-    expect(repository.queryArtists("artist b").size() == 1 &&
+           "artists must split compound artist tags and paginate");
+    expect(repository.queryArtists("guest a").size() == 1 &&
+               repository.artistTrackCount("Guest A") == 1 &&
+               repository.queryArtists("artist b").size() == 1 &&
                repository.artistCount("missing") == 0,
            "artist search must filter category names");
 
     const auto albums = repository.queryAlbums({}, true, 10, 0);
-    expect(repository.albumCount() == 3 && albums.size() == 3,
-           "albums with the same title by different artists must remain distinct");
-    expect(repository.albumTrackCount("Artist A", "Shared Album") == 2,
-           "album track count must use both artist and album identity");
+    expect(repository.albumCount() == 2 && albums.size() == 2 &&
+               albums[0].name == "Other Album" &&
+               albums[1].name == "Shared Album" &&
+               albums[1].artist == "Artist A / Artist B / Guest A / Guest B",
+           "albums must merge by title and expose the union of artists");
+    expect(repository.albumTrackCount("Artist A", "Shared Album") == 3,
+           "album track count must use album identity only");
     const auto albumTracks = repository.queryAlbumTracks(
         "Artist A", "Shared Album", {}, TrackSort::Title, true, 10, 0);
-    expect(albumTracks.size() == 2 &&
+    expect(albumTracks.size() == 3 &&
                albumTracks[0].title == "A One" &&
-               albumTracks[1].title == "A Two",
-           "album track queries must return only the selected artist's album");
+               albumTracks[1].title == "A Two" &&
+               albumTracks[2].title == "B One",
+           "album track queries must return every track in the album");
     const auto artistIds = repository.queryArtistTrackIds(
         "Artist A", {}, TrackSort::Title, true, 10, 0);
     expect(artistIds.size() == 3 &&
                repository.artistTrackCount("Artist A") == 3,
            "artist playback IDs and count must cover the category tracks");
+}
+
+void testLegacyCategoryMigration(const QString& databasePath)
+{
+    const QString connectionName = QStringLiteral("legacy-fixture-%1")
+        .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    {
+        QSqlDatabase database = QSqlDatabase::addDatabase(
+            QStringLiteral("QSQLITE"), connectionName);
+        database.setDatabaseName(databasePath);
+        expect(database.open(), "legacy fixture database must open");
+        QSqlQuery schema(database);
+        expect(schema.exec(
+                   "CREATE TABLE tracks ("
+                   "id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE, "
+                   "title TEXT NOT NULL, artist TEXT NOT NULL, album TEXT NOT NULL, "
+                   "duration_seconds INTEGER NOT NULL DEFAULT 0, "
+                   "track_number INTEGER NOT NULL DEFAULT 0, "
+                   "disc_number INTEGER NOT NULL DEFAULT 0, "
+                   "year INTEGER NOT NULL DEFAULT 0, "
+                   "file_size INTEGER NOT NULL DEFAULT 0, "
+                   "modified_at TEXT, added_at TEXT NOT NULL)"),
+               "legacy fixture schema must be created");
+        expect(schema.exec(
+                   "INSERT INTO tracks "
+                   "(path, title, artist, album, added_at) VALUES "
+                   "('/legacy/one.flac', 'One', 'Alpha / Beta', 'Legacy Album', "
+                   "'2024-01-01T00:00:00.000Z'), "
+                   "('/legacy/two.flac', 'Two', 'Gamma', 'Legacy Album', "
+                   "'2024-01-01T00:00:00.000Z')"),
+               "legacy fixture tracks must be inserted");
+        database.close();
+    }
+    QSqlDatabase::removeDatabase(connectionName);
+
+    isac::library::LibraryRepository repository(databasePath);
+    expect(repository.isOpen(), "repository must open legacy database");
+    expect(repository.artistCount() == 3 &&
+               repository.artistTrackCount("Alpha") == 1 &&
+               repository.artistTrackCount("Beta") == 1 &&
+               repository.artistTrackCount("Gamma") == 1,
+           "legacy compound artists must migrate into separate entities");
+    const auto albums = repository.queryAlbums();
+    expect(albums.size() == 1 &&
+               albums.front().name == "Legacy Album" &&
+               albums.front().artist == "Alpha / Beta / Gamma" &&
+               albums.front().trackCount == 2,
+           "legacy albums must migrate by name with the artist union");
 }
 
 void testPlaybackQueueModes()
@@ -519,6 +578,8 @@ int main(int argc, char** argv)
         QDir(temporaryDirectory.path()).filePath("sort.sqlite"));
     testArtistAndAlbumQueries(
         QDir(temporaryDirectory.path()).filePath("categories.sqlite"));
+    testLegacyCategoryMigration(
+        QDir(temporaryDirectory.path()).filePath("legacy.sqlite"));
     testPersistedPlaybackQueue(
         QDir(temporaryDirectory.path()).filePath("playback.sqlite"));
     testPlaybackQueueModes();
