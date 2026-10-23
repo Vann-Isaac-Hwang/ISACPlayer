@@ -15,6 +15,9 @@
 #include <QTabBar>
 #include <QToolButton>
 #include <QMimeData>
+#include <QFrame>
+#include <QSplitter>
+#include <QResizeEvent>
 #include <optional>
 #include <vector>
 #include "library/LibraryRepository.h"
@@ -113,6 +116,7 @@ public:
     void refreshTracks();
     void refreshPlaybackHistory();
     void setScanStatus(const QString& status);
+    void toggleSearchInput();
     void showArtist(const QString& artist);
     void showAlbum(const QString& album);
     std::optional<library::TrackInfo> trackAtRow(int row) const;
@@ -138,6 +142,7 @@ private:
     QWidget* m_albumViewMode = nullptr;
     QListView* m_albumCoverView = nullptr;
     QStackedWidget* m_libraryContent = nullptr;
+    QToolButton* m_searchToggleButton = nullptr;
     int m_libraryView = 0;
     bool m_showingGroupTracks = false;
     QLineEdit* m_searchInput;
@@ -159,26 +164,42 @@ public:
 
     void refresh();
     std::vector<qint64> trackIds() const;
+    bool toolsPanelVisible() const;
+
+public slots:
+    void toggleToolsPanel();
+    void setToolsPanelVisible(bool visible);
 
 signals:
     void trackDoubleClicked(qint64 trackId);
+    void toolsVisibilityChanged(bool visible);
 
 private:
     library::LibraryRepository* m_repository = nullptr;
     QListWidget* m_playlistList = nullptr;
     QTableView* m_table = nullptr;
     TrackTableModel* m_tableModel = nullptr;
+    QSplitter* m_playlistSplitter = nullptr;
+    QWidget* m_tracksPanel = nullptr;
+    QFrame* m_toolsPanel = nullptr;
+    QToolButton* m_toolsButton = nullptr;
     QLineEdit* m_searchInput = nullptr;
+    QLabel* m_playlistTitleLabel = nullptr;
     QLabel* m_statusLabel = nullptr;
-    QPushButton* m_renameButton = nullptr;
-    QPushButton* m_deleteButton = nullptr;
     QPushButton* m_addTracksButton = nullptr;
     QPushButton* m_removeTracksButton = nullptr;
 
     std::optional<qint64> selectedPlaylistId() const;
     void refreshPlaylistList(std::optional<qint64> preferred = std::nullopt);
     void updateControls();
+    void updatePlaylistTitle();
+    void createPlaylist();
+    void renameSelectedPlaylist();
+    void deleteSelectedPlaylist();
     void openAddTracksDialog();
+
+protected:
+    void resizeEvent(QResizeEvent* event) override;
 };
 
 class NowPlayingHeader final : public QWidget {
@@ -191,6 +212,7 @@ public:
                                 bool channels, bool bitrate);
     void setPlayingState(bool playing);
     void setPlaybackMode(int mode);
+    void setVolumeMaximum(double maximum);
     void setVolume(double volume);
     void updateProgress(double currentSec, double totalSec);
     void updateVisualization(const double* preLeft, const double* preRight,
@@ -210,12 +232,15 @@ signals:
 private:
     static QString formatTime(double seconds);
     void updateAudioInfoLabel();
+    void updateWaveformHoverLabel(bool visible, double progress);
 
     QLabel* m_coverThumb;
     QLabel* m_titleLabel;
     QLabel* m_artistLabel;
     QLabel* m_albumLabel;
     QLabel* m_audioInfoLabel;
+    QLabel* m_volumeLabel;
+    QLabel* m_waveformHoverLabel = nullptr;
     QLabel* m_lblCurrentTime;
     QLabel* m_lblTotalTime;
     QPushButton* m_btnPrev;
@@ -229,7 +254,11 @@ private:
 
     std::vector<double> m_waveformSamples;
     int m_playbackModeValue = 0;
+    double m_volumeFactor = 1.0;
+    double m_volumeMaximum = 2.0;
     double m_totalDuration = 0.0;
+    double m_hoverPreviewProgress = 0.0;
+    bool m_hoverPreviewVisible = false;
     library::TrackInfo m_trackInfo;
     bool m_showAudioFormat = true;
     bool m_showSampleRate = true;

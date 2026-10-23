@@ -2,6 +2,7 @@
 
 #include <QMouseEvent>
 #include <QPainter>
+#include <QFontMetrics>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -40,7 +41,8 @@ WaveformProgressWidget::WaveformProgressWidget(QWidget* parent)
 {
     setMinimumHeight(34);
     setCursor(Qt::PointingHandCursor);
-    setAccessibleName(QStringLiteral("播放进度波形"));
+    setMouseTracking(true);
+    setAccessibleName(QStringLiteral("Playback waveform"));
 }
 
 void WaveformProgressWidget::setSamples(const double* samples,
@@ -64,12 +66,18 @@ void WaveformProgressWidget::setProgress(double progress)
     update();
 }
 
+void WaveformProgressWidget::setDuration(double seconds)
+{
+    m_durationSeconds = std::max(0.0, seconds);
+    update();
+}
+
 void WaveformProgressWidget::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, false);
     const QRectF bounds = rect().adjusted(1, 1, -1, -1);
-    painter.fillRect(bounds, QColor(30, 32, 40));
+    painter.fillRect(bounds, QColor(39, 42, 51));
 
     const qreal centerY = bounds.center().y();
     const qreal halfHeight = std::max<qreal>(2.0, bounds.height() * 0.43);
@@ -95,17 +103,41 @@ void WaveformProgressWidget::paintEvent(QPaintEvent*)
         const qreal xPosition = bounds.left() + x;
         painter.setPen(QPen(xPosition <= progressX
                                 ? QColor(235, 237, 240)
-                                : QColor(105, 109, 118),
+                                : QColor(155, 159, 169),
                             1.0));
         painter.drawLine(QPointF(xPosition, centerY - amplitude),
                          QPointF(xPosition, centerY + amplitude));
     }
 
-    painter.setPen(QPen(QColor(255, 255, 255, 128), 4.0));
+    painter.setPen(QPen(QColor(255, 255, 255, 235), 4.0));
     painter.drawLine(QPointF(progressX, bounds.top()),
                      QPointF(progressX, bounds.bottom()));
+
+    if (m_hovered && width() > 0) {
+        const qreal hoverX = std::clamp(
+            m_hoverX, bounds.left(), bounds.right());
+        painter.setPen(QPen(QColor(255, 255, 255, 235), 1.0));
+        painter.drawLine(QPointF(hoverX, bounds.top()),
+                         QPointF(hoverX, bounds.bottom()));
+    }
+
     painter.setPen(QPen(QColor(70, 73, 81), 1.0));
     painter.drawRect(bounds);
+}
+
+bool WaveformProgressWidget::event(QEvent* event)
+{
+    if (event->type() == QEvent::Enter) {
+        m_hovered = true;
+        m_hoverX = width() * m_progress;
+        emit hoverPreviewChanged(true, m_progress);
+        update();
+    } else if (event->type() == QEvent::Leave && !m_dragging) {
+        m_hovered = false;
+        emit hoverPreviewChanged(false, 0.0);
+        update();
+    }
+    return QWidget::event(event);
 }
 
 void WaveformProgressWidget::mousePressEvent(QMouseEvent* event)
@@ -121,6 +153,13 @@ void WaveformProgressWidget::mousePressEvent(QMouseEvent* event)
 
 void WaveformProgressWidget::mouseMoveEvent(QMouseEvent* event)
 {
+    m_hoverX = mouseX(event);
+    m_hovered = true;
+    const qreal progress = width() > 0
+        ? std::clamp(m_hoverX / width(), 0.0, 1.0)
+        : 0.0;
+    emit hoverPreviewChanged(true, progress);
+    update();
     if (m_dragging && (event->buttons() & Qt::LeftButton)) {
         seekAt(mouseX(event));
         event->accept();
@@ -148,6 +187,23 @@ void WaveformProgressWidget::seekAt(qreal x)
     }
     m_progress = std::clamp(x / width(), 0.0, 1.0);
     update();
+}
+
+QString WaveformProgressWidget::formatTime(double seconds)
+{
+    const int totalSeconds = std::max(0, qRound(seconds));
+    const int hours = totalSeconds / 3600;
+    const int minutes = (totalSeconds % 3600) / 60;
+    const int remainingSeconds = totalSeconds % 60;
+    if (hours > 0) {
+        return QStringLiteral("%1:%2:%3")
+            .arg(hours)
+            .arg(minutes, 2, 10, QLatin1Char('0'))
+            .arg(remainingSeconds, 2, 10, QLatin1Char('0'));
+    }
+    return QStringLiteral("%1:%2")
+        .arg(minutes)
+        .arg(remainingSeconds, 2, 10, QLatin1Char('0'));
 }
 
 struct WaterfallWidget::FftState {
@@ -190,7 +246,7 @@ WaterfallWidget::WaterfallWidget(QWidget* parent)
 {
     m_history.fill(QColor(22, 24, 29));
     setMinimumSize(120, 72);
-    setAccessibleName(QStringLiteral("实时频谱瀑布图"));
+    setAccessibleName(QStringLiteral("Live spectrum waterfall"));
 }
 
 WaterfallWidget::~WaterfallWidget() = default;

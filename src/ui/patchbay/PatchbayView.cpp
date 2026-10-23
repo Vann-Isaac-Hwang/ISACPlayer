@@ -292,7 +292,7 @@ void PatchbayScene::mousePressEvent(QGraphicsSceneMouseEvent* event) {
                 if (s && e) {
                     m_engine.disconnect(s->nodeId(), s->portIndex(), e->nodeId(), e->portIndex());
                     m_engine.rebuildGraph();
-                    emit topologyChanged("已断开连线");
+                    emit topologyChanged("Connection removed");
                 }
                 m_cableItems.erase(std::remove(m_cableItems.begin(), m_cableItems.end(), cable), m_cableItems.end());
                 removeItem(cable);
@@ -309,19 +309,19 @@ void PatchbayScene::mousePressEvent(QGraphicsSceneMouseEvent* event) {
             }
 
             QMenu menu;
-            QAction* deleteAction = menu.addAction("删除模块");
+            QAction* deleteAction = menu.addAction("Delete Node");
             QAction* selectedAction = menu.exec(QCursor::pos());
             if (selectedAction == deleteAction) {
                 const NodeId nodeId = nodeItem->audioNode()->id();
                 const QString nodeName =
                     QString::fromStdString(nodeItem->audioNode()->name());
                 if (!m_engine.removeNode(nodeId)) {
-                    emit topologyChanged("无法删除：Source/Sink 是引擎固定端点");
+                    emit topologyChanged("Cannot delete a fixed Source/Sink node");
                 } else if (!m_engine.rebuildGraph()) {
-                    emit topologyChanged("模块已删除，但新的拓扑编译失败");
+                    emit topologyChanged("Node deleted, but graph compilation failed");
                 } else {
                     syncFromEngine();
-                    emit topologyChanged(QString("已删除模块: %1")
+                    emit topologyChanged(QString("Deleted node: %1")
                                              .arg(nodeName));
                 }
             }
@@ -365,7 +365,7 @@ void PatchbayScene::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
                 addItem(finalCable);
                 m_cableItems.push_back(finalCable);
 
-                emit topologyChanged(QString("已连接: %1 [%2] -> %3 [%4]")
+                emit topologyChanged(QString("Connected: %1 [%2] -> %3 [%4]")
                     .arg(QString::fromStdString(outPort->nodeItem()->audioNode()->name()))
                     .arg(outPort->portIndex())
                     .arg(QString::fromStdString(inPort->nodeItem()->audioNode()->name()))
@@ -376,7 +376,7 @@ void PatchbayScene::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
                 // 回滚非法环路连接
                 m_engine.disconnect(outPort->nodeId(), outPort->portIndex(),
                                     inPort->nodeId(),  inPort->portIndex());
-                emit topologyChanged("拒绝连接：检测到死循环环路 (Cycle)！");
+                emit topologyChanged("Connection rejected: cycle detected");
             }
         }
 

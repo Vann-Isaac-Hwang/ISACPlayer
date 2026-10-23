@@ -58,6 +58,10 @@ set(PROJECT_SOURCES
     src/ui/apple_view/AppleMusicView.cpp
     src/ui/apple_view/PlaybackQueueView.h
     src/ui/apple_view/PlaybackQueueView.cpp
+    src/ui/widgets/HoverIconButton.h
+    src/ui/widgets/HoverIconButton.cpp
+    src/ui/widgets/HoverSlider.h
+    src/ui/widgets/HoverSlider.cpp
     src/ui/player/AudioVisualization.h
     src/ui/player/AudioVisualization.cpp
     src/ui/patchbay/PatchbayView.h

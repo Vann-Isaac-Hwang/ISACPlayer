@@ -13,9 +13,9 @@ NodeInspectorWidget::NodeInspectorWidget(QWidget* parent)
     m_rootLayout->setContentsMargins(10, 10, 10, 10);
     m_rootLayout->setSpacing(8);
 
-    m_nodeTitle = new QLabel("未选择模块", this);
+    m_nodeTitle = new QLabel("No Node Selected", this);
     m_nodeTitle->setStyleSheet("font-size: 14px; font-weight: bold; color: white;");
-    m_emptyState = new QLabel("选择画布中的 DSP 模块查看参数", this);
+    m_emptyState = new QLabel("Select a DSP node on the canvas to inspect its parameters", this);
     m_emptyState->setWordWrap(true);
     m_emptyState->setStyleSheet("color: #9499A6;");
 
@@ -35,15 +35,15 @@ void NodeInspectorWidget::setNode(const std::shared_ptr<IAudioNode>& node,
         m_externalControl = nullptr;
     }
 
-    m_nodeTitle->setText(node ? QString::fromStdString(node->name()) : "未选择模块");
+    m_nodeTitle->setText(node ? QString::fromStdString(node->name()) : "No Node Selected");
     m_externalControl = externalControl;
     if (m_externalControl) {
         m_rootLayout->insertWidget(1, m_externalControl, 1);
     }
 
     m_emptyState->setVisible(!node || !m_externalControl);
-    m_emptyState->setText(!node ? "选择画布中的 DSP 模块查看参数"
-                                : "当前模块暂无可用的 Inspector");
+    m_emptyState->setText(!node ? "Select a DSP node on the canvas to inspect its parameters"
+                                : "No Inspector is available for this node");
 }
 
 void NodeInspectorWidget::clearNode()

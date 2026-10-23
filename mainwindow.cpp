@@ -140,14 +140,14 @@ MainWindow::MainWindow(QWidget *parent)
     sideLayout->addWidget(btnNavPlaylists);
     sideLayout->addWidget(btnNavPatchbay);
     sideLayout->addStretch();
-    auto* settingsButton = new QPushButton("设置", sidebar);
+    auto* settingsButton = new QPushButton("Settings", sidebar);
     settingsButton->setFixedHeight(44);
-    settingsButton->setToolTip("设置");
+    settingsButton->setToolTip("Settings");
     sideLayout->addWidget(settingsButton);
     connect(settingsButton, &QPushButton::clicked, this, [this]() {
         QSettings settings;
         QDialog dialog(this);
-        dialog.setWindowTitle("设置");
+        dialog.setWindowTitle("Settings");
         dialog.resize(680, 760);
         auto* dialogLayout = new QVBoxLayout(&dialog);
         auto* scrollArea = new QScrollArea(&dialog);
@@ -165,7 +165,7 @@ MainWindow::MainWindow(QWidget *parent)
             layout->addWidget(heading);
         };
 
-        addSectionTitle(QStringLiteral("音乐库管理"));
+        addSectionTitle(QStringLiteral("Music Library"));
         auto* pathList = new QListWidget(content);
         pathList->setSelectionMode(QAbstractItemView::SingleSelection);
         pathList->setMinimumHeight(170);
@@ -178,13 +178,13 @@ MainWindow::MainWindow(QWidget *parent)
         pathStatus->setStyleSheet("color: #9499A6;");
         auto* pathActionRow = new QHBoxLayout();
         auto* importFilesButton =
-            new QPushButton(QStringLiteral("导入音乐文件"), content);
+            new QPushButton(QStringLiteral("Import Audio Files"), content);
         auto* addFolderButton =
-            new QPushButton(QStringLiteral("添加文件夹"), content);
+            new QPushButton(QStringLiteral("Add Folder"), content);
         auto* scanFolderButton =
-            new QPushButton(QStringLiteral("扫描所选"), content);
+            new QPushButton(QStringLiteral("Scan Selected"), content);
         auto* removeFolderButton =
-            new QPushButton(QStringLiteral("移除路径"), content);
+            new QPushButton(QStringLiteral("Remove Path"), content);
         for (auto* button : {importFilesButton, addFolderButton,
                              scanFolderButton, removeFolderButton}) {
             button->setStyleSheet(
@@ -213,9 +213,9 @@ MainWindow::MainWindow(QWidget *parent)
                 const QString lastScanned = directory.lastScannedAt.isValid()
                     ? directory.lastScannedAt.toLocalTime().toString(
                           QStringLiteral("yyyy-MM-dd hh:mm"))
-                    : QStringLiteral("尚未扫描");
+                    : QStringLiteral("Not scanned");
                 auto* item = new QListWidgetItem(
-                    QStringLiteral("%1\n上次扫描：%2")
+                    QStringLiteral("%1\nLast scan: %2")
                         .arg(directory.path, lastScanned),
                     pathList);
                 item->setData(Qt::UserRole, directory.path);
@@ -236,27 +236,27 @@ MainWindow::MainWindow(QWidget *parent)
         connect(importFilesButton, &QPushButton::clicked, &dialog,
                 [this, &dialog, pathStatus]() {
             const QStringList files = QFileDialog::getOpenFileNames(
-                &dialog, QStringLiteral("选择音频文件"), {},
-                QStringLiteral("音频文件 (*.mp3 *.flac *.wav)"));
+                &dialog, QStringLiteral("Select Audio Files"), {},
+                QStringLiteral("Audio files (*.mp3 *.flac *.wav)"));
             if (files.isEmpty()) {
                 return;
             }
             if (m_libraryScanner->isRunning()) {
-                pathStatus->setText(QStringLiteral("已有扫描任务正在运行"));
+                pathStatus->setText(QStringLiteral("A scan is already running"));
                 return;
             }
-            pathStatus->setText(QStringLiteral("正在导入音乐文件…"));
-            m_libraryPage->setScanStatus(QStringLiteral("正在导入音乐文件…"));
+            pathStatus->setText(QStringLiteral("Importing audio files..."));
+            m_libraryPage->setScanStatus(QStringLiteral("Importing audio files..."));
             m_libraryScanner->scanFiles(files);
         });
         connect(addFolderButton, &QPushButton::clicked, &dialog,
                 [this, &dialog, pathStatus, refreshPathList]() {
             if (m_libraryScanner->isRunning()) {
-                pathStatus->setText(QStringLiteral("扫描期间不能修改路径"));
+                pathStatus->setText(QStringLiteral("Paths cannot be changed during a scan"));
                 return;
             }
             const QString path = QFileDialog::getExistingDirectory(
-                &dialog, QStringLiteral("选择音乐文件夹"));
+                &dialog, QStringLiteral("Select Music Folder"));
             if (path.isEmpty()) {
                 return;
             }
@@ -266,17 +266,17 @@ MainWindow::MainWindow(QWidget *parent)
                 return;
             }
             refreshPathList(absolutePath);
-            pathStatus->setText(QStringLiteral("文件夹路径已添加"));
+            pathStatus->setText(QStringLiteral("Folder path added"));
         });
         connect(removeFolderButton, &QPushButton::clicked, &dialog,
                 [this, pathList, pathStatus, refreshPathList]() {
             const auto* item = pathList->currentItem();
             if (!item) {
-                pathStatus->setText(QStringLiteral("请先选择一个文件夹路径"));
+                pathStatus->setText(QStringLiteral("Select a folder path first"));
                 return;
             }
             if (m_libraryScanner->isRunning()) {
-                pathStatus->setText(QStringLiteral("扫描期间不能移除路径"));
+                pathStatus->setText(QStringLiteral("Paths cannot be removed during a scan"));
                 return;
             }
             const qint64 id = item->data(Qt::UserRole + 1).toLongLong();
@@ -286,22 +286,22 @@ MainWindow::MainWindow(QWidget *parent)
             }
             refreshPathList();
             pathStatus->setText(
-                QStringLiteral("路径已移除；曲库中已导入的曲目保留"));
+                QStringLiteral("Path removed; imported tracks remain in the library"));
         });
         connect(scanFolderButton, &QPushButton::clicked, &dialog,
                 [this, pathList, pathStatus]() {
             const auto* item = pathList->currentItem();
             if (!item) {
-                pathStatus->setText(QStringLiteral("请先添加并选择文件夹路径"));
+                pathStatus->setText(QStringLiteral("Add and select a folder path first"));
                 return;
             }
             if (m_libraryScanner->isRunning()) {
-                pathStatus->setText(QStringLiteral("已有扫描任务正在运行"));
+                pathStatus->setText(QStringLiteral("A scan is already running"));
                 return;
             }
             const QString path = item->data(Qt::UserRole).toString();
-            pathStatus->setText(QStringLiteral("正在扫描文件夹…"));
-            m_libraryPage->setScanStatus(QStringLiteral("正在扫描音乐文件夹…"));
+            pathStatus->setText(QStringLiteral("Scanning folder..."));
+            m_libraryPage->setScanStatus(QStringLiteral("Scanning music folder..."));
             m_libraryScanner->scanDirectory(path);
         });
         connect(m_libraryScanner,
@@ -311,23 +311,23 @@ MainWindow::MainWindow(QWidget *parent)
             refreshPathList();
             if (!error.isEmpty()) {
                 pathStatus->setText(
-                    QStringLiteral("扫描失败：%1").arg(error));
+                    QStringLiteral("Scan failed: %1").arg(error));
             } else if (cancelled) {
-                pathStatus->setText(QStringLiteral("扫描已取消"));
+                pathStatus->setText(QStringLiteral("Scan cancelled"));
             } else {
-                pathStatus->setText(QStringLiteral("扫描完成"));
+                pathStatus->setText(QStringLiteral("Scan complete"));
             }
         });
 
-        addSectionTitle(QStringLiteral("播放"));
+        addSectionTitle(QStringLiteral("Playback"));
         auto* playbackForm = new QFormLayout();
-        auto* fadeEnabled = new QCheckBox("启用淡入淡出", &dialog);
+        auto* fadeEnabled = new QCheckBox("Enable fade in/out", &dialog);
         fadeEnabled->setChecked(
             settings.value(QStringLiteral("playback/fadeEnabled"), false).toBool());
         auto* fadeDuration = new QDoubleSpinBox(&dialog);
         fadeDuration->setRange(0.25, 10.0);
         fadeDuration->setSingleStep(0.25);
-        fadeDuration->setSuffix(" 秒");
+        fadeDuration->setSuffix(" s");
         fadeDuration->setDecimals(2);
         fadeDuration->setValue(
             settings.value(QStringLiteral("playback/fadeDurationSeconds"), 2.0)
@@ -336,29 +336,41 @@ MainWindow::MainWindow(QWidget *parent)
         connect(fadeEnabled, &QCheckBox::toggled,
                 fadeDuration, &QDoubleSpinBox::setEnabled);
         playbackForm->addRow(fadeEnabled);
-        playbackForm->addRow("淡入/淡出时长", fadeDuration);
+        playbackForm->addRow("Fade duration", fadeDuration);
+        auto* gainMaximum = new QDoubleSpinBox(&dialog);
+        gainMaximum->setRange(1.0, 4.0);
+        gainMaximum->setSingleStep(0.1);
+        gainMaximum->setDecimals(2);
+        gainMaximum->setSuffix(QStringLiteral(" x"));
+        gainMaximum->setValue(std::clamp(
+            settings.value(QStringLiteral("playback/gainMaximum"), 2.0)
+                .toDouble(),
+            1.0, 4.0));
+        gainMaximum->setToolTip(
+            QStringLiteral("Maximum Gain for the volume slider; range: 1.00x to 4.00x"));
+        playbackForm->addRow(QStringLiteral("Maximum Gain"), gainMaximum);
         layout->addLayout(playbackForm);
 
-        addSectionTitle(QStringLiteral("播放历史"));
+        addSectionTitle(QStringLiteral("Playback History"));
         auto* historyForm = new QFormLayout();
         auto* historyLimit = new QSpinBox(&dialog);
         historyLimit->setRange(5, 10000);
         historyLimit->setSingleStep(5);
-        historyLimit->setSuffix(QStringLiteral(" 首"));
+        historyLimit->setSuffix(QStringLiteral(" tracks"));
         historyLimit->setValue(std::clamp(
             settings.value(QStringLiteral("playback/historyLimit"), 100)
                 .toInt(),
             5, 10000));
-        historyForm->addRow(QStringLiteral("保留最近播放"), historyLimit);
+        historyForm->addRow(QStringLiteral("Keep recent plays"), historyLimit);
         auto* onlyLatestPerTrack = new QCheckBox(
-            QStringLiteral("每首歌曲仅保留最新一次播放"), &dialog);
+            QStringLiteral("Keep only the latest play for each track"), &dialog);
         onlyLatestPerTrack->setChecked(settings.value(
             QStringLiteral("playback/historyOnlyLatestPerTrack"), false)
                                            .toBool());
         historyForm->addRow(onlyLatestPerTrack);
         layout->addLayout(historyForm);
 
-        addSectionTitle(QStringLiteral("曲目信息"));
+        addSectionTitle(QStringLiteral("Track Information"));
         auto* infoForm = new QFormLayout();
         auto makeInfoOption = [&settings, &dialog](const QString& label,
                                                    const QString& key) {
@@ -367,15 +379,15 @@ MainWindow::MainWindow(QWidget *parent)
             return std::pair{label, option};
         };
         const auto [formatLabel, showFormat] =
-            makeInfoOption("文件格式", QStringLiteral("display/audioFormat"));
+            makeInfoOption("File Format", QStringLiteral("display/audioFormat"));
         const auto [sampleRateLabel, showSampleRate] =
-            makeInfoOption("采样率", QStringLiteral("display/sampleRate"));
+            makeInfoOption("Sample Rate", QStringLiteral("display/sampleRate"));
         const auto [bitDepthLabel, showBitDepth] =
-            makeInfoOption("位深", QStringLiteral("display/bitDepth"));
+            makeInfoOption("Bit Depth", QStringLiteral("display/bitDepth"));
         const auto [channelsLabel, showChannels] =
-            makeInfoOption("声道数", QStringLiteral("display/channels"));
+            makeInfoOption("Channels", QStringLiteral("display/channels"));
         const auto [bitrateLabel, showBitrate] =
-            makeInfoOption("比特率", QStringLiteral("display/bitrate"));
+            makeInfoOption("Bitrate", QStringLiteral("display/bitrate"));
         infoForm->addRow(formatLabel, showFormat);
         infoForm->addRow(sampleRateLabel, showSampleRate);
         infoForm->addRow(bitDepthLabel, showBitDepth);
@@ -398,6 +410,8 @@ MainWindow::MainWindow(QWidget *parent)
                           fadeEnabled->isChecked());
         settings.setValue(QStringLiteral("playback/fadeDurationSeconds"),
                           fadeDuration->value());
+        settings.setValue(QStringLiteral("playback/gainMaximum"),
+                          gainMaximum->value());
         settings.setValue(QStringLiteral("playback/historyLimit"),
                           historyLimit->value());
         settings.setValue(
@@ -405,13 +419,14 @@ MainWindow::MainWindow(QWidget *parent)
             onlyLatestPerTrack->isChecked());
         if (!m_libraryRepository.trimPlaybackHistory(historyLimit->value())) {
             m_libraryPage->setScanStatus(
-                QStringLiteral("更新播放历史保留数量失败：%1")
+                QStringLiteral("Failed to update playback history limit: %1")
                     .arg(m_libraryRepository.lastError()));
         } else {
             m_libraryPage->refreshPlaybackHistory();
         }
         m_audioEngine.setFadeDurationSeconds(fadeDuration->value());
         m_audioEngine.setFadeEnabled(fadeEnabled->isChecked());
+        m_nowPlayingHeader->setVolumeMaximum(gainMaximum->value());
         settings.setValue(QStringLiteral("display/audioFormat"),
                           showFormat->isChecked());
         settings.setValue(QStringLiteral("display/sampleRate"),
@@ -441,6 +456,18 @@ MainWindow::MainWindow(QWidget *parent)
         if (QWidget* focused = QApplication::focusWidget()) {
             QMetaObject::invokeMethod(
                 focused, "selectAll", Qt::DirectConnection);
+        }
+    });
+    QAction* findAction = editMenu->addAction(QStringLiteral("Find"));
+    findAction->setShortcut(QKeySequence::Find);
+    connect(findAction, &QAction::triggered, this, [this]() {
+        if (!m_stackedWidget) {
+            return;
+        }
+        if (m_stackedWidget->currentWidget() == m_libraryPage) {
+            m_libraryPage->toggleSearchInput();
+        } else if (m_stackedWidget->currentWidget() == m_playlistPage) {
+            m_playlistPage->toggleToolsPanel();
         }
     });
 
@@ -491,16 +518,16 @@ MainWindow::MainWindow(QWidget *parent)
             this, [this](int) { m_libraryPage->refreshTracks(); });
     connect(m_libraryScanner, &isac::library::LibraryScanner::progressChanged,
             this, [this](int visited) {
-                m_libraryPage->setScanStatus(QString("已检查 %1 首").arg(visited));
+                m_libraryPage->setScanStatus(QString("Checked %1 tracks").arg(visited));
             });
     connect(m_libraryScanner, &isac::library::LibraryScanner::scanFinished,
             this, [this](bool cancelled, const QString& error) {
                 if (!error.isEmpty()) {
-                    m_libraryPage->setScanStatus("扫描失败: " + error);
+                    m_libraryPage->setScanStatus("Scan failed: " + error);
                 } else if (cancelled) {
-                    m_libraryPage->setScanStatus("扫描已取消");
+                    m_libraryPage->setScanStatus("Scan cancelled");
                 } else {
-                    m_libraryPage->setScanStatus("扫描完成");
+                    m_libraryPage->setScanStatus("Scan complete");
                 }
                 m_libraryPage->refreshTracks();
             });
@@ -509,64 +536,83 @@ MainWindow::MainWindow(QWidget *parent)
     m_playlistPage = new isac::ui::PlaylistPage(&m_libraryRepository, this);
     connect(m_playlistPage, &isac::ui::PlaylistPage::trackDoubleClicked,
             this, &MainWindow::playTrackById);
+    QAction* playlistToolsAction =
+        viewMenu->addAction(QStringLiteral("Playlist Tools"));
+    playlistToolsAction->setCheckable(true);
+    playlistToolsAction->setChecked(m_playlistPage->toolsPanelVisible());
+    connect(playlistToolsAction, &QAction::toggled,
+            m_playlistPage, &isac::ui::PlaylistPage::setToolsPanelVisible);
+    connect(m_playlistPage,
+            &isac::ui::PlaylistPage::toolsVisibilityChanged,
+            playlistToolsAction, &QAction::setChecked);
 
     // 页面 2：Coppwr 风格 DSP 连线调音台页面
     auto* patchbayContainer = new QWidget(this);
     auto* patchLayout = new QVBoxLayout(patchbayContainer);
-    patchLayout->setContentsMargins(24, 20, 24, 16);
-    patchLayout->setSpacing(12);
+    patchLayout->setContentsMargins(0, 0, 0, 0);
+    patchLayout->setSpacing(0);
 
-    auto* patchHeader = new QHBoxLayout();
-    auto* patchStatusRow = new QHBoxLayout();
-    auto* presetSelector = new QComboBox(this);
+    auto* patchControlBar = new QWidget(patchbayContainer);
+    patchControlBar->setObjectName(QStringLiteral("dspRouterControlBar"));
+    patchControlBar->setFixedHeight(58);
+    patchControlBar->setStyleSheet(
+        "QWidget#dspRouterControlBar { background: #191B22; "
+        "border-bottom: 1px solid #30333D; }"
+        "QLabel { color: #A5AAB8; padding: 0 8px; }"
+        "QComboBox, QPushButton { min-height: 28px; max-height: 28px; "
+        "background: #252834; color: #E0E4F0; "
+        "border: 1px solid #343846; border-radius: 0; padding: 3px 9px; }"
+        "QComboBox:hover, QPushButton:hover { background: #343A4B; "
+        "border-color: #626875; }"
+        "QComboBox:focus, QPushButton:focus { border-color: #FA2D48; }"
+        "QPushButton:disabled { color: #666B78; background: #20232B; }"
+        "QComboBox::drop-down { width: 22px; border: none; "
+        "border-left: 1px solid #343846; }"
+        "QComboBox QAbstractItemView { background: #20232B; "
+        "color: #EAECEF; border: 1px solid #454A56; "
+        "selection-background-color: #FA2D48; }");
+    auto* patchHeader = new QHBoxLayout(patchControlBar);
+    patchHeader->setContentsMargins(10, 8, 10, 14);
+    patchHeader->setSpacing(6);
+
+    auto* patchStatusBar = new QWidget(patchbayContainer);
+    patchStatusBar->setObjectName(QStringLiteral("dspRouterStatusBar"));
+    patchStatusBar->setFixedHeight(28);
+    patchStatusBar->setStyleSheet(
+        "QWidget#dspRouterStatusBar { background: #1B1D24; "
+        "border-top: 1px solid #30333D; }"
+        "QLabel { color: #9499A6; font-size: 11px; padding: 0 10px; }");
+    auto* patchStatusRow = new QHBoxLayout(patchStatusBar);
+    patchStatusRow->setContentsMargins(0, 0, 0, 0);
+    patchStatusRow->setSpacing(0);
+
+    auto* presetSelector = new QComboBox(patchControlBar);
     presetSelector->setMinimumWidth(180);
-    presetSelector->setToolTip("选择 DSP 路由配置");
-    presetSelector->setStyleSheet(
-        "QComboBox { background: #1E2028; color: #EAEAEA; "
-        "border: 1px solid #343846; border-radius: 5px; padding: 6px 8px; }");
-    auto* savePresetButton = new QPushButton("保存配置", this);
-    auto* renamePresetButton = new QPushButton("重命名", this);
-    auto* deletePresetButton = new QPushButton("删除配置", this);
-    for (auto* button : {savePresetButton, renamePresetButton,
-                         deletePresetButton}) {
-        button->setStyleSheet(
-            "QPushButton { background: #252834; color: #E0E4F0; "
-            "border: 1px solid #343846; border-radius: 5px; padding: 6px 9px; }"
-            "QPushButton:hover { background: #343A4B; }"
-            "QPushButton:disabled { color: #666B78; }");
-    }
-    savePresetButton->setToolTip("将当前画布节点和连线保存为自定义配置");
-    renamePresetButton->setToolTip("重命名选中的自定义配置");
-    deletePresetButton->setToolTip("删除选中的自定义配置文件");
-    auto* clearConnectionsButton = new QPushButton("清空连线", this);
-    clearConnectionsButton->setToolTip("移除画布上的全部连线");
-    clearConnectionsButton->setStyleSheet(
-        "QPushButton { background: #252834; color: #E0E4F0; "
-        "border: 1px solid #343846; border-radius: 5px; padding: 6px 10px; }");
-    auto* lblPatchStatus = new QLabel(this);
+    presetSelector->setToolTip("Select a DSP routing preset");
+    auto* savePresetButton = new QPushButton("Save Preset", patchControlBar);
+    auto* renamePresetButton = new QPushButton("Rename", patchControlBar);
+    auto* deletePresetButton = new QPushButton("Delete Preset", patchControlBar);
+    savePresetButton->setToolTip("Save the current canvas nodes and connections as a custom preset");
+    renamePresetButton->setToolTip("Rename the selected custom preset");
+    deletePresetButton->setToolTip("Delete the selected custom preset file");
+    auto* clearConnectionsButton = new QPushButton("Clear Connections", patchControlBar);
+    clearConnectionsButton->setToolTip("Remove all connections from the canvas");
+    auto* lblPatchStatus = new QLabel(patchStatusBar);
     lblPatchStatus->setMinimumWidth(80);
-    lblPatchStatus->setStyleSheet("color: #9499A6; font-size: 12px;");
-    auto* outputSelector = new QComboBox(this);
+    auto* outputSelector = new QComboBox(patchControlBar);
     outputSelector->setMinimumWidth(190);
-    outputSelector->setToolTip("播放音频使用的输出设备");
-    outputSelector->setStyleSheet(
-        "QComboBox { background: #1E2028; color: #EAEAEA; "
-        "border: 1px solid #343846; border-radius: 5px; padding: 6px 8px; }");
-    auto* refreshOutputsButton = new QPushButton("刷新设备", this);
-    refreshOutputsButton->setToolTip("重新枚举音频输出设备");
-    refreshOutputsButton->setStyleSheet(
-        "QPushButton { background: #252834; color: #E0E4F0; "
-        "border: 1px solid #343846; border-radius: 5px; padding: 6px 9px; }");
-    auto* outputStatus = new QLabel(this);
-    outputStatus->setStyleSheet("color: #9499A6; font-size: 12px;");
-    patchHeader->addWidget(new QLabel("配置", this));
+    outputSelector->setToolTip("Select the audio output device");
+    auto* refreshOutputsButton = new QPushButton("Refresh Devices", patchControlBar);
+    refreshOutputsButton->setToolTip("Re-enumerate audio output devices");
+    auto* outputStatus = new QLabel(patchStatusBar);
+    patchHeader->addWidget(new QLabel("Preset", patchControlBar));
     patchHeader->addWidget(presetSelector);
     patchHeader->addWidget(savePresetButton);
     patchHeader->addWidget(renamePresetButton);
     patchHeader->addWidget(deletePresetButton);
     patchHeader->addWidget(clearConnectionsButton);
-    patchHeader->addSpacing(16);
-    patchHeader->addWidget(new QLabel("音频输出", this));
+    patchHeader->addSpacing(18);
+    patchHeader->addWidget(new QLabel("Audio Output", patchControlBar));
     patchHeader->addWidget(outputSelector);
     patchHeader->addWidget(refreshOutputsButton);
     patchHeader->addStretch();
@@ -575,7 +621,8 @@ MainWindow::MainWindow(QWidget *parent)
     patchStatusRow->addWidget(lblPatchStatus);
 
     m_patchbayView = new isac::ui::PatchbayView(m_audioEngine, this);
-    m_patchbayView->setStyleSheet("border: 1px solid #2B2F3C; border-radius: 12px;");
+    m_patchbayView->setStyleSheet(
+        "border: 1px solid #2B2F3C; border-radius: 0;");
 
     // ==================== 3. 音频路由页内的 DSP 模块库 ====================
     auto* pluginPanel = new QWidget();
@@ -585,11 +632,11 @@ MainWindow::MainWindow(QWidget *parent)
             background: #14161C; border: 1px solid #2B2F3C;
             outline: none; padding: 4px;
         }
-        QListWidget::item { padding: 9px 7px; border-radius: 5px; }
+        QListWidget::item { padding: 9px 7px; border-radius: 0; }
         QListWidget::item:selected { background: #343A4B; color: white; }
         QPushButton {
             background: #252834; color: #E0E4F0; border: 1px solid #343846;
-            border-radius: 5px; padding: 8px; font-weight: bold;
+            border-radius: 0; padding: 8px; font-weight: bold;
         }
         QPushButton:hover { background: #FA2D48; border-color: #FA2D48; color: white; }
     )");
@@ -603,7 +650,7 @@ MainWindow::MainWindow(QWidget *parent)
     pluginDescription->setWordWrap(true);
     pluginDescription->setMinimumHeight(48);
     pluginDescription->setStyleSheet("color: #9499A6; padding: 3px;");
-    auto* instantiateButton = new QPushButton("实例化到画布", pluginPanel);
+    auto* instantiateButton = new QPushButton("Instantiate on Canvas", pluginPanel);
 
     for (const auto& plugin : m_pluginManager.plugins()) {
         auto* item = new QListWidgetItem(plugin.displayName, pluginList);
@@ -616,7 +663,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     auto updatePluginDescription = [pluginList, pluginDescription]() {
         const auto* item = pluginList->currentItem();
-        pluginDescription->setText(item ? item->toolTip() : "请选择一个 DSP 模块");
+        pluginDescription->setText(item ? item->toolTip() : "Select a DSP module");
     };
     updatePluginDescription();
 
@@ -628,18 +675,18 @@ MainWindow::MainWindow(QWidget *parent)
 
         const auto node = m_pluginManager.createNode(item->data(Qt::UserRole).toString());
         if (!node) {
-            lblPatchStatus->setText("插件实例化失败");
+            lblPatchStatus->setText("Failed to instantiate plugin");
             return;
         }
 
         const isac::NodeId nodeId = m_audioEngine.addNode(node);
         if (!m_audioEngine.rebuildGraph()) {
-            lblPatchStatus->setText("插件已创建，但图编译失败");
+            lblPatchStatus->setText("Plugin created, but graph compilation failed");
             return;
         }
 
         m_patchbayView->patchbayScene()->syncFromEngine();
-        lblPatchStatus->setText(QString("已实例化: %1 (Node %2)")
+        lblPatchStatus->setText(QString("Instantiated: %1 (Node %2)")
                                     .arg(item->text())
                                     .arg(nodeId));
     };
@@ -656,7 +703,7 @@ MainWindow::MainWindow(QWidget *parent)
     pluginLayout->addWidget(pluginDescription);
     pluginLayout->addWidget(instantiateButton);
 
-    m_pluginDock = new QDockWidget("DSP 模块库", this);
+    m_pluginDock = new QDockWidget("DSP Module Library", this);
     m_pluginDock->setObjectName(QStringLiteral("dspPluginLibraryDock"));
     m_pluginDock->setAllowedAreas(Qt::RightDockWidgetArea);
     m_pluginDock->setFeatures(QDockWidget::DockWidgetMovable |
@@ -681,7 +728,7 @@ MainWindow::MainWindow(QWidget *parent)
     auto* inspector = new isac::ui::NodeInspectorWidget(inspectorPanel);
     inspectorLayout->addWidget(inspector, 1);
 
-    m_inspectorDock = new QDockWidget("节点检视器", this);
+    m_inspectorDock = new QDockWidget("Node Inspector", this);
     m_inspectorDock->setObjectName(QStringLiteral("dspNodeInspectorDock"));
     m_inspectorDock->setAllowedAreas(Qt::RightDockWidgetArea);
     m_inspectorDock->setFeatures(QDockWidget::DockWidgetMovable |
@@ -726,9 +773,9 @@ MainWindow::MainWindow(QWidget *parent)
                 inspector->clearNode();
             });
 
-    patchLayout->addLayout(patchHeader);
-    patchLayout->addLayout(patchStatusRow);
+    patchLayout->addWidget(patchControlBar);
     patchLayout->addWidget(m_routerWorkspace, 1);
+    patchLayout->addWidget(patchStatusBar);
 
     m_stackedWidget->addWidget(m_libraryPage);
     m_stackedWidget->addWidget(m_playlistPage);
@@ -750,12 +797,12 @@ MainWindow::MainWindow(QWidget *parent)
                              static_cast<qsizetype>(device.id.size()));
             QString label = QString::fromStdString(device.name);
             if (!device.useSystemDefault && device.isDefault) {
-                label += QStringLiteral(" (系统默认)");
+                label += QStringLiteral(" (System Default)");
             }
             outputSelector->addItem(label, id);
             outputSelector->setItemData(
                 outputSelector->count() - 1,
-                QStringLiteral("检测到的最大通道数：%1；当前输出为立体声")
+                QStringLiteral("Maximum detected channels: %1; current output is stereo")
                     .arg(device.maxChannels),
                 Qt::ToolTipRole);
             if (id == savedId) {
@@ -776,7 +823,7 @@ MainWindow::MainWindow(QWidget *parent)
             if (currentId != outputSelector->currentData().toByteArray()) {
                 std::string error;
                 if (!m_audioEngine.selectOutputDevice(desired, error)) {
-                    status = QStringLiteral("无法应用输出设备：%1")
+                    status = QStringLiteral("Unable to apply output device: %1")
                                  .arg(QString::fromStdString(error));
                     outputSelector->setCurrentIndex(0);
                     settings.setValue(
@@ -785,7 +832,7 @@ MainWindow::MainWindow(QWidget *parent)
             }
         }
         if (status.isEmpty()) {
-            status = QStringLiteral("%1 个设备 | 引擎请求 %2 kHz")
+            status = QStringLiteral("%1 devices | Engine request: %2 kHz")
                          .arg(std::max(0, outputSelector->count() - 1))
                          .arg(m_audioEngine.outputSampleRate() / 1000.0, 0, 'g', 4);
         }
@@ -809,21 +856,21 @@ MainWindow::MainWindow(QWidget *parent)
                     static_cast<qsizetype>(device.id.size()));
             });
         if (selected == devices.end()) {
-            outputStatus->setText("设备已不存在，请刷新列表");
+            outputStatus->setText("Device is no longer available; refresh the list");
             return;
         }
         std::string error;
         if (!m_audioEngine.selectOutputDevice(*selected, error)) {
             refreshOutputDevices();
             outputStatus->setText(
-                QStringLiteral("切换失败，已保留原输出：%1")
+                QStringLiteral("Switch failed; keeping the previous output: %1")
                     .arg(QString::fromStdString(error)));
             return;
         }
         QSettings settings;
         settings.setValue(QStringLiteral("audio/outputDeviceId"), id);
         outputStatus->setText(
-            QStringLiteral("当前输出：%1（立体声，DSP 请求 %2 kHz）")
+            QStringLiteral("Current output: %1 (stereo, DSP request: %2 kHz)")
                 .arg(QString::fromStdString(selected->name))
                 .arg(m_audioEngine.outputSampleRate() / 1000.0, 0, 'g', 4));
     });
@@ -833,6 +880,9 @@ MainWindow::MainWindow(QWidget *parent)
 
     // ==================== 3. 顶部常驻播放工作区 ====================
     m_nowPlayingHeader = new isac::ui::NowPlayingHeader(this);
+    m_nowPlayingHeader->setVolumeMaximum(std::clamp(
+        settings.value(QStringLiteral("playback/gainMaximum"), 2.0).toDouble(),
+        1.0, 4.0));
     m_playbackQueueView = new isac::ui::PlaybackQueueView(
         &m_libraryRepository, this);
     connect(m_playbackQueueView,
@@ -1053,7 +1103,7 @@ MainWindow::MainWindow(QWidget *parent)
             }
         )");
 
-        QAction* viewAlbum = menu.addAction(QStringLiteral("查看专辑"));
+        QAction* viewAlbum = menu.addAction(QStringLiteral("View Album"));
         connect(viewAlbum, &QAction::triggered, this,
                 [this, album = track->album]() {
             m_navLibraryButton->click();
@@ -1062,7 +1112,7 @@ MainWindow::MainWindow(QWidget *parent)
                     ? QStringLiteral("Unknown Album") : album);
         });
 
-        QMenu* artistMenu = menu.addMenu(QStringLiteral("查看作者"));
+        QMenu* artistMenu = menu.addMenu(QStringLiteral("View Artist"));
         QStringList artists = track->artist.split(
             QRegularExpression(QStringLiteral("\\s*/\\s*")),
             Qt::SkipEmptyParts);
@@ -1083,11 +1133,11 @@ MainWindow::MainWindow(QWidget *parent)
         }
 
         menu.addSeparator();
-        QMenu* addMenu = menu.addMenu(QStringLiteral("添加到歌单"));
+        QMenu* addMenu = menu.addMenu(QStringLiteral("Add to Playlist"));
         const auto playlists = m_libraryRepository.playlists();
         if (playlists.empty()) {
             QAction* emptyAction = addMenu->addAction(
-                QStringLiteral("没有可用歌单"));
+                QStringLiteral("No playlists available"));
             emptyAction->setEnabled(false);
         } else {
             for (const auto& playlist : playlists) {
@@ -1099,15 +1149,15 @@ MainWindow::MainWindow(QWidget *parent)
                         playlistId, {trackId});
                     if (!added) {
                         m_libraryPage->setScanStatus(
-                            QStringLiteral("添加到歌单失败：%1")
+                            QStringLiteral("Failed to add to playlist: %1")
                                 .arg(m_libraryRepository.lastError()));
                         return;
                     }
                     m_playlistPage->refresh();
                     m_libraryPage->setScanStatus(
                         *added > 0
-                            ? QStringLiteral("已添加到歌单")
-                            : QStringLiteral("歌曲已在该歌单中"));
+                            ? QStringLiteral("Added to playlist")
+                            : QStringLiteral("Track is already in this playlist"));
                 });
             }
         }
@@ -1174,12 +1224,12 @@ MainWindow::MainWindow(QWidget *parent)
         QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation))
             .filePath(QStringLiteral("dsp-presets"));
     presetSelector->setToolTip(
-        QStringLiteral("DSP 配置目录：%1").arg(presetDirectory));
+        QStringLiteral("DSP preset directory: %1").arg(presetDirectory));
     QString presetError;
     if (!isac::ui::DspPresetCatalog::installBuiltIns(
             presetDirectory, &presetError)) {
         lblPatchStatus->setText(
-            QStringLiteral("内置配置安装失败：%1").arg(presetError));
+            QStringLiteral("Failed to install built-in presets: %1").arg(presetError));
     }
     auto presets = std::make_shared<QVector<isac::ui::DspPreset>>();
     auto refreshPresetSelector =
@@ -1190,7 +1240,7 @@ MainWindow::MainWindow(QWidget *parent)
             presetDirectory, &loadError);
         const QSignalBlocker blocker(presetSelector);
         presetSelector->clear();
-        presetSelector->addItem(QStringLiteral("选择路由配置"));
+        presetSelector->addItem(QStringLiteral("Select Routing Preset"));
         int selectedIndex = 0;
         for (const auto& preset : *presets) {
             presetSelector->addItem(preset.name, preset.id);
@@ -1201,7 +1251,7 @@ MainWindow::MainWindow(QWidget *parent)
         presetSelector->setCurrentIndex(selectedIndex);
         if (!loadError.isEmpty()) {
             lblPatchStatus->setText(
-                QStringLiteral("部分配置无法读取：%1").arg(loadError));
+                QStringLiteral("Some presets could not be loaded: %1").arg(loadError));
         }
     };
     refreshPresetSelector();
@@ -1298,7 +1348,7 @@ MainWindow::MainWindow(QWidget *parent)
                         m_audioEngine.removeNode(id);
                     }
                     lblPatchStatus->setText(
-                        QStringLiteral("配置需要未安装的模块：%1")
+                        QStringLiteral("Preset requires an unavailable module: %1")
                             .arg(nodeSpec.pluginId));
                     return;
                 }
@@ -1318,13 +1368,13 @@ MainWindow::MainWindow(QWidget *parent)
                 m_audioEngine.rebuildGraph();
             }
             lblPatchStatus->setText(
-                QStringLiteral("配置未应用：%1").arg(error));
+                QStringLiteral("Preset was not applied: %1").arg(error));
             return;
         }
 
         auto* scene = m_patchbayView->patchbayScene();
         QString appliedStatus =
-            QStringLiteral("已加载配置：%1").arg(preset.name);
+            QStringLiteral("Loaded preset: %1").arg(preset.name);
         if (preset.version == 2) {
             QHash<isac::NodeId, QPointF> positions;
             QSet<isac::NodeId> configuredNodes;
@@ -1356,7 +1406,7 @@ MainWindow::MainWindow(QWidget *parent)
             }
             if (!obsoleteNodes.isEmpty() && !m_audioEngine.rebuildGraph()) {
                 appliedStatus =
-                    QStringLiteral("配置已应用，但清理未使用模块失败");
+                    QStringLiteral("Preset applied, but unused node cleanup failed");
             }
             scene->syncFromEngine();
             scene->applyNodePositions(positions);
@@ -1370,8 +1420,8 @@ MainWindow::MainWindow(QWidget *parent)
             [this, presetDirectory, refreshPresetSelector, lblPatchStatus]() {
         bool accepted = false;
         const QString name = QInputDialog::getText(
-            this, QStringLiteral("保存路由配置"),
-            QStringLiteral("配置名称："), QLineEdit::Normal, {}, &accepted);
+            this, QStringLiteral("Save Routing Preset"),
+            QStringLiteral("Preset name:"), QLineEdit::Normal, {}, &accepted);
         if (!accepted) {
             return;
         }
@@ -1412,7 +1462,7 @@ MainWindow::MainWindow(QWidget *parent)
             const QString pluginId = m_pluginManager.pluginIdForNode(node);
             if (pluginId.isEmpty()) {
                 lblPatchStatus->setText(
-                    QStringLiteral("无法保存：画布中存在未知类型的节点"));
+                    QStringLiteral("Cannot save: the canvas contains an unknown node type"));
                 return;
             }
             const int instance = instanceCounts.value(pluginId, 0);
@@ -1429,7 +1479,7 @@ MainWindow::MainWindow(QWidget *parent)
             if (!rolesByNode.contains(connection.srcNode) ||
                 !rolesByNode.contains(connection.dstNode)) {
                 lblPatchStatus->setText(
-                    QStringLiteral("无法保存：连线引用了未知节点"));
+                    QStringLiteral("Cannot save: a connection references an unknown node"));
                 return;
             }
             preset.connections.push_back({
@@ -1442,12 +1492,12 @@ MainWindow::MainWindow(QWidget *parent)
         if (!isac::ui::DspPresetCatalog::save(
                 presetDirectory, preset, &error)) {
             lblPatchStatus->setText(
-                QStringLiteral("保存配置失败：%1").arg(error));
+                QStringLiteral("Failed to save preset: %1").arg(error));
             return;
         }
         refreshPresetSelector(preset.id);
         lblPatchStatus->setText(
-            QStringLiteral("已保存配置：%1").arg(preset.name));
+            QStringLiteral("Saved preset: %1").arg(preset.name));
     });
 
     connect(renamePresetButton, &QPushButton::clicked, this,
@@ -1464,8 +1514,8 @@ MainWindow::MainWindow(QWidget *parent)
         }
         bool accepted = false;
         const QString name = QInputDialog::getText(
-            this, QStringLiteral("重命名路由配置"),
-            QStringLiteral("配置名称："), QLineEdit::Normal,
+            this, QStringLiteral("Rename Routing Preset"),
+            QStringLiteral("Preset name:"), QLineEdit::Normal,
             found->name, &accepted);
         if (!accepted) {
             return;
@@ -1474,11 +1524,11 @@ MainWindow::MainWindow(QWidget *parent)
         if (!isac::ui::DspPresetCatalog::rename(
                 presetDirectory, id, name, &error)) {
             lblPatchStatus->setText(
-                QStringLiteral("重命名失败：%1").arg(error));
+                QStringLiteral("Rename failed: %1").arg(error));
             return;
         }
         refreshPresetSelector(id);
-        lblPatchStatus->setText(QStringLiteral("配置已重命名"));
+        lblPatchStatus->setText(QStringLiteral("Preset renamed"));
     });
 
     connect(deletePresetButton, &QPushButton::clicked, this,
@@ -1495,8 +1545,8 @@ MainWindow::MainWindow(QWidget *parent)
         }
         const QString name = found->name;
         if (QMessageBox::question(
-                this, QStringLiteral("删除路由配置"),
-                QStringLiteral("确定删除“%1”？此操作不可撤销。").arg(name),
+                this, QStringLiteral("Delete Routing Preset"),
+                QStringLiteral("Delete \"%1\"? This action cannot be undone.").arg(name),
                 QMessageBox::Yes | QMessageBox::Cancel,
                 QMessageBox::Cancel) != QMessageBox::Yes) {
             return;
@@ -1505,22 +1555,22 @@ MainWindow::MainWindow(QWidget *parent)
         if (!isac::ui::DspPresetCatalog::remove(
                 presetDirectory, id, &error)) {
             lblPatchStatus->setText(
-                QStringLiteral("删除配置失败：%1").arg(error));
+                QStringLiteral("Failed to delete preset: %1").arg(error));
             return;
         }
         refreshPresetSelector();
         lblPatchStatus->setText(
-            QStringLiteral("已删除配置：%1").arg(name));
+            QStringLiteral("Deleted preset: %1").arg(name));
     });
 
     connect(clearConnectionsButton, &QPushButton::clicked, this, [this, lblPatchStatus]() {
         m_audioEngine.clearConnections();
         if (!m_audioEngine.rebuildGraph()) {
-            lblPatchStatus->setText("清空连线后图编译失败");
+            lblPatchStatus->setText("Graph compilation failed after clearing connections");
             return;
         }
         m_patchbayView->patchbayScene()->syncFromEngine();
-        lblPatchStatus->setText("连线已清空");
+        lblPatchStatus->setText("Connections cleared");
     });
 
     // 进度条刷新定时器 (每 200ms 同步一次底层解码器帧游标)
@@ -1529,9 +1579,9 @@ MainWindow::MainWindow(QWidget *parent)
         const auto selectedOutput = m_audioEngine.selectedOutputDevice();
         const QString outputName = selectedOutput
             ? QString::fromStdString(selectedOutput->name)
-            : QStringLiteral("系统默认");
+            : QStringLiteral("System Default");
         outputStatus->setText(
-            QStringLiteral("%1 | DSP 请求 %2 kHz")
+            QStringLiteral("%1 | DSP request: %2 kHz")
                 .arg(outputName)
                 .arg(m_audioEngine.outputSampleRate() / 1000.0, 0, 'g', 4));
         if (m_audioEngine.isPlaying()) {

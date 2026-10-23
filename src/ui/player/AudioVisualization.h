@@ -14,20 +14,27 @@ public:
 
     void setSamples(const double* samples, std::size_t count);
     void setProgress(double progress);
+    void setDuration(double seconds);
 
 signals:
     void seekRequested(double progress);
+    void hoverPreviewChanged(bool visible, double progress);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    bool event(QEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
 
 private:
     void seekAt(qreal x);
+    static QString formatTime(double seconds);
     std::vector<double> m_samples;
     double m_progress = 0.0;
+    double m_durationSeconds = 0.0;
+    qreal m_hoverX = 0.0;
+    bool m_hovered = false;
     bool m_dragging = false;
 };
 

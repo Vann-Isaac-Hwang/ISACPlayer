@@ -45,7 +45,7 @@ QVariant PlaybackQueueListModel::data(const QModelIndex& index, int role) const
         }
         const auto loaded = m_repository->trackById(trackId);
         if (!loaded) {
-            return QStringLiteral("曲目已从资料库移除");
+            return QStringLiteral("Track has been removed from the library");
         }
         if (m_trackCache.size() >= 128) {
             m_trackCache.clear();
@@ -83,7 +83,7 @@ PlaybackQueueView::PlaybackQueueView(
     library::LibraryRepository* repository, QWidget* parent)
     : QDialog(parent)
 {
-    setWindowTitle(QStringLiteral("当前播放队列"));
+    setWindowTitle(QStringLiteral("Playback Queue"));
     resize(520, 620);
     setStyleSheet(QStringLiteral(
         "QDialog { background: #181A20; color: #EAEAEA; }"
@@ -113,7 +113,7 @@ void PlaybackQueueView::setQueue(const std::vector<qint64>& trackIds,
                                  qint64 currentTrackId)
 {
     m_model->setQueue(trackIds, currentTrackId);
-    setWindowTitle(QStringLiteral("当前播放队列（%1 首）")
+    setWindowTitle(QStringLiteral("Playback Queue (%1 tracks)")
                        .arg(trackIds.size()));
     const auto current = std::find(
         trackIds.begin(), trackIds.end(), currentTrackId);
