@@ -77,6 +77,16 @@ public:
     std::optional<AudioOutputDevice> selectedOutputDevice() const;
     void setFadeEnabled(bool enabled) noexcept;
     void setFadeDurationSeconds(double seconds) noexcept;
+    void setOverlapEnabled(bool enabled) noexcept;
+    void setOverlapDurationSeconds(double seconds) noexcept;
+    bool overlapEnabled() const noexcept;
+    double overlapDurationSeconds() const noexcept;
+    bool prepareNext(const std::string& filePath, std::string* error = nullptr);
+    bool hasPreparedNext() const noexcept;
+    bool startOverlap() noexcept;
+    bool isOverlapActive() const noexcept;
+    bool consumeOverlapTransition() noexcept;
+    void cancelPreparedNext() noexcept;
     void setMasterGain(double factor) noexcept;
     double masterGain() const noexcept;
     void setPlaying(bool play);
@@ -113,24 +123,47 @@ public:
     std::shared_ptr<IAudioNode> equalizerNode() const { return m_equalizerNode; }
 
 private:
+    struct DecoderLane {
+        DecoderLane()
+            : pcmRing(48000, 2)
+        {
+        }
+
+        ma_decoder decoder{};
+        bool decoderInitialized = false;
+        SpscAudioRingBuffer pcmRing;
+        std::array<float, DECODER_CHUNK_FRAMES * 2> decodeBuffer{};
+        std::atomic<bool> loaded{false};
+        std::atomic<bool> ready{false};
+        std::atomic<bool> failed{false};
+        std::atomic<bool> eof{false};
+        std::atomic<bool> skipFadeIn{false};
+        std::atomic<ma_uint64> renderedFrame{0};
+        std::atomic<ma_uint64> totalFrames{0};
+    };
+
     static void dataCallback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount);
     void renderAudio(float* pInterleavedOutput, uint32_t frameCount, uint32_t channels) noexcept;
     void decoderLoop();
     void stopDecoderThread();
     void notifyDecoder();
-    void markDecoderReady();
+    void markLaneReady(DecoderLane& lane);
+    bool initializeLane(DecoderLane& lane, const std::string& filePath,
+                        std::uint32_t requestedSampleRate,
+                        std::string* error);
+    void uninitializeLane(DecoderLane& lane);
+    void clearAllLanes();
     bool initializePlaybackDevice(std::string& error);
     void destroyPlaybackDevice();
 
     ma_context m_context{};
     bool m_contextInitialized = false;
-    ma_decoder m_decoder{};
     ma_device m_device{};
     std::optional<AudioOutputDevice> m_selectedOutputDevice;
     std::uint32_t m_outputSampleRate = 48000;
     double m_fadeDurationSeconds = 2.0;
+    double m_overlapDurationSeconds = 2.0;
     std::atomic<bool> m_decoderLoaded{false};
-    bool m_decoderInitialized = false;
     bool m_deviceInitialized = false;
 
     NodeId m_nextNodeId = 1;
@@ -147,16 +180,18 @@ private:
     // rebuildGraph() stops the device before replacing this owner, so the
     // callback can use a raw plan pointer without refcounting or reclamation.
     std::shared_ptr<ExecutionPlan> m_activePlanOwner;
-    SpscAudioRingBuffer m_pcmRing{48000, 2};
+    std::array<DecoderLane, 2> m_decoderLanes;
+    std::atomic<int> m_activeLane{0};
+    std::atomic<int> m_preparedLane{-1};
     AudioTapBuffer m_preDspTap{65536, 2};
     AudioTapBuffer m_postDspTap{65536, 2};
-    std::array<float, DECODER_CHUNK_FRAMES * 2> m_decodeBuffer{};
+    std::array<std::array<double, MAX_ENGINE_BLOCK_FRAMES>, 2> m_laneLeft{};
+    std::array<std::array<double, MAX_ENGINE_BLOCK_FRAMES>, 2> m_laneRight{};
+    std::atomic<bool> m_callbackActive{false};
     std::thread m_decoderThread;
     std::atomic<bool> m_decoderStop{false};
-    std::atomic<bool> m_decoderReady{false};
-    std::atomic<bool> m_decoderFailed{false};
-    std::atomic<bool> m_decoderEof{false};
     std::mutex m_decoderMutex;
+    std::mutex m_laneMutex;
     std::condition_variable m_decoderWake;
     std::condition_variable m_decoderReadyCondition;
     std::condition_variable m_seekCondition;
@@ -166,11 +201,15 @@ private:
     std::atomic<bool> m_seekPending{false};
     std::atomic<ma_uint64> m_pendingSeekFrame{0};
     std::atomic<bool> m_seekCompleted{false};
-    std::atomic<ma_uint64> m_renderedFrame{0};
-    std::atomic<ma_uint64> m_totalFrames{0};
     std::atomic<ma_uint64> m_underrunFrames{0};
     std::atomic<bool> m_fadeEnabled{false};
     std::atomic<ma_uint64> m_fadeDurationFrames{96000};
+    std::atomic<bool> m_overlapEnabled{false};
+    std::atomic<ma_uint64> m_overlapDurationFrames{96000};
+    std::atomic<bool> m_overlapActive{false};
+    std::atomic<ma_uint64> m_activeOverlapFrames{0};
+    std::atomic<ma_uint64> m_overlapElapsedFrames{0};
+    std::atomic<bool> m_overlapTransitionPending{false};
     std::atomic<double> m_masterGain{1.0};
 };
 

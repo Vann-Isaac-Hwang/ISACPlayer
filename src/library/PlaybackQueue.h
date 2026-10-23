@@ -136,6 +136,20 @@ public:
         return m_order[m_position];
     }
 
+    std::optional<qint64> peekNext() const
+    {
+        if (m_order.empty() || m_mode == PlaybackMode::RepeatOne) {
+            return std::nullopt;
+        }
+        if (m_position + 1 < m_order.size()) {
+            return m_order[m_position + 1];
+        }
+        if (m_mode == PlaybackMode::RepeatAll) {
+            return m_order.front();
+        }
+        return std::nullopt;
+    }
+
     std::optional<qint64> next(bool naturalEnd = false)
     {
         if (m_order.empty()) {

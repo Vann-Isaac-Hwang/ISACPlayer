@@ -221,6 +221,39 @@ int main(int argc, char** argv) {
             assert(std::abs(widthOutput.channel(1)[0] + 2.0) < 1.0e-12);
             assert(!node->setParameter("missing", 0.0));
         }
+
+        if (QString::fromLatin1(plugin->pluginId()) ==
+            QStringLiteral("isac.stereo_balance")) {
+            assert(node->numInputs() == 2);
+            assert(node->numOutputs() == 2);
+
+            isac::AudioBuffer balanceInput(2, 2);
+            isac::AudioBuffer balanceOutput(2, 2);
+            balanceInput.channel(0)[0] = 0.75;
+            balanceInput.channel(1)[0] = 0.50;
+            balanceInput.channel(0)[1] = -0.75;
+            balanceInput.channel(1)[1] = -0.50;
+
+            assert(node->setParameter("balance", 0.0));
+            node->process(balanceInput, balanceOutput, 2);
+            assert(std::abs(balanceOutput.channel(0)[0] - 0.75) <
+                   1.0e-12);
+            assert(std::abs(balanceOutput.channel(1)[0] - 0.50) <
+                   1.0e-12);
+
+            assert(node->setParameter("balance", -1.0));
+            node->process(balanceInput, balanceOutput, 2);
+            assert(std::abs(balanceOutput.channel(0)[0] - 0.75) <
+                   1.0e-12);
+            assert(std::abs(balanceOutput.channel(1)[0]) < 1.0e-12);
+
+            assert(node->setParameter("balance", 1.0));
+            node->process(balanceInput, balanceOutput, 2);
+            assert(std::abs(balanceOutput.channel(0)[0]) < 1.0e-12);
+            assert(std::abs(balanceOutput.channel(1)[0] - 0.50) <
+                   1.0e-12);
+            assert(!node->setParameter("missing", 0.0));
+        }
     }
 
     return 0;

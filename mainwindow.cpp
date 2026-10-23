@@ -87,6 +87,11 @@ MainWindow::MainWindow(QWidget *parent)
         settings.value(QStringLiteral("playback/fadeEnabled"), false).toBool());
     m_audioEngine.setFadeDurationSeconds(
         settings.value(QStringLiteral("playback/fadeDurationSeconds"), 2.0).toDouble());
+    m_audioEngine.setOverlapEnabled(
+        settings.value(QStringLiteral("playback/overlapEnabled"), false).toBool());
+    m_audioEngine.setOverlapDurationSeconds(
+        settings.value(QStringLiteral("playback/overlapDurationSeconds"), 2.0)
+            .toDouble());
     setWindowTitle(QStringLiteral("ISACPlayer"));
     resize(1180, 760);
 
@@ -351,6 +356,24 @@ MainWindow::MainWindow(QWidget *parent)
                 fadeDuration, &QDoubleSpinBox::setEnabled);
         playbackForm->addRow(fadeEnabled);
         playbackForm->addRow("Fade duration", fadeDuration);
+        auto* overlapEnabled = new QCheckBox(
+            QStringLiteral("Enable track overlap"), &dialog);
+        overlapEnabled->setChecked(settings.value(
+            QStringLiteral("playback/overlapEnabled"), false).toBool());
+        auto* overlapDuration = new QDoubleSpinBox(&dialog);
+        overlapDuration->setRange(0.10, 10.0);
+        overlapDuration->setSingleStep(0.25);
+        overlapDuration->setSuffix(" s");
+        overlapDuration->setDecimals(2);
+        overlapDuration->setValue(std::clamp(
+            settings.value(QStringLiteral("playback/overlapDurationSeconds"), 2.0)
+                .toDouble(),
+            0.10, 10.0));
+        overlapDuration->setEnabled(overlapEnabled->isChecked());
+        connect(overlapEnabled, &QCheckBox::toggled,
+                overlapDuration, &QDoubleSpinBox::setEnabled);
+        playbackForm->addRow(overlapEnabled);
+        playbackForm->addRow("Overlap duration", overlapDuration);
         auto* gainMaximum = new QDoubleSpinBox(&dialog);
         gainMaximum->setRange(1.0, 4.0);
         gainMaximum->setSingleStep(0.1);
@@ -453,6 +476,10 @@ MainWindow::MainWindow(QWidget *parent)
                           fadeEnabled->isChecked());
         settings.setValue(QStringLiteral("playback/fadeDurationSeconds"),
                           fadeDuration->value());
+        settings.setValue(QStringLiteral("playback/overlapEnabled"),
+                          overlapEnabled->isChecked());
+        settings.setValue(QStringLiteral("playback/overlapDurationSeconds"),
+                          overlapDuration->value());
         settings.setValue(QStringLiteral("playback/gainMaximum"),
                           gainMaximum->value());
         settings.setValue(QStringLiteral("playback/historyLimit"),
@@ -469,6 +496,8 @@ MainWindow::MainWindow(QWidget *parent)
         }
         m_audioEngine.setFadeDurationSeconds(fadeDuration->value());
         m_audioEngine.setFadeEnabled(fadeEnabled->isChecked());
+        m_audioEngine.setOverlapDurationSeconds(overlapDuration->value());
+        m_audioEngine.setOverlapEnabled(overlapEnabled->isChecked());
         m_nowPlayingHeader->setVolumeMaximum(gainMaximum->value());
         settings.setValue(QStringLiteral("display/audioFormat"),
                           showFormat->isChecked());
@@ -1703,6 +1732,77 @@ MainWindow::MainWindow(QWidget *parent)
 #ifdef ISAC_HAS_MPRIS
             m_mprisController->setPosition(position);
 #endif
+            if (m_audioEngine.overlapEnabled() &&
+                m_trackLoaded &&
+                !m_audioEngine.isOverlapActive()) {
+                if (m_preparedNextTrackId == 0) {
+                    const auto next = m_playbackQueue.peekNext();
+                    if (next) {
+                        const auto nextTrack =
+                            m_libraryRepository.trackById(*next);
+                        const double overlap =
+                            m_audioEngine.overlapDurationSeconds();
+                        const double prepareAt =
+                            std::max(0.0, duration - overlap - 0.5);
+                        if (nextTrack && position >= prepareAt) {
+                            std::string prepareError;
+                            if (m_audioEngine.prepareNext(
+                                    nextTrack->filePath.toStdString(),
+                                    &prepareError)) {
+                                m_preparedNextTrackId = *next;
+                            }
+                        }
+                    }
+                }
+                if (m_preparedNextTrackId > 0 &&
+                    m_audioEngine.hasPreparedNext() &&
+                    position >= std::max(
+                        0.0, duration -
+                            m_audioEngine.overlapDurationSeconds())) {
+                    m_audioEngine.startOverlap();
+                }
+            }
+            if (m_audioEngine.consumeOverlapTransition() &&
+                m_preparedNextTrackId > 0) {
+                const qint64 nextTrackId = m_preparedNextTrackId;
+                m_preparedNextTrackId = 0;
+                m_playbackQueue.selectTrack(nextTrackId);
+                m_currentTrackId = nextTrackId;
+                m_currentTrackEndHandled = false;
+                if (const auto nextTrack =
+                        m_libraryRepository.trackById(nextTrackId)) {
+                    auto displayTrack = *nextTrack;
+                    isac::library::MetadataReader::readAudioProperties(
+                        displayTrack);
+                    m_nowPlayingHeader->setTrackInfo(displayTrack);
+                    m_nowPlayingHeader->setPlayingState(true);
+                    const QSettings playbackSettings;
+                    const int historyLimit = std::clamp(
+                        playbackSettings.value(
+                            QStringLiteral("playback/historyLimit"), 100)
+                            .toInt(),
+                        5, 10000);
+                    const bool onlyLatestPerTrack =
+                        playbackSettings.value(
+                            QStringLiteral(
+                                "playback/historyOnlyLatestPerTrack"),
+                            false)
+                            .toBool();
+                    m_libraryRepository.recordPlayback(
+                        nextTrackId, historyLimit, onlyLatestPerTrack);
+                    m_libraryPage->refreshPlaybackHistory();
+                    const double nextPosition =
+                        m_audioEngine.currentPositionSeconds();
+                    m_nowPlayingHeader->updateProgress(
+                        nextPosition, m_audioEngine.totalDurationSeconds());
+#ifdef ISAC_HAS_MPRIS
+                    m_mprisController->setTrack(*nextTrack);
+                    m_mprisController->setPosition(nextPosition);
+                    m_mprisController->setPlaybackState(true);
+#endif
+                    persistPlaybackQueue(false);
+                }
+            }
             if (m_audioEngine.isPlaybackComplete() &&
                 !m_currentTrackEndHandled) {
                 m_currentTrackEndHandled = true;
@@ -1792,6 +1892,8 @@ void MainWindow::queueTrackNext(qint64 trackId)
         return;
     }
 
+    m_audioEngine.cancelPreparedNext();
+    m_preparedNextTrackId = 0;
     persistPlaybackQueue(true);
     if (m_libraryPage) {
         m_libraryPage->setScanStatus(
@@ -1821,6 +1923,8 @@ bool MainWindow::playQueuedTrack(qint64 trackId) {
         return false;
     }
 
+    m_audioEngine.cancelPreparedNext();
+    m_preparedNextTrackId = 0;
     std::string playbackError;
     if (m_audioEngine.loadAndPlay(
             track->filePath.toStdString(), &playbackError)) {
@@ -1912,6 +2016,8 @@ void MainWindow::restorePlaybackQueue() {
 void MainWindow::setPlaybackMode(isac::library::PlaybackMode mode)
 {
     m_playbackMode = mode;
+    m_audioEngine.cancelPreparedNext();
+    m_preparedNextTrackId = 0;
     m_playbackQueue.setMode(mode);
     persistPlaybackQueue(true);
     if (m_playbackQueueView && !m_playbackQueueView->isVisible()) {

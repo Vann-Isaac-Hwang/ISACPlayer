@@ -66,6 +66,24 @@ void testPlaybackFadeEnvelope()
                1.0, 0.0, "zero-duration fade must preserve unity gain");
 }
 
+void testOverlapFadeEnvelope()
+{
+    constexpr std::uint64_t start = 100;
+    constexpr std::uint64_t duration = 100;
+    expectNear(isac::overlapFadeGain(100, start, duration, false),
+               1.0, 0.0, "overlap old track must start at unity");
+    expectNear(isac::overlapFadeGain(150, start, duration, false),
+               0.5, 1.0e-12, "overlap old track midpoint");
+    expectNear(isac::overlapFadeGain(200, start, duration, false),
+               0.0, 0.0, "overlap old track must end silent");
+    expectNear(isac::overlapFadeGain(100, start, duration, true),
+               0.0, 0.0, "overlap next track must start silent");
+    expectNear(isac::overlapFadeGain(150, start, duration, true),
+               0.5, 1.0e-12, "overlap next track midpoint");
+    expectNear(isac::overlapFadeGain(200, start, duration, true),
+               1.0, 0.0, "overlap next track must end at unity");
+}
+
 void testBiquadBypass()
 {
     constexpr int frames = 128;
@@ -321,6 +339,7 @@ int main()
 {
     testDoublePlanarBus();
     testPlaybackFadeEnvelope();
+    testOverlapFadeEnvelope();
     testBiquadBypass();
     testBiquadPeak();
     testAtomicParameterUpdate();

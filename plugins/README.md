@@ -9,6 +9,7 @@ plugins/
 ```
 
 The in-tree plugins include Stereo Gain, Mono Gain, Mono Delay, Stereo Width,
+Stereo Balance,
 Adder, ReplayGain, and Biquad Equalizer. Stereo Width performs a stateless
 Mid/Side width transformation: 0 x produces mono, 1 x preserves the original
 stereo image, and 2 x doubles the side component. Mono Gain is a single-input,
@@ -17,6 +18,8 @@ linear gain component; it also accepts negative factors for phase inversion. It
 does not perform channel mixing, delay, filtering, or spatial processing. Mono
 Delay is a single-input, single-output delay with a 100 ms maximum and a
 preallocated buffer sized for the engine's 768 kHz maximum sample rate.
+Stereo Balance is a linked left/right level control: -1.0 routes to the left
+channel, 0.0 preserves both channels, and 1.0 routes to the right channel.
 
 The plugin SDK is located at `plugin_sdk/include/isac/plugin/`. DSP plugins
 only need to depend on `isac/plugin/IAudioPlugin.h`. The Qt discovery boundary

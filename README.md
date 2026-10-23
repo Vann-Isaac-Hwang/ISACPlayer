@@ -12,7 +12,7 @@ ISACPlayer is a Qt desktop music player for local libraries, playlists, and real
 - Audio output device selection from the DSP Router page
 - DSP graph built around a DAG engine and 64-bit planar `double` audio buses
 - Independent master gain applied at the final soundcard output stage
-- Built-in Gain, Mono Gain, Mono Delay, Stereo Width, Adder, ReplayGain, and Biquad Equalizer plugins
+- Built-in Gain, Mono Gain, Mono Delay, Stereo Width, Stereo Balance, Adder, ReplayGain, and Biquad Equalizer plugins
 - Plugin library and node inspector docks that can be shown, hidden, or rearranged
 - Playback settings for fade in/out, history retention, and displayed audio metadata
 - English application interface

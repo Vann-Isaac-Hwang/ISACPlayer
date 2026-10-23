@@ -59,10 +59,7 @@ AudioEngine::~AudioEngine() {
     m_decoderLoaded.store(false, std::memory_order_release);
     destroyPlaybackDevice();
     stopDecoderThread();
-    if (m_decoderInitialized) {
-        ma_decoder_uninit(&m_decoder);
-        m_decoderInitialized = false;
-    }
+    clearAllLanes();
     if (m_contextInitialized) {
         ma_context_uninit(&m_context);
         m_contextInitialized = false;
@@ -286,9 +283,11 @@ void AudioEngine::dataCallback(ma_device* pDevice, void* pOutput, const void*, m
 
 void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
                               uint32_t channels) noexcept {
+    m_callbackActive.store(true, std::memory_order_release);
     ExecutionPlan* plan = m_activePlan.load(std::memory_order_acquire);
     if (!m_decoderLoaded.load() || !plan || plan->sinkStepIndex < 0) {
         std::fill_n(pInterleavedOutput, frameCount * channels, 0.0f);
+        m_callbackActive.store(false, std::memory_order_release);
         return;
     }
 
@@ -298,38 +297,95 @@ void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
     const bool fadeEnabled = m_fadeEnabled.load(std::memory_order_relaxed);
     const ma_uint64 fadeFrames =
         m_fadeDurationFrames.load(std::memory_order_relaxed);
-    const ma_uint64 totalFrames = m_totalFrames.load(std::memory_order_relaxed);
     const double masterGain =
         m_masterGain.load(std::memory_order_relaxed);
 
     while (framesRemaining > 0) {
         uint32_t chunkFrames = std::min<uint32_t>(framesRemaining, MAX_ENGINE_BLOCK_FRAMES);
 
-        // 1. Read PCM produced by the decoder thread. A short read is
-        // silence-fill and never blocks the audio callback.
+        const int activeLaneIndex = m_activeLane.load(std::memory_order_acquire);
+        auto& activeLane = m_decoderLanes[static_cast<std::size_t>(activeLaneIndex)];
+        const bool overlapActive =
+            m_overlapActive.load(std::memory_order_acquire);
+        const int preparedLaneIndex =
+            m_preparedLane.load(std::memory_order_acquire);
+        const bool hasPreparedLane =
+            overlapActive && preparedLaneIndex >= 0 &&
+            preparedLaneIndex != activeLaneIndex;
+
+        // Read PCM produced by the decoder thread. A short read is silence-fill
+        // and never blocks the audio callback.
         auto& srcBuf = m_sourceNode->internalBuffer();
         srcBuf.clearFrames(static_cast<int>(chunkFrames));
-        AudioSample* sourceChannels[] = {
+        double* activeChannels[] = {
+            m_laneLeft[static_cast<std::size_t>(activeLaneIndex)].data(),
+            m_laneRight[static_cast<std::size_t>(activeLaneIndex)].data()
+        };
+        std::fill_n(activeChannels[0], chunkFrames, 0.0);
+        std::fill_n(activeChannels[1], chunkFrames, 0.0);
+        const std::size_t framesRead = activeLane.pcmRing.readPlanar(
+            activeChannels, static_cast<std::size_t>(chunkFrames));
+        std::size_t preparedFramesRead = 0;
+        if (hasPreparedLane) {
+            auto& preparedLane =
+                m_decoderLanes[static_cast<std::size_t>(preparedLaneIndex)];
+            double* preparedChannels[] = {
+                m_laneLeft[static_cast<std::size_t>(preparedLaneIndex)].data(),
+                m_laneRight[static_cast<std::size_t>(preparedLaneIndex)].data()
+            };
+            std::fill_n(preparedChannels[0], chunkFrames, 0.0);
+            std::fill_n(preparedChannels[1], chunkFrames, 0.0);
+            preparedFramesRead = preparedLane.pcmRing.readPlanar(
+                preparedChannels, static_cast<std::size_t>(chunkFrames));
+        }
+
+        const ma_uint64 blockStartFrame =
+            activeLane.renderedFrame.load(std::memory_order_relaxed);
+        const ma_uint64 totalFrames =
+            activeLane.totalFrames.load(std::memory_order_relaxed);
+        const ma_uint64 overlapFrames =
+            m_activeOverlapFrames.load(std::memory_order_relaxed);
+        const ma_uint64 overlapElapsed =
+            m_overlapElapsedFrames.load(std::memory_order_relaxed);
+        for (uint32_t i = 0; i < chunkFrames; ++i) {
+            const double oldGain = hasPreparedLane
+                ? overlapFadeGain(overlapElapsed + i, 0, overlapFrames, false)
+                : 1.0;
+            const double newGain = hasPreparedLane
+                ? overlapFadeGain(overlapElapsed + i, 0, overlapFrames, true)
+                : 0.0;
+            srcBuf.channel(0)[i] =
+                activeChannels[0][i] * oldGain;
+            srcBuf.channel(1)[i] =
+                activeChannels[1][i] * oldGain;
+            if (hasPreparedLane && i < preparedFramesRead) {
+                srcBuf.channel(0)[i] +=
+                    m_laneLeft[static_cast<std::size_t>(preparedLaneIndex)][i] *
+                    newGain;
+                srcBuf.channel(1)[i] +=
+                    m_laneRight[static_cast<std::size_t>(preparedLaneIndex)][i] *
+                    newGain;
+            }
+        }
+        const double* preDspChannels[] = {
             srcBuf.channel(0),
             srcBuf.channel(1)
         };
-        const std::size_t framesRead = m_pcmRing.readPlanar(
-            sourceChannels, static_cast<std::size_t>(chunkFrames));
-        const double* preDspChannels[] = {
-            sourceChannels[0],
-            sourceChannels[1]
-        };
         m_preDspTap.write(preDspChannels, chunkFrames);
-        const ma_uint64 blockStartFrame =
-            m_renderedFrame.load(std::memory_order_relaxed);
         if (framesRead < chunkFrames &&
-            !m_decoderEof.load(std::memory_order_acquire)) {
+            !activeLane.eof.load(std::memory_order_acquire)) {
             m_underrunFrames.fetch_add(
                 static_cast<ma_uint64>(chunkFrames - framesRead),
                 std::memory_order_relaxed);
         }
-        m_renderedFrame.fetch_add(static_cast<ma_uint64>(framesRead),
-                                  std::memory_order_release);
+        activeLane.renderedFrame.fetch_add(static_cast<ma_uint64>(framesRead),
+                                           std::memory_order_release);
+        if (hasPreparedLane) {
+            m_decoderLanes[static_cast<std::size_t>(preparedLaneIndex)]
+                .renderedFrame.fetch_add(
+                    static_cast<ma_uint64>(preparedFramesRead),
+                    std::memory_order_release);
+        }
 
         // 2. 按拓扑排序顺序依次执行所有节点
         plan->clearBuffers(static_cast<int>(chunkFrames));
@@ -354,12 +410,17 @@ void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
         };
         m_postDspTap.write(postDspChannels, chunkFrames);
         for (uint32_t i = 0; i < chunkFrames; ++i) {
-            const ma_uint64 mediaFrame =
-                blockStartFrame + std::min<std::size_t>(i, framesRead);
-            const double gain = fadeEnabled
-                ? playbackFadeGain(mediaFrame, totalFrames, fadeFrames)
-                : 1.0;
             for (uint32_t ch = 0; ch < channels; ++ch) {
+                double gain = 1.0;
+                if (!hasPreparedLane && fadeEnabled) {
+                    gain = activeLane.skipFadeIn.load(std::memory_order_relaxed)
+                        ? playbackFadeOutGain(
+                              blockStartFrame + std::min<std::size_t>(i, framesRead),
+                              totalFrames, fadeFrames)
+                        : playbackFadeGain(
+                              blockStartFrame + std::min<std::size_t>(i, framesRead),
+                              totalFrames, fadeFrames);
+                }
                 currentOutPtr[i * channels + ch] =
                     ch < 2
                         ? static_cast<float>(
@@ -370,7 +431,28 @@ void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
 
         currentOutPtr += chunkFrames * channels;
         framesRemaining -= chunkFrames;
+
+        if (hasPreparedLane) {
+            const ma_uint64 elapsedAfterBlock =
+                overlapElapsed + static_cast<ma_uint64>(chunkFrames);
+            m_overlapElapsedFrames.store(
+                elapsedAfterBlock, std::memory_order_release);
+            if (elapsedAfterBlock >= overlapFrames) {
+                m_activeLane.store(preparedLaneIndex,
+                                   std::memory_order_release);
+                m_preparedLane.store(-1, std::memory_order_release);
+                m_overlapActive.store(false, std::memory_order_release);
+                m_overlapElapsedFrames.store(0, std::memory_order_release);
+                m_decoderLanes[static_cast<std::size_t>(preparedLaneIndex)]
+                    .skipFadeIn.store(true, std::memory_order_release);
+                // The control thread owns decoder destruction and will reuse
+                // the old lane only after the transition has been observed.
+                m_overlapTransitionPending.store(
+                    true, std::memory_order_release);
+            }
+        }
     }
+    m_callbackActive.store(false, std::memory_order_release);
 }
 
 std::size_t AudioEngine::readPreDspSamples(
@@ -405,6 +487,128 @@ void AudioEngine::setFadeDurationSeconds(double seconds) noexcept
         std::memory_order_relaxed);
 }
 
+void AudioEngine::setOverlapEnabled(bool enabled) noexcept
+{
+    m_overlapEnabled.store(enabled, std::memory_order_relaxed);
+    if (!enabled && !m_overlapActive.load(std::memory_order_acquire)) {
+        cancelPreparedNext();
+    }
+}
+
+void AudioEngine::setOverlapDurationSeconds(double seconds) noexcept
+{
+    if (!std::isfinite(seconds)) {
+        return;
+    }
+    m_overlapDurationSeconds = std::clamp(seconds, 0.1, 10.0);
+    m_overlapDurationFrames.store(
+        static_cast<ma_uint64>(
+            m_overlapDurationSeconds *
+            static_cast<double>(m_outputSampleRate)),
+        std::memory_order_relaxed);
+}
+
+bool AudioEngine::overlapEnabled() const noexcept
+{
+    return m_overlapEnabled.load(std::memory_order_relaxed);
+}
+
+double AudioEngine::overlapDurationSeconds() const noexcept
+{
+    return m_overlapDurationSeconds;
+}
+
+bool AudioEngine::prepareNext(const std::string& filePath, std::string* error)
+{
+    if (error) {
+        error->clear();
+    }
+    if (!m_decoderLoaded.load(std::memory_order_acquire) ||
+        filePath.empty() || m_overlapActive.load(std::memory_order_acquire)) {
+        return false;
+    }
+
+    std::lock_guard lock(m_laneMutex);
+    if (m_preparedLane.load(std::memory_order_acquire) >= 0) {
+        return true;
+    }
+    const int active = m_activeLane.load(std::memory_order_acquire);
+    const int prepared = 1 - active;
+    auto& lane = m_decoderLanes[static_cast<std::size_t>(prepared)];
+    while (m_callbackActive.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+    uninitializeLane(lane);
+    if (!initializeLane(lane, filePath, m_outputSampleRate, error)) {
+        return false;
+    }
+    lane.skipFadeIn.store(true, std::memory_order_release);
+    m_preparedLane.store(prepared, std::memory_order_release);
+    notifyDecoder();
+    return true;
+}
+
+bool AudioEngine::hasPreparedNext() const noexcept
+{
+    const int prepared = m_preparedLane.load(std::memory_order_acquire);
+    return prepared >= 0 &&
+           m_decoderLanes[static_cast<std::size_t>(prepared)].loaded.load(
+               std::memory_order_acquire) &&
+           m_decoderLanes[static_cast<std::size_t>(prepared)].ready.load(
+               std::memory_order_acquire);
+}
+
+bool AudioEngine::startOverlap() noexcept
+{
+    const int prepared = m_preparedLane.load(std::memory_order_acquire);
+    if (!hasPreparedNext() || prepared < 0 ||
+        m_overlapActive.load(std::memory_order_acquire)) {
+        return false;
+    }
+    const int active = m_activeLane.load(std::memory_order_acquire);
+    auto& lane = m_decoderLanes[static_cast<std::size_t>(active)];
+    const ma_uint64 total = lane.totalFrames.load(std::memory_order_acquire);
+    const ma_uint64 duration = std::min(
+        m_overlapDurationFrames.load(std::memory_order_relaxed), total);
+    if (duration == 0 || lane.renderedFrame.load(
+            std::memory_order_acquire) >= total) {
+        return false;
+    }
+    const ma_uint64 current = lane.renderedFrame.load(std::memory_order_acquire);
+    const ma_uint64 effectiveDuration = std::min(duration, total - current);
+    m_activeOverlapFrames.store(effectiveDuration, std::memory_order_release);
+    m_overlapElapsedFrames.store(0, std::memory_order_release);
+    m_overlapActive.store(true, std::memory_order_release);
+    notifyDecoder();
+    return true;
+}
+
+bool AudioEngine::isOverlapActive() const noexcept
+{
+    return m_overlapActive.load(std::memory_order_acquire);
+}
+
+bool AudioEngine::consumeOverlapTransition() noexcept
+{
+    return m_overlapTransitionPending.exchange(false,
+                                                std::memory_order_acq_rel);
+}
+
+void AudioEngine::cancelPreparedNext() noexcept
+{
+    const int prepared = m_preparedLane.exchange(-1, std::memory_order_acq_rel);
+    m_overlapActive.store(false, std::memory_order_release);
+    m_activeOverlapFrames.store(0, std::memory_order_release);
+    m_overlapElapsedFrames.store(0, std::memory_order_release);
+    if (prepared < 0) {
+        return;
+    }
+    // Destruction is deferred until the lane is reused or the engine stops.
+    // The callback may already have captured this lane for its current block.
+    m_decoderLanes[static_cast<std::size_t>(prepared)]
+        .loaded.store(false, std::memory_order_release);
+}
+
 void AudioEngine::setMasterGain(double factor) noexcept
 {
     if (!std::isfinite(factor)) {
@@ -421,79 +625,95 @@ double AudioEngine::masterGain() const noexcept
 
 void AudioEngine::decoderLoop()
 {
-    bool readyForDevice = false;
-
     while (!m_decoderStop.load(std::memory_order_acquire)) {
         if (m_seekPending.exchange(false, std::memory_order_acq_rel)) {
             const ma_uint64 targetFrame =
                 m_pendingSeekFrame.load(std::memory_order_acquire);
-
-            // The device is stopped by seekToSeconds(), so the producer can
-            // reset both cursors without racing the audio consumer.
-            m_pcmRing.reset();
-            m_decoderEof.store(false, std::memory_order_release);
-            const ma_result result =
-                ma_decoder_seek_to_pcm_frame(&m_decoder, targetFrame);
-            if (result != MA_SUCCESS) {
-                m_decoderFailed.store(true, std::memory_order_release);
-            } else {
-                m_renderedFrame.store(targetFrame, std::memory_order_release);
+            const int active = m_activeLane.load(std::memory_order_acquire);
+            auto& lane = m_decoderLanes[static_cast<std::size_t>(active)];
+            {
+                std::lock_guard lock(m_laneMutex);
+                lane.pcmRing.reset();
+                lane.eof.store(false, std::memory_order_release);
+                lane.ready.store(false, std::memory_order_release);
+                const ma_result result =
+                    ma_decoder_seek_to_pcm_frame(&lane.decoder, targetFrame);
+                if (result != MA_SUCCESS) {
+                    lane.failed.store(true, std::memory_order_release);
+                } else {
+                    lane.renderedFrame.store(
+                        targetFrame, std::memory_order_release);
+                }
             }
             m_seekCompleted.store(true, std::memory_order_release);
             m_seekCondition.notify_all();
-            readyForDevice = false;
         }
 
-        if (m_decoderEof.load(std::memory_order_acquire) ||
-            m_pcmRing.writableFrames() == 0) {
-            if (!readyForDevice &&
-                (m_pcmRing.readableFrames() >=
-                     static_cast<std::size_t>(m_outputSampleRate) *
-                         PCM_PREBUFFER_MILLISECONDS / 1000 ||
-                 m_decoderEof.load(std::memory_order_acquire))) {
-                markDecoderReady();
-                readyForDevice = true;
+        bool didWork = false;
+        for (auto& lane : m_decoderLanes) {
+            if (!lane.loaded.load(std::memory_order_acquire) ||
+                lane.failed.load(std::memory_order_acquire) ||
+                lane.eof.load(std::memory_order_acquire) ||
+                lane.pcmRing.writableFrames() == 0) {
+                if (lane.loaded.load(std::memory_order_acquire) &&
+                    !lane.ready.load(std::memory_order_acquire) &&
+                    (lane.pcmRing.readableFrames() >=
+                         static_cast<std::size_t>(m_outputSampleRate) *
+                             PCM_PREBUFFER_MILLISECONDS / 1000 ||
+                     lane.eof.load(std::memory_order_acquire))) {
+                    markLaneReady(lane);
+                }
+                continue;
             }
 
+            const std::size_t framesToRead = std::min<std::size_t>(
+                DECODER_CHUNK_FRAMES, lane.pcmRing.writableFrames());
+            ma_uint64 framesRead = 0;
+            ma_result result = MA_SUCCESS;
+            {
+                std::lock_guard lock(m_laneMutex);
+                if (!lane.loaded.load(std::memory_order_acquire) ||
+                    lane.failed.load(std::memory_order_acquire) ||
+                    lane.eof.load(std::memory_order_acquire) ||
+                    lane.pcmRing.writableFrames() == 0) {
+                    continue;
+                }
+                result = ma_decoder_read_pcm_frames(
+                    &lane.decoder, lane.decodeBuffer.data(), framesToRead,
+                    &framesRead);
+                if (framesRead > 0) {
+                    lane.pcmRing.write(
+                        lane.decodeBuffer.data(),
+                        static_cast<std::size_t>(framesRead));
+                }
+            }
+            didWork = true;
+
+            if (result != MA_SUCCESS && result != MA_AT_END) {
+                lane.failed.store(true, std::memory_order_release);
+                markLaneReady(lane);
+                continue;
+            }
+
+            if (framesRead < framesToRead || result == MA_AT_END) {
+                lane.eof.store(true, std::memory_order_release);
+            }
+
+            if (lane.pcmRing.readableFrames() >=
+                    static_cast<std::size_t>(m_outputSampleRate) *
+                        PCM_PREBUFFER_MILLISECONDS / 1000 ||
+                lane.eof.load(std::memory_order_acquire)) {
+                markLaneReady(lane);
+            }
+        }
+
+        if (!didWork) {
             std::unique_lock lock(m_decoderMutex);
             m_decoderWake.wait_for(
                 lock, std::chrono::milliseconds(2), [this] {
                     return m_decoderStop.load(std::memory_order_acquire) ||
-                           m_seekPending.load(std::memory_order_acquire) ||
-                           (!m_decoderEof.load(std::memory_order_acquire) &&
-                            m_pcmRing.writableFrames() > 0);
+                           m_seekPending.load(std::memory_order_acquire);
                 });
-            continue;
-        }
-
-        const std::size_t framesToRead = std::min<std::size_t>(
-            DECODER_CHUNK_FRAMES, m_pcmRing.writableFrames());
-        ma_uint64 framesRead = 0;
-        const ma_result result = ma_decoder_read_pcm_frames(
-            &m_decoder, m_decodeBuffer.data(), framesToRead, &framesRead);
-
-        if (framesRead > 0) {
-            m_pcmRing.write(m_decodeBuffer.data(),
-                            static_cast<std::size_t>(framesRead));
-        }
-
-        if (result != MA_SUCCESS && result != MA_AT_END) {
-            m_decoderFailed.store(true, std::memory_order_release);
-            markDecoderReady();
-            break;
-        }
-
-        if (framesRead < framesToRead || result == MA_AT_END) {
-            m_decoderEof.store(true, std::memory_order_release);
-        }
-
-        if (!readyForDevice &&
-            (m_pcmRing.readableFrames() >=
-                 static_cast<std::size_t>(m_outputSampleRate) *
-                     PCM_PREBUFFER_MILLISECONDS / 1000 ||
-             m_decoderEof.load(std::memory_order_acquire))) {
-            markDecoderReady();
-            readyForDevice = true;
         }
     }
 }
@@ -513,10 +733,77 @@ void AudioEngine::notifyDecoder()
     m_decoderWake.notify_one();
 }
 
-void AudioEngine::markDecoderReady()
+void AudioEngine::markLaneReady(DecoderLane& lane)
 {
-    m_decoderReady.store(true, std::memory_order_release);
+    lane.ready.store(true, std::memory_order_release);
     m_decoderReadyCondition.notify_all();
+}
+
+bool AudioEngine::initializeLane(DecoderLane& lane,
+                                 const std::string& filePath,
+                                 std::uint32_t requestedSampleRate,
+                                 std::string* error)
+{
+    ma_decoder_config decoderConfig =
+        ma_decoder_config_init(ma_format_f32, 2, requestedSampleRate);
+    const ma_result decoderResult =
+        ma_decoder_init_file(filePath.c_str(), &decoderConfig, &lane.decoder);
+    if (decoderResult != MA_SUCCESS) {
+        if (error) {
+            *error = "Unable to decode audio file (miniaudio error " +
+                     std::to_string(decoderResult) + ")";
+        }
+        return false;
+    }
+    lane.decoderInitialized = true;
+
+    ma_uint32 decodedChannels = 0;
+    std::uint32_t sampleRate = 0;
+    if (ma_decoder_get_data_format(
+            &lane.decoder, nullptr, &decodedChannels, &sampleRate,
+            nullptr, 0) != MA_SUCCESS ||
+        sampleRate == 0 || sampleRate > MAX_PLAYBACK_SAMPLE_RATE) {
+        if (error) {
+            *error = "The source sample rate is not supported (maximum 768 kHz)";
+        }
+        uninitializeLane(lane);
+        return false;
+    }
+
+    lane.pcmRing.reconfigure(sampleRate, 2);
+    lane.ready.store(false, std::memory_order_release);
+    lane.failed.store(false, std::memory_order_release);
+    lane.eof.store(false, std::memory_order_release);
+    lane.skipFadeIn.store(false, std::memory_order_release);
+    lane.renderedFrame.store(0, std::memory_order_release);
+    ma_uint64 totalFrames = 0;
+    ma_decoder_get_length_in_pcm_frames(&lane.decoder, &totalFrames);
+    lane.totalFrames.store(totalFrames, std::memory_order_release);
+    lane.loaded.store(true, std::memory_order_release);
+    return true;
+}
+
+void AudioEngine::uninitializeLane(DecoderLane& lane)
+{
+    lane.loaded.store(false, std::memory_order_release);
+    lane.ready.store(false, std::memory_order_release);
+    lane.failed.store(false, std::memory_order_release);
+    lane.eof.store(true, std::memory_order_release);
+    lane.pcmRing.reset();
+    if (lane.decoderInitialized) {
+        ma_decoder_uninit(&lane.decoder);
+        lane.decoderInitialized = false;
+    }
+    lane.totalFrames.store(0, std::memory_order_release);
+    lane.renderedFrame.store(0, std::memory_order_release);
+}
+
+void AudioEngine::clearAllLanes()
+{
+    std::lock_guard lock(m_laneMutex);
+    for (auto& lane : m_decoderLanes) {
+        uninitializeLane(lane);
+    }
 }
 
 bool AudioEngine::loadAndPlay(const std::string& filePath, std::string* error) {
@@ -526,62 +813,39 @@ bool AudioEngine::loadAndPlay(const std::string& filePath, std::string* error) {
     m_decoderLoaded.store(false, std::memory_order_release);
     destroyPlaybackDevice();
     stopDecoderThread();
-    if (m_decoderInitialized) {
-        ma_decoder_uninit(&m_decoder);
-        m_decoderInitialized = false;
-    }
-
-    ma_decoder_config decoderConfig =
-        ma_decoder_config_init(ma_format_f32, 2, 0);
-    const ma_result decoderResult =
-        ma_decoder_init_file(filePath.c_str(), &decoderConfig, &m_decoder);
-    if (decoderResult != MA_SUCCESS) {
-        if (error) {
-            *error = "Unable to decode audio file (miniaudio error " +
-                     std::to_string(decoderResult) + ")";
-        }
+    clearAllLanes();
+    m_activeLane.store(0, std::memory_order_release);
+    m_preparedLane.store(-1, std::memory_order_release);
+    m_overlapActive.store(false, std::memory_order_release);
+    m_activeOverlapFrames.store(0, std::memory_order_release);
+    m_overlapElapsedFrames.store(0, std::memory_order_release);
+    m_overlapTransitionPending.store(false, std::memory_order_release);
+    m_outputSampleRate = 48000;
+    if (!initializeLane(m_decoderLanes[0], filePath, 0, error)) {
         return false;
     }
-    m_decoderInitialized = true;
-    ma_uint32 decodedChannels = 0;
-    if (ma_decoder_get_data_format(
-            &m_decoder, nullptr, &decodedChannels, &m_outputSampleRate,
-            nullptr, 0) != MA_SUCCESS ||
-        m_outputSampleRate == 0 ||
-        m_outputSampleRate > MAX_PLAYBACK_SAMPLE_RATE) {
-        if (error) {
-            *error = "The source sample rate is not supported (maximum 768 kHz)";
-        }
-        ma_decoder_uninit(&m_decoder);
-        m_decoderInitialized = false;
-        return false;
-    }
+    m_outputSampleRate = m_decoderLanes[0].pcmRing.capacityFrames();
     m_fadeDurationFrames.store(
         static_cast<ma_uint64>(
             m_fadeDurationSeconds * static_cast<double>(m_outputSampleRate)),
         std::memory_order_relaxed);
-    m_pcmRing.reconfigure(m_outputSampleRate, 2);
+    m_overlapDurationFrames.store(
+        static_cast<ma_uint64>(
+            m_overlapDurationSeconds *
+            static_cast<double>(m_outputSampleRate)),
+        std::memory_order_relaxed);
     m_preDspTap.reset();
     m_postDspTap.reset();
     if (!rebuildGraph()) {
         if (error) {
             *error = "Unable to prepare the DSP graph for the source sample rate";
         }
-        ma_decoder_uninit(&m_decoder);
-        m_decoderInitialized = false;
+        clearAllLanes();
         return false;
     }
-    ma_uint64 totalFrames = 0;
-    ma_decoder_get_length_in_pcm_frames(&m_decoder, &totalFrames);
-    m_totalFrames.store(totalFrames, std::memory_order_release);
-    m_renderedFrame.store(0, std::memory_order_release);
     m_seekPending.store(false, std::memory_order_release);
     m_seekCompleted.store(false, std::memory_order_release);
-    m_decoderEof.store(false, std::memory_order_release);
-    m_decoderFailed.store(false, std::memory_order_release);
-    m_decoderReady.store(false, std::memory_order_release);
     m_underrunFrames.store(0, std::memory_order_release);
-    m_pcmRing.reset();
     m_preDspTap.reset();
     m_postDspTap.reset();
 
@@ -591,19 +855,21 @@ bool AudioEngine::loadAndPlay(const std::string& filePath, std::string* error) {
         std::unique_lock lock(m_decoderMutex);
         prebufferReady = m_decoderReadyCondition.wait_for(
             lock, std::chrono::seconds(2), [this] {
-                return m_decoderReady.load(std::memory_order_acquire) ||
-                       m_decoderFailed.load(std::memory_order_acquire);
+                return m_decoderLanes[0].ready.load(
+                           std::memory_order_acquire) ||
+                       m_decoderLanes[0].failed.load(
+                           std::memory_order_acquire);
             });
     }
-    if (!prebufferReady || m_decoderFailed.load(std::memory_order_acquire)) {
+    if (!prebufferReady ||
+        m_decoderLanes[0].failed.load(std::memory_order_acquire)) {
         if (error) {
             *error = !prebufferReady
                 ? "Timed out while preparing audio for playback"
                 : "Audio decoding failed while preparing playback";
         }
         stopDecoderThread();
-        ma_decoder_uninit(&m_decoder);
-        m_decoderInitialized = false;
+        clearAllLanes();
         return false;
     }
 
@@ -613,8 +879,7 @@ bool AudioEngine::loadAndPlay(const std::string& filePath, std::string* error) {
             *error = std::move(outputError);
         }
         stopDecoderThread();
-        ma_decoder_uninit(&m_decoder);
-        m_decoderInitialized = false;
+        clearAllLanes();
         return false;
     }
 
@@ -626,8 +891,7 @@ bool AudioEngine::loadAndPlay(const std::string& filePath, std::string* error) {
         m_decoderLoaded.store(false, std::memory_order_release);
         destroyPlaybackDevice();
         stopDecoderThread();
-        ma_decoder_uninit(&m_decoder);
-        m_decoderInitialized = false;
+        clearAllLanes();
         return false;
     }
     return true;
@@ -645,24 +909,37 @@ bool AudioEngine::isPlaying() const {
 
 bool AudioEngine::isPlaybackComplete() const noexcept
 {
+    const int active = m_activeLane.load(std::memory_order_acquire);
+    const auto& lane = m_decoderLanes[static_cast<std::size_t>(active)];
     return m_decoderLoaded.load(std::memory_order_acquire) &&
-           m_decoderEof.load(std::memory_order_acquire) &&
-           m_pcmRing.readableFrames() == 0;
+           !m_overlapActive.load(std::memory_order_acquire) &&
+           lane.eof.load(std::memory_order_acquire) &&
+           lane.pcmRing.readableFrames() == 0;
 }
 
 void AudioEngine::seekToSeconds(double seconds) {
-    if (!m_decoderLoaded.load() || !m_decoderInitialized) return;
+    if (!m_decoderLoaded.load()) return;
     const double safeSeconds = std::isfinite(seconds) ? std::max(0.0, seconds) : 0.0;
     const auto requestedFrame = static_cast<ma_uint64>(
         safeSeconds * static_cast<double>(m_outputSampleRate));
-    const auto targetFrame = std::min(requestedFrame, m_totalFrames.load(std::memory_order_acquire));
+    const int active = m_activeLane.load(std::memory_order_acquire);
+    const auto targetFrame = std::min(
+        requestedFrame,
+        m_decoderLanes[static_cast<std::size_t>(active)]
+            .totalFrames.load(std::memory_order_acquire));
 
     const bool wasPlaying = m_deviceInitialized && ma_device_is_started(&m_device);
     if (wasPlaying) {
         ma_device_stop(&m_device);
     }
 
-    m_decoderReady.store(false, std::memory_order_release);
+    cancelPreparedNext();
+    m_decoderLanes[static_cast<std::size_t>(active)]
+        .ready.store(false, std::memory_order_release);
+    m_decoderLanes[static_cast<std::size_t>(active)]
+        .failed.store(false, std::memory_order_release);
+    m_decoderLanes[static_cast<std::size_t>(active)]
+        .skipFadeIn.store(false, std::memory_order_release);
     m_seekCompleted.store(false, std::memory_order_release);
     m_pendingSeekFrame.store(targetFrame, std::memory_order_release);
     m_seekPending.store(true, std::memory_order_release);
@@ -673,30 +950,41 @@ void AudioEngine::seekToSeconds(double seconds) {
         m_seekCondition.wait_for(
             lock, std::chrono::seconds(1), [this] {
                 return m_seekCompleted.load(std::memory_order_acquire) ||
-                       m_decoderFailed.load(std::memory_order_acquire);
+                       m_decoderLanes[static_cast<std::size_t>(
+                           m_activeLane.load(std::memory_order_acquire))]
+                           .failed.load(std::memory_order_acquire);
             });
         m_decoderReadyCondition.wait_for(
             lock, std::chrono::seconds(1), [this] {
-                return m_decoderReady.load(std::memory_order_acquire) ||
-                       m_decoderFailed.load(std::memory_order_acquire);
+                const auto& lane = m_decoderLanes[static_cast<std::size_t>(
+                    m_activeLane.load(std::memory_order_acquire))];
+                return lane.ready.load(std::memory_order_acquire) ||
+                       lane.failed.load(std::memory_order_acquire);
             });
     }
 
     if (wasPlaying && m_decoderLoaded.load(std::memory_order_acquire) &&
-        !m_decoderFailed.load(std::memory_order_acquire)) {
+        !m_decoderLanes[static_cast<std::size_t>(active)]
+             .failed.load(std::memory_order_acquire)) {
         ma_device_start(&m_device);
     }
 }
 
 double AudioEngine::currentPositionSeconds() const {
     if (!m_decoderLoaded.load()) return 0.0;
-    return static_cast<double>(m_renderedFrame.load(std::memory_order_acquire)) /
+    const int active = m_activeLane.load(std::memory_order_acquire);
+    return static_cast<double>(
+               m_decoderLanes[static_cast<std::size_t>(active)]
+                   .renderedFrame.load(std::memory_order_acquire)) /
            static_cast<double>(m_outputSampleRate);
 }
 
 double AudioEngine::totalDurationSeconds() const {
     if (!m_decoderLoaded.load()) return 0.0;
-    return static_cast<double>(m_totalFrames.load(std::memory_order_acquire)) /
+    const int active = m_activeLane.load(std::memory_order_acquire);
+    return static_cast<double>(
+               m_decoderLanes[static_cast<std::size_t>(active)]
+                   .totalFrames.load(std::memory_order_acquire)) /
            static_cast<double>(m_outputSampleRate);
 }
 
