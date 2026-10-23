@@ -106,11 +106,11 @@ private:
     static constexpr int kPageSize = 256;
 };
 
-// 1. Apple Music 中央曲库页面
-class AppleLibraryPage : public QWidget {
+// 1. ISACMusic 中央曲库页面
+class ISACMusicLibraryPage : public QWidget {
     Q_OBJECT
 public:
-    explicit AppleLibraryPage(library::LibraryRepository* repository,
+    explicit ISACMusicLibraryPage(library::LibraryRepository* repository,
                               QWidget* parent = nullptr);
 
     void refreshTracks();

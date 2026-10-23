@@ -11,7 +11,8 @@ ISACPlayer is a Qt desktop music player for local libraries, playlists, and real
 - Linux desktop media integration through MPRIS, including track metadata, playback controls, and media keys
 - Audio output device selection from the DSP Router page
 - DSP graph built around a DAG engine and 64-bit planar `double` audio buses
-- Built-in Gain, Adder, ReplayGain, and Biquad Equalizer plugins
+- Independent master gain applied at the final soundcard output stage
+- Built-in Gain, Mono Gain, Mono Delay, Adder, ReplayGain, and Biquad Equalizer plugins
 - Plugin library and node inspector docks that can be shown, hidden, or rearranged
 - Playback settings for fade in/out, history retention, and displayed audio metadata
 - English application interface

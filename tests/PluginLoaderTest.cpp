@@ -113,6 +113,89 @@ int main(int argc, char** argv) {
                 assert(std::abs(output.channel(0)[frame] - 1.5) < 1.0e-12);
             }
         }
+
+        if (QString::fromLatin1(plugin->pluginId()) ==
+            QStringLiteral("isac.mono_gain")) {
+            assert(node->numInputs() == 1);
+            assert(node->numOutputs() == 1);
+            assert(node->setParameter("factor", 2.0));
+            node->process(input, output, input.numFrames());
+            for (int frame = 0; frame < output.numFrames(); ++frame) {
+                assert(std::abs(output.channel(0)[frame] - 1.5) < 1.0e-12);
+            }
+
+            assert(node->setParameter("factor", -1.0));
+            node->process(input, output, input.numFrames());
+            for (int frame = 0; frame < output.numFrames(); ++frame) {
+                assert(std::abs(output.channel(0)[frame] + 0.75) < 1.0e-12);
+            }
+
+            assert(!node->setParameter("missing", 0.0));
+        }
+
+        if (QString::fromLatin1(plugin->pluginId()) ==
+            QStringLiteral("isac.mono_delay")) {
+            assert(node->numInputs() == 1);
+            assert(node->numOutputs() == 1);
+
+            auto zeroDelayNode = plugin->createNode();
+            auto secondZeroDelayNode = plugin->createNode();
+            assert(zeroDelayNode && secondZeroDelayNode);
+            isac::AudioBuffer zeroInput(1, 80, 48000);
+            isac::AudioBuffer zeroOutput(1, 80, 48000);
+            isac::AudioBuffer secondZeroOutput(1, 80, 48000);
+            for (int frame = 0; frame < zeroInput.numFrames(); ++frame) {
+                zeroInput.channel(0)[frame] =
+                    std::sin(0.17 * static_cast<double>(frame));
+            }
+            zeroDelayNode->process(
+                zeroInput, zeroOutput, zeroInput.numFrames());
+            secondZeroDelayNode->process(
+                zeroInput, secondZeroOutput, zeroInput.numFrames());
+            for (int frame = 0; frame < zeroInput.numFrames(); ++frame) {
+                assert(std::abs(zeroOutput.channel(0)[frame] -
+                                zeroInput.channel(0)[frame]) < 1.0e-12);
+                assert(std::abs(zeroOutput.channel(0)[frame] -
+                                secondZeroOutput.channel(0)[frame]) <
+                       1.0e-12);
+            }
+
+            auto delayedNode = plugin->createNode();
+            assert(delayedNode);
+            assert(delayedNode->setParameter("delayMs", 1.0));
+            assert(!delayedNode->setParameter("missing", 0.0));
+
+            isac::AudioBuffer delayInput(1, 80, 48000);
+            isac::AudioBuffer delayOutput(1, 80, 48000);
+            delayInput.channel(0)[0] = 1.0;
+            delayedNode->process(
+                delayInput, delayOutput, delayInput.numFrames());
+            for (int frame = 0; frame < 48; ++frame) {
+                assert(std::abs(delayOutput.channel(0)[frame]) < 1.0e-12);
+            }
+            assert(std::abs(delayOutput.channel(0)[48] - 1.0) < 1.0e-12);
+
+            auto firstFractionalNode = plugin->createNode();
+            auto secondFractionalNode = plugin->createNode();
+            assert(firstFractionalNode && secondFractionalNode);
+            assert(firstFractionalNode->setParameter("delayMs", 0.1));
+            assert(secondFractionalNode->setParameter("delayMs", 0.1));
+            isac::AudioBuffer fractionalInput(1, 160, 48000);
+            isac::AudioBuffer firstFractionalOutput(1, 160, 48000);
+            isac::AudioBuffer secondFractionalOutput(1, 160, 48000);
+            fractionalInput.channel(0)[0] = 1.0;
+            firstFractionalNode->process(
+                fractionalInput, firstFractionalOutput,
+                fractionalInput.numFrames());
+            secondFractionalNode->process(
+                fractionalInput, secondFractionalOutput,
+                fractionalInput.numFrames());
+            for (int frame = 0; frame < fractionalInput.numFrames(); ++frame) {
+                assert(std::abs(firstFractionalOutput.channel(0)[frame] -
+                                secondFractionalOutput.channel(0)[frame]) <
+                       1.0e-12);
+            }
+        }
     }
 
     return 0;

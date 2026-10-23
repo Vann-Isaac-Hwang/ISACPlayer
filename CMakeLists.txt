@@ -54,10 +54,10 @@ set(PROJECT_SOURCES
     src/library/LibraryScanner.h
     src/library/LibraryScanner.cpp
     src/engine/plugin/IAudioPlugin.h
-    src/ui/apple_view/AppleMusicView.h
-    src/ui/apple_view/AppleMusicView.cpp
-    src/ui/apple_view/PlaybackQueueView.h
-    src/ui/apple_view/PlaybackQueueView.cpp
+    src/ui/isac_music/ISACMusicView.h
+    src/ui/isac_music/ISACMusicView.cpp
+    src/ui/isac_music/PlaybackQueueView.h
+    src/ui/isac_music/PlaybackQueueView.cpp
     src/ui/widgets/HoverIconButton.h
     src/ui/widgets/HoverIconButton.cpp
     src/ui/widgets/HoverSlider.h
@@ -105,6 +105,8 @@ endif()
 
 add_subdirectory(plugins/replaygain)
 add_subdirectory(plugins/gain)
+add_subdirectory(plugins/mono_gain)
+add_subdirectory(plugins/mono_delay)
 add_subdirectory(plugins/adder)
 add_subdirectory(plugins/biquad)
 
@@ -184,6 +186,8 @@ if(BUILD_TESTING)
         COMMAND isac_plugin_loader_tests
             $<TARGET_FILE:isac_replaygain>
             $<TARGET_FILE:isac_gain>
+            $<TARGET_FILE:isac_mono_gain>
+            $<TARGET_FILE:isac_mono_delay>
             $<TARGET_FILE:isac_adder>
             $<TARGET_FILE:isac_biquad>
     )

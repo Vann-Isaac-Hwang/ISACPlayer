@@ -149,6 +149,23 @@ void testNodeRemoval()
     expect(!engine.removeNode(sinkId), "sink endpoint must not be removable");
 }
 
+void testDefaultGraphUsesDirectOutput()
+{
+    isac::AudioEngine engine;
+    expect(engine.nodes().size() == 2,
+           "default engine graph must contain only source and sink nodes");
+    expect(engine.connections().size() == 2,
+           "default engine graph must connect both source channels directly");
+    expect(std::all_of(
+               engine.connections().cbegin(), engine.connections().cend(),
+               [&engine](const isac::Connection& connection) {
+                   return connection.srcNode == engine.sourceNodeId() &&
+                          connection.dstNode == engine.sinkNodeId() &&
+                          connection.srcPort == connection.dstPort;
+               }),
+           "default graph must connect source channels directly to the sink");
+}
+
 void testOutputDeviceEnumeration()
 {
     isac::AudioEngine engine;
@@ -165,6 +182,29 @@ void testOutputDeviceEnumeration()
            "selecting system default before playback must succeed");
     expect(!engine.selectedOutputDevice().has_value(),
            "system default selection must clear an explicit device id");
+}
+
+void testMasterGainControl()
+{
+    isac::AudioEngine engine;
+    expectNear(engine.masterGain(), 1.0, 0.0,
+               "master gain must default to unity");
+
+    engine.setMasterGain(1.75);
+    expectNear(engine.masterGain(), 1.75, 0.0,
+               "master gain must accept a valid factor");
+
+    engine.setMasterGain(-2.0);
+    expectNear(engine.masterGain(), 0.0, 0.0,
+               "master gain must clamp negative factors to silence");
+
+    engine.setMasterGain(9.0);
+    expectNear(engine.masterGain(), 4.0, 0.0,
+               "master gain must clamp to the engine maximum");
+
+    engine.setMasterGain(std::numeric_limits<double>::quiet_NaN());
+    expectNear(engine.masterGain(), 4.0, 0.0,
+               "invalid master gain must leave the previous value unchanged");
 }
 
 void testNativeRateGraphBuffers()
@@ -271,7 +311,9 @@ int main()
     testBiquadPeak();
     testAtomicParameterUpdate();
     testNodeRemoval();
+    testDefaultGraphUsesDirectOutput();
     testOutputDeviceEnumeration();
+    testMasterGainControl();
     testNativeRateGraphBuffers();
     testPlaybackFailureReportsReason();
     testSpscAudioRingBuffer();

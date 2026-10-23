@@ -289,6 +289,8 @@ void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
     const ma_uint64 fadeFrames =
         m_fadeDurationFrames.load(std::memory_order_relaxed);
     const ma_uint64 totalFrames = m_totalFrames.load(std::memory_order_relaxed);
+    const double masterGain =
+        m_masterGain.load(std::memory_order_relaxed);
 
     while (framesRemaining > 0) {
         uint32_t chunkFrames = std::min<uint32_t>(framesRemaining, MAX_ENGINE_BLOCK_FRAMES);
@@ -350,7 +352,8 @@ void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
             for (uint32_t ch = 0; ch < channels; ++ch) {
                 currentOutPtr[i * channels + ch] =
                     ch < 2
-                        ? static_cast<float>(finalBus.channel(ch)[i] * gain)
+                        ? static_cast<float>(
+                              finalBus.channel(ch)[i] * masterGain * gain)
                         : 0.0f;
             }
         }
@@ -390,6 +393,20 @@ void AudioEngine::setFadeDurationSeconds(double seconds) noexcept
         static_cast<ma_uint64>(
             clampedSeconds * static_cast<double>(m_outputSampleRate)),
         std::memory_order_relaxed);
+}
+
+void AudioEngine::setMasterGain(double factor) noexcept
+{
+    if (!std::isfinite(factor)) {
+        return;
+    }
+    m_masterGain.store(
+        std::clamp(factor, 0.0, 4.0), std::memory_order_relaxed);
+}
+
+double AudioEngine::masterGain() const noexcept
+{
+    return m_masterGain.load(std::memory_order_relaxed);
 }
 
 void AudioEngine::decoderLoop()

@@ -1,4 +1,4 @@
-#include "AppleMusicView.h"
+#include "ISACMusicView.h"
 #include "ui/widgets/HoverIconButton.h"
 #include "ui/widgets/HoverSlider.h"
 #include <QVBoxLayout>
@@ -657,8 +657,8 @@ qint64 LibraryGroupTableModel::groupCount() const {
     return m_groupCount;
 }
 
-// ==================== AppleLibraryPage ====================
-AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
+// ==================== ISACMusicLibraryPage ====================
+ISACMusicLibraryPage::ISACMusicLibraryPage(library::LibraryRepository* repository,
                                    QWidget* parent)
     : QWidget(parent)
     , m_repository(repository) {
@@ -708,7 +708,7 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
     topBar->addWidget(m_searchInput);
     topBar->addWidget(m_searchToggleButton);
 
-    // 2. 歌曲列表表格 (Apple Music 极简无竖线风格)
+    // 2. 歌曲列表表格 (ISACMusic 极简无竖线风格)
     const QPixmap defaultRowCover = library::MetadataReader::generateDefaultCover("ISAC", 80);
     m_table = new ResponsiveTrackTableView(this);
     m_table->setHorizontalHeader(new BalancedTrackHeader(m_table));
@@ -1179,56 +1179,56 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
     });
 }
 
-void AppleLibraryPage::toggleSearchInput()
+void ISACMusicLibraryPage::toggleSearchInput()
 {
     m_searchToggleButton->setChecked(!m_searchToggleButton->isChecked());
 }
 
-void AppleLibraryPage::refreshTracks() {
+void ISACMusicLibraryPage::refreshTracks() {
     m_tableModel->refresh();
     m_artistModel->refresh();
     m_albumModel->refresh();
     updateResultCount();
 }
 
-void AppleLibraryPage::refreshPlaybackHistory() {
+void ISACMusicLibraryPage::refreshPlaybackHistory() {
     if (m_libraryView == 3) {
         m_tableModel->refresh();
         updateResultCount();
     }
 }
 
-void AppleLibraryPage::setScanStatus(const QString& status) {
+void ISACMusicLibraryPage::setScanStatus(const QString& status) {
     m_scanStatus->setText(status);
 }
 
-void AppleLibraryPage::showArtist(const QString& artist) {
+void ISACMusicLibraryPage::showArtist(const QString& artist) {
     m_libraryTabs->setCurrentIndex(1);
     showGroupTracks({artist, {}, 0});
 }
 
-void AppleLibraryPage::showAlbum(const QString& album) {
+void ISACMusicLibraryPage::showAlbum(const QString& album) {
     m_libraryTabs->setCurrentIndex(2);
     showGroupTracks({album, {}, 0});
 }
 
-std::optional<library::TrackInfo> AppleLibraryPage::trackAtRow(int row) const {
+std::optional<library::TrackInfo> ISACMusicLibraryPage::trackAtRow(int row) const {
     return m_tableModel->trackAtRow(row);
 }
 
-int AppleLibraryPage::trackCount() const {
+int ISACMusicLibraryPage::trackCount() const {
     return m_tableModel->rowCount();
 }
 
-std::vector<qint64> AppleLibraryPage::trackIds() const {
+std::vector<qint64> ISACMusicLibraryPage::trackIds() const {
     return m_tableModel->trackIds();
 }
 
-int AppleLibraryPage::rowForTrackId(qint64 id) const {
+int ISACMusicLibraryPage::rowForTrackId(qint64 id) const {
     return m_tableModel->rowForTrackId(id);
 }
 
-void AppleLibraryPage::showLibraryView(int view) {
+void ISACMusicLibraryPage::showLibraryView(int view) {
     m_libraryView = std::clamp(view, 0, 3);
     m_showingGroupTracks = false;
     m_groupBackButton->hide();
@@ -1260,7 +1260,7 @@ void AppleLibraryPage::showLibraryView(int view) {
     updateResultCount();
 }
 
-void AppleLibraryPage::openGroupAtRow(int row) {
+void ISACMusicLibraryPage::openGroupAtRow(int row) {
     const auto* model = m_libraryView == 1 ? m_artistModel : m_albumModel;
     const auto group = model->groupAtRow(row);
     if (group) {
@@ -1268,7 +1268,7 @@ void AppleLibraryPage::openGroupAtRow(int row) {
     }
 }
 
-void AppleLibraryPage::showGroupTracks(const library::LibraryGroup& group) {
+void ISACMusicLibraryPage::showGroupTracks(const library::LibraryGroup& group) {
     m_showingGroupTracks = true;
     const QString artist = m_libraryView == 1 ? group.name : QString{};
     const QString album = m_libraryView == 2 ? group.name : QString{};
@@ -1286,7 +1286,7 @@ void AppleLibraryPage::showGroupTracks(const library::LibraryGroup& group) {
     updateResultCount();
 }
 
-void AppleLibraryPage::updateResultCount() {
+void ISACMusicLibraryPage::updateResultCount() {
     if (m_showingGroupTracks || m_libraryView == 0) {
         m_resultCount->setText(
             QStringLiteral("%1 tracks").arg(m_tableModel->trackCount()));

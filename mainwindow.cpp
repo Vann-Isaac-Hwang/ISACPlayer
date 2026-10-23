@@ -79,10 +79,7 @@ MainWindow::MainWindow(QWidget *parent)
     , ui(new Ui::MainWindow)
     , m_pluginManager(QCoreApplication::applicationDirPath() + "/plugins")
     , m_libraryRepository(libraryDatabasePath())
-    , m_audioEngine(
-          m_pluginManager.createNode("isac.gain"),
-          m_pluginManager.createNode("isac.add"),
-          m_pluginManager.createNode("isac.biquad"))
+    , m_audioEngine()
 {
     ui->setupUi(this);
     QSettings settings;
@@ -90,7 +87,7 @@ MainWindow::MainWindow(QWidget *parent)
         settings.value(QStringLiteral("playback/fadeEnabled"), false).toBool());
     m_audioEngine.setFadeDurationSeconds(
         settings.value(QStringLiteral("playback/fadeDurationSeconds"), 2.0).toDouble());
-    setWindowTitle("ISACPlayer — Apple Music & DSP Patchbay Workstation");
+    setWindowTitle(QStringLiteral("ISACPlayer"));
     resize(1180, 760);
 
     // 全局暗黑主题背景
@@ -567,8 +564,8 @@ MainWindow::MainWindow(QWidget *parent)
     // ==================== 2. 中央多页面切换容器 (QStackedWidget) ====================
     m_stackedWidget = new QStackedWidget(this);
 
-    // 页面 0：Apple Music 曲库界面
-    m_libraryPage = new isac::ui::AppleLibraryPage(&m_libraryRepository, this);
+    // 页面 0：ISACMusic 曲库界面
+    m_libraryPage = new isac::ui::ISACMusicLibraryPage(&m_libraryRepository, this);
     m_libraryPage->refreshTracks();
     m_libraryScanner = new isac::library::LibraryScanner(
         libraryDatabasePath(), this);
@@ -1110,9 +1107,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_mprisController, &isac::platform::MprisController::volumeRequested,
             this, [this](double volume) {
                 m_nowPlayingHeader->setVolume(volume);
-                if (const auto gain = m_audioEngine.gainNode()) {
-                    gain->setParameter("factor", static_cast<float>(volume));
-                }
+                m_audioEngine.setMasterGain(volume);
             });
     connect(m_mprisController,
             &isac::platform::MprisController::playbackModeRequested,
@@ -1123,10 +1118,10 @@ MainWindow::MainWindow(QWidget *parent)
 #endif
 
     // 双击表格歌曲播放
-    connect(m_libraryPage, &isac::ui::AppleLibraryPage::trackDoubleClicked,
+    connect(m_libraryPage, &isac::ui::ISACMusicLibraryPage::trackDoubleClicked,
             this, &MainWindow::playTrackById);
     connect(m_libraryPage,
-            &isac::ui::AppleLibraryPage::trackPlayNextRequested,
+            &isac::ui::ISACMusicLibraryPage::trackPlayNextRequested,
             this, &MainWindow::queueTrackNext);
 
     connect(m_nowPlayingHeader,
@@ -1277,9 +1272,7 @@ MainWindow::MainWindow(QWidget *parent)
 #endif
     });
     connect(m_nowPlayingHeader, &isac::ui::NowPlayingHeader::volumeChanged, this, [this](float factor) {
-        if (const auto gain = m_audioEngine.gainNode()) {
-            gain->setParameter("factor", factor);
-        }
+        m_audioEngine.setMasterGain(factor);
 #ifdef ISAC_HAS_MPRIS
         m_mprisController->setVolume(std::min(1.0, static_cast<double>(factor)));
 #endif
@@ -1380,6 +1373,16 @@ MainWindow::MainWindow(QWidget *parent)
             if (pluginId.isEmpty()) {
                 continue;
             }
+            if (pluginId == QStringLiteral("isac.gain") &&
+                !roles.contains(QStringLiteral("gain"))) {
+                roles.insert(QStringLiteral("gain"), id);
+            } else if (pluginId == QStringLiteral("isac.add") &&
+                       !roles.contains(QStringLiteral("adder"))) {
+                roles.insert(QStringLiteral("adder"), id);
+            } else if (pluginId == QStringLiteral("isac.biquad") &&
+                       !roles.contains(QStringLiteral("eq"))) {
+                roles.insert(QStringLiteral("eq"), id);
+            }
             const int instance = instanceCounts.value(pluginId, 0);
             instanceCounts.insert(pluginId, instance + 1);
             roles.insert(QStringLiteral("%1#%2").arg(pluginId).arg(instance),
@@ -1424,6 +1427,34 @@ MainWindow::MainWindow(QWidget *parent)
                 const isac::NodeId id = m_audioEngine.addNode(node);
                 createdNodes.push_back(id);
                 roleNodes.insert(nodeSpec.role, id);
+            }
+        } else {
+            const QHash<QString, QString> legacyPluginIds{
+                {QStringLiteral("gain"), QStringLiteral("isac.gain")},
+                {QStringLiteral("adder"), QStringLiteral("isac.add")},
+                {QStringLiteral("eq"), QStringLiteral("isac.biquad")}
+            };
+            QSet<QString> requiredRoles;
+            for (const auto& connection : preset.connections) {
+                requiredRoles.insert(connection.sourceRole);
+                requiredRoles.insert(connection.destinationRole);
+            }
+            for (auto it = legacyPluginIds.cbegin();
+                 it != legacyPluginIds.cend(); ++it) {
+                if (!requiredRoles.contains(it.key()) ||
+                    roleNodes.contains(it.key())) {
+                    continue;
+                }
+                const auto node = m_pluginManager.createNode(it.value());
+                if (!node) {
+                    lblPatchStatus->setText(
+                        QStringLiteral("Preset requires an unavailable module: %1")
+                            .arg(it.value()));
+                    return;
+                }
+                const isac::NodeId id = m_audioEngine.addNode(node);
+                createdNodes.push_back(id);
+                roleNodes.insert(it.key(), id);
             }
         }
 

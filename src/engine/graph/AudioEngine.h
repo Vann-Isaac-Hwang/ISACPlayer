@@ -77,6 +77,8 @@ public:
     std::optional<AudioOutputDevice> selectedOutputDevice() const;
     void setFadeEnabled(bool enabled) noexcept;
     void setFadeDurationSeconds(double seconds) noexcept;
+    void setMasterGain(double factor) noexcept;
+    double masterGain() const noexcept;
     void setPlaying(bool play);
     bool isPlaying() const;
     bool isPlaybackComplete() const noexcept;
@@ -169,6 +171,10 @@ private:
     std::atomic<ma_uint64> m_underrunFrames{0};
     std::atomic<bool> m_fadeEnabled{false};
     std::atomic<ma_uint64> m_fadeDurationFrames{96000};
+    std::atomic<double> m_masterGain{1.0};
 };
+
+static_assert(std::atomic<double>::is_always_lock_free,
+              "Master gain must use a lock-free atomic");
 
 } // namespace isac

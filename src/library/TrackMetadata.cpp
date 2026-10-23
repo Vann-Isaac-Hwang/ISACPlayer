@@ -131,7 +131,7 @@ QPixmap MetadataReader::generateDefaultCover(const QString& title, int size) {
     QPainter p(&pix);
     p.setRenderHint(QPainter::Antialiasing);
 
-    // 根据标题哈希生成独特的 Apple Music 风格流体渐变色
+    // 根据标题哈希生成独特的 ISACMusic 风格流体渐变色
     uint hash = qHash(title);
     QColor c1 = QColor::fromHsl((hash % 360), 175, 110);
     QColor c2 = QColor::fromHsl(((hash + 70) % 360), 195, 65);

@@ -8,6 +8,13 @@ plugins/
   libReplayGainPlugin.so
 ```
 
+The in-tree plugins include Stereo Gain, Mono Gain, Mono Delay, Adder,
+ReplayGain, and Biquad Equalizer. Mono Gain is a single-input, single-output
+linear gain component; it also accepts negative factors for phase inversion. It
+does not perform channel mixing, delay, filtering, or spatial processing. Mono
+Delay is a single-input, single-output delay with a 100 ms maximum and a
+preallocated buffer sized for the engine's 768 kHz maximum sample rate.
+
 The plugin SDK is located at `plugin_sdk/include/isac/plugin/`. DSP plugins
 only need to depend on `isac/plugin/IAudioPlugin.h`. The Qt discovery boundary
 also includes `isac/plugin/QtAudioPlugin.h`; plugins should export themselves

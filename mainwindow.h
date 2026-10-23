@@ -7,8 +7,8 @@
 #include <array>
 #include <memory>
 #include "engine/graph/AudioEngine.h"
-#include "ui/apple_view/AppleMusicView.h"
-#include "ui/apple_view/PlaybackQueueView.h"
+#include "ui/isac_music/ISACMusicView.h"
+#include "ui/isac_music/PlaybackQueueView.h"
 #include "ui/patchbay/PatchbayView.h"
 #include "ui/plugins/PluginManager.h"
 #include "library/LibraryScanner.h"
@@ -49,7 +49,7 @@ private:
 
     QStackedWidget* m_stackedWidget = nullptr;
     QPushButton* m_navLibraryButton = nullptr;
-    isac::ui::AppleLibraryPage* m_libraryPage = nullptr;
+    isac::ui::ISACMusicLibraryPage* m_libraryPage = nullptr;
     isac::ui::PlaylistPage* m_playlistPage = nullptr;
     isac::ui::NowPlayingHeader* m_nowPlayingHeader = nullptr;
     isac::ui::PlaybackQueueView* m_playbackQueueView = nullptr;
