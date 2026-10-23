@@ -1,247 +1,86 @@
 # ISACPlayer
 
-ISACPlayer 是一个面向本地音乐播放与实时音频处理的 Qt 工程，结合了 Apple Music 风格的曲库界面和 Coppwr 风格的 DSP 节点连线工作区。
+ISACPlayer is a Qt desktop music player for local libraries, playlists, and real-time DSP routing. It combines a compact music-library interface with a visual node-based audio graph and loadable DSP plugins.
 
-当前工程已经具备：
+## Features
 
-- 基于 DAG 的实时音频处理引擎
-- 64 位 `double` planar 音频总线
-- Qt Widgets 曲库与 DSP 节点实验室
-- TagLib 音乐标签和封面扫描
-- 可添加、连接、配置和移除多个 DSP 节点
-- 基于 `QPluginLoader` 的独立动态插件加载
-- Gain、Adder、ReplayGain、Biquad Equalizer 插件
-- 插件 Inspector 控件与实时参数更新
-- SQLite 曲库 Repository，支持稳定曲目 ID、搜索排序、扫描目录记录和歌单数据
-- 稳定曲目 ID 播放队列，支持顺序、随机、单曲循环和列表循环
-- 曲库可搜索歌曲/艺人/专辑，并按加入时间、标题、艺人或专辑排序
-- 支持歌单创建、重命名、删除、添加/移除曲目、拖动排序及按歌单顺序播放
-- 持久化当前播放队列、游标和播放模式；重启后可从上次曲目继续
-- Linux/KDE 下通过 MPRIS 暴露系统媒体控制、曲目信息和播放模式
-- DSP 节点实验室支持选择音频输出设备，并记住上次选择；DSP 按源采样率运行，立体声输出
-- 播放设置支持开启淡入淡出并配置时长，设置会跨重启保存
-- 播放设置可分别控制当前曲目的格式、采样率、位深、声道数和比特率显示
+- SQLite-backed music library with background TagLib scanning, paginated queries, search, and sorting
+- Track, artist, album, and playback-history views, including album artwork
+- User-managed playlists with track addition, removal, drag reordering, and playlist playback
+- Persistent playback queue with sequential, shuffle, repeat-one, and repeat-all modes
+- Linux desktop media integration through MPRIS, including track metadata, playback controls, and media keys
+- Audio output device selection from the DSP Router page
+- DSP graph built around a DAG engine and 64-bit planar `double` audio buses
+- Built-in Gain, Adder, ReplayGain, and Biquad Equalizer plugins
+- Plugin library and node inspector docks that can be shown, hidden, or rearranged
+- Playback settings for fade in/out, history retention, and displayed audio metadata
+- English application interface
 
-## 目录结构
+Audio is decoded and processed at the source sample rate where supported by the selected output path. The engine requests the configured native rate from the audio backend; shared desktop audio services or hardware may resample it. Current device output is stereo. Multi-device aggregation and channel mapping are not implemented.
 
-```text
-ISACPlayer/
-├── CMakeLists.txt              # 主工程与测试配置
-├── main.cpp                    # 程序入口
-├── mainwindow.cpp/.h           # 主窗口与页面导航
-├── src/
-│   ├── engine/graph/           # DAG 图引擎、音频缓冲区与图编译
-│   ├── library/                # 音乐文件和 TagLib 元数据扫描
-│   └── ui/                     # 曲库、Patchbay、插件库和 Inspector
-├── plugin_sdk/
-│   ├── include/isac/plugin/    # 外部 DSP 插件 SDK
-│   └── CMakeLists.txt
-├── plugins/
-│   ├── gain/                   # 增益插件
-│   ├── adder/                  # 双输入加法插件
-│   ├── replaygain/             # ReplayGain 插件
-│   ├── biquad/                 # Biquad 参数均衡器插件
-│   └── README.md               # 插件开发约定
-├── tests/                      # 引擎和动态插件测试
-├── doc/
-│   ├── MyDesign.md             # 设计规范
-│   └── 交接文档.md              # 工程架构与后续计划
-└── third_party/miniaudio/      # 音频后端依赖
+## Requirements
+
+- CMake 3.16 or newer
+- A C++20 compiler
+- Qt 5 or Qt 6 with Widgets and SQL modules
+- Qt DBus on Linux
+- TagLib and FFTW3 development packages discoverable through `pkg-config`
+
+Check that the required packages are visible to `pkg-config`:
+
+```sh
+pkg-config --modversion taglib fftw3
 ```
 
-## 环境要求
+## Build
 
-- CMake 3.16 或更高版本
-- C++20 编译器
-- Qt 5 或 Qt 6，包含 `Core` 和 `Widgets`
-- TagLib，以及可被 `pkg-config` 找到的 `taglib` 模块
-- Linux、macOS 或 Windows
+Configure and build from the project root:
 
-Linux 下可以先安装对应发行版的 Qt、TagLib、CMake 和编译器开发包。工程通过 `pkg-config` 查找 TagLib：
-
-```bash
-pkg-config --modversion taglib
-```
-
-## 构建
-
-在工程根目录执行：
-
-```bash
+```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j2
 ```
 
-构建完成后，主程序通常位于：
+The application is written to `build/ISACPlayer`. Runtime DSP plugins are built under `build/plugins/`.
 
-```text
-build/ISACPlayer
-```
+## Run
 
-插件会自动生成到：
-
-```text
-build/plugins/
-├── libisac_gain.so
-├── libisac_adder.so
-├── libisac_replaygain.so
-└── libisac_biquad.so
-```
-
-在 macOS 或 Windows 上，插件文件扩展名会分别使用平台对应的动态库格式。
-
-## 运行
-
-程序启动时会扫描可执行文件旁边的 `plugins/` 目录：
-
-```text
-运行目录/
-├── ISACPlayer
-└── plugins/
-    ├── libisac_gain.so
-    ├── libisac_adder.so
-    ├── libisac_replaygain.so
-    └── libisac_biquad.so
-```
-
-直接运行构建目录中的程序：
-
-```bash
+```sh
 ./build/ISACPlayer
 ```
 
-如果使用 Qt Creator，请确保运行配置的工作目录或部署目录中存在 `plugins/` 子目录。开发构建通常已经由 CMake 将插件输出到 `build/plugins/`。
+The application searches for dynamic plugins in a `plugins/` directory beside the executable. Keep the plugin libraries in that directory when deploying the application.
 
-## 基本使用
+## Usage
 
-1. 启动 ISACPlayer。
-2. 在音乐资料库中添加或扫描音乐目录。
-3. 切换到“DSP 节点实验室”。
-4. 从右侧“DSP 模块库”选择插件并实例化到画布。
-5. 拖动节点端口建立音频连接。
-6. 选中节点，在 Inspector 中调整插件参数。
-7. 可在画布中移除用户创建的节点及其连接。
+### Library
 
-DSP 模块可以重复实例化。插件是否显示配置面板取决于插件是否实现了可选的 Qt Inspector 接口。
+Add music files or folders and scan them from **Settings > Music Library**. The library presents tracks, artists, albums, and playback history. Use the search control to filter the current view; click track-list headers to sort.
 
-DSP 节点实验室顶部可选择系统默认或已枚举的音频输出设备。设备选择会应用于后续播放，也可在播放过程中切换。解码器按源文件采样率读取，DSP 总线和输出设备配置使用该采样率，支持范围上限为 768 kHz；这表示向 miniaudio/系统后端请求原生采样率，不保证共享模式下硬件或 PipeWire 不进行重采样。实际硬件协商结果取决于输出设备和系统音频服务。输出目前为立体声，多声卡聚合和多声道映射尚未实现。
-主窗口左下角的“设置”可开启淡入淡出并设置淡入、淡出时长。效果在实时输出回调中逐帧应用，默认关闭。
-同一设置窗口也可分别控制底部播放条显示哪些音频属性；属性在当前曲目加载时按需读取，不需要重新扫描整个音乐库。源文件未提供位深信息时，该项会自动省略。
+### Playlists
 
-## 音乐资料库
+Create, rename, or delete playlists from the playlist list's context menu. Add tracks from the library context menu or from the playlist tools. Playlist tracks can be reordered by dragging rows.
 
-曲库使用 SQLite 持久化，数据库位于 Qt `AppDataLocation` 下的
-`library.sqlite`。扫描任务在后台线程中读取 TagLib 元数据，并由该线程独占自己的
-SQLite 连接；目录按文件逐个遍历，未变化的文件根据大小和修改时间跳过，数据库写入按
-64 首一批提交。曲目表格通过分页查询读取数据，不会将整个曲库常驻内存。
-艺人和专辑视图使用 SQLite 聚合分页；歌单曲目可在未搜索时拖动调整顺序。
-艺人标签以 `/` 作为分隔符，分隔后的项目会去除首尾空白、忽略空项，并按大小写不敏感方式去重。因此含字面斜线的艺人名称目前无法无歧义表达，扫描时会按多个艺人处理。空艺人和空专辑分别归为 `Unknown Artist` 与 `Unknown Album`。
-播放队列顺序、当前曲目游标和播放模式会被保存，重启后恢复队列但不会自动开始播放。
+### DSP Router
 
-Linux 桌面通过 D-Bus session bus 提供 `org.mpris.MediaPlayer2.isacplayer` 服务，
-兼容 KDE Plasma 的媒体控件和键盘媒体键。服务发布曲名、艺人、专辑、播放位置、
-循环/随机模式，并响应播放、暂停、上一首、下一首和 seek 指令；不需要配置额外快捷键。
+Choose an output device and routing preset from the top control bar. Instantiate DSP modules from the module library, connect node ports on the canvas, and select a node to edit its parameters in the inspector. Custom presets are stored in the application configuration directory under `dsp-presets/`.
 
-## 插件架构
+### KDE and MPRIS
 
-插件由两部分组成：
+On Linux, ISACPlayer exports an MPRIS media-player service over the session D-Bus. KDE Plasma media controls and keyboard media keys can control playback and display the current track metadata. When a KDE global menu registrar is available, application menus are exported to the desktop; otherwise, the menus remain in the application window.
 
-1. `IAudioPlugin`：纯 C++ 插件工厂和元数据接口。
-2. `IAudioPluginUi`：可选的 Qt 配置面板接口。
+## DSP Plugin Development
 
-SDK 头文件位于：
+The public plugin SDK is in `plugin_sdk/include/isac/plugin/`. Plugins implement the C++ audio-plugin interface and may optionally provide Qt controls. See [plugins/README.md](plugins/README.md) for the plugin ABI, metadata interfaces, and a minimal CMake example.
 
-```text
-plugin_sdk/include/isac/plugin/
-```
+Each plugin factory must create an independent node instance. Audio-node `process()` methods run on the real-time audio thread and must not allocate memory, acquire blocking locks, perform I/O, or access Qt UI objects. Parameter changes should be validated and transferred to the audio thread using lock-free state.
 
-插件使用 Qt 动态发现接口，并通过 `Q_PLUGIN_METADATA` 与 `Q_INTERFACES` 导出。宿主程序使用 `QPluginLoader` 扫描运行目录下的动态库，读取插件元数据并创建节点。
+## Tests
 
-一个插件的基本 CMake 结构如下：
+Run the test suite after building:
 
-```cmake
-add_library(my_plugin MODULE
-    MyPlugin.cpp
-    MyPlugin.h
-    MyNode.h
-)
-
-target_link_libraries(my_plugin PRIVATE
-    isac_plugin_sdk
-    Qt${QT_VERSION_MAJOR}::Widgets
-)
-
-set_target_properties(my_plugin PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins"
-)
-```
-
-更完整的插件约定见 [plugins/README.md](plugins/README.md)。
-
-## 实时 DSP 约束
-
-所有插件节点的 `process()` 都可能运行在实时音频线程中，必须遵守以下规则：
-
-- 音频总线使用 `double` 样本和 planar channel layout。
-- 不在 `process()` 中进行 `new`、`delete`、`malloc` 或其他动态分配。
-- 不加互斥锁，不等待条件变量，不执行文件或网络 I/O。
-- 不访问 Qt UI、Qt 信号槽或其他非实时对象。
-- UI 参数通过原子变量或其他无锁控制方式传递到音频线程。
-- 参数更新需要对异常值进行限制，避免产生 `NaN` 或无穷大。
-- 插件创建的节点必须是独立实例，不能在不同画布节点之间共享处理状态。
-
-插件动态库由宿主保持加载，确保节点销毁前插件代码和虚函数表仍然有效。
-
-## 测试
-
-运行全部测试：
-
-```bash
+```sh
 ctest --test-dir build --output-on-failure
 ```
 
-当前测试覆盖：
-
-- 64 位 planar 音频缓冲区
-- 44.1、96、192 和 768 kHz DSP 图总线采样率传播
-- Biquad bypass、参数更新和有限值输出
-- ReplayGain 64 帧 lookahead 跨不均匀音频 block 的延迟连续性
-- DAG 节点添加、连接和移除
-- 所有内置动态插件的 `QPluginLoader` 加载
-- 插件 API 版本和参数 schema 元数据校验
-- 插件节点的基本音频处理
-- SQLite 曲目持久化、分页查询、艺人/专辑聚合、搜索排序和歌单顺序调整
-- 歌单搜索、分页查询及稳定播放顺序
-- 播放队列顺序、游标和播放模式的保存与恢复
-- 后台目录扫描、未变化文件跳过及已修改文件更新
-- 播放队列的顺序、随机、单曲循环和列表循环边界
-
-也可以单独执行：
-
-```bash
-./build/isac_engine_tests
-./build/isac_plugin_loader_tests \
-    ./build/plugins/libisac_replaygain.so \
-    ./build/plugins/libisac_gain.so \
-    ./build/plugins/libisac_adder.so \
-    ./build/plugins/libisac_biquad.so
-```
-
-## 当前状态与后续方向
-
-当前工程重点已经从内置 DSP 实现迁移到独立插件架构。后续工作包括：
-
-- 验证 KDE Plasma 不同版本的媒体控件行为并补充桌面端集成测试
-- 将旧内置 DSP 测试完全迁移到动态插件测试
-- 继续优化超大音乐库扫描的内存占用
-- 为 Biquad 等插件补充参数 schema，并为通用 Inspector 补充 UI 自动化测试
-- 为主程序插件发现器增加不兼容 API 插件的端到端拒绝加载测试
-- 完善插件安装、部署和跨编译器 ABI 兼容检查
-- 在 ABI 稳定后评估跨编译器环境的 C ABI 工厂层
-
-设计原则和完整交接信息请参阅：
-
-- [doc/MyDesign.md](doc/MyDesign.md)
-- [doc/交接文档.md](doc/交接文档.md)
-- [plugins/README.md](plugins/README.md)
+The tests cover the audio graph and DSP nodes, dynamic plugin loading, patchbay interactions, and library storage, scanning, search, and playlist behavior.
