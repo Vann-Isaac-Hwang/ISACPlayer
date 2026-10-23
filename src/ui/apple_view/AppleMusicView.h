@@ -126,6 +126,7 @@ public:
 
 signals:
     void trackDoubleClicked(qint64 trackId);
+    void trackPlayNextRequested(qint64 trackId);
 
 private:
     library::LibraryRepository* m_repository = nullptr;
@@ -214,6 +215,8 @@ public:
     void setPlaybackMode(int mode);
     void setVolumeMaximum(double maximum);
     void setVolume(double volume);
+    void setWaterfallFftSize(int fftSize);
+    int waterfallFftSize() const noexcept;
     void updateProgress(double currentSec, double totalSec);
     void updateVisualization(const double* preLeft, const double* preRight,
                              const double* postLeft, const double* postRight,

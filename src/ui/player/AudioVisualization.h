@@ -44,6 +44,8 @@ public:
     explicit WaterfallWidget(QWidget* parent = nullptr);
     ~WaterfallWidget() override;
 
+    void setFftSize(int fftSize);
+    int fftSize() const noexcept;
     void pushSamples(const double* left, const double* right,
                      std::size_t count, std::uint32_t sampleRate);
 

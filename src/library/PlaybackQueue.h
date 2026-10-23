@@ -91,6 +91,43 @@ public:
         return true;
     }
 
+    bool insertNext(qint64 trackId)
+    {
+        if (trackId <= 0) {
+            return false;
+        }
+
+        if (m_order.empty()) {
+            m_order.push_back(trackId);
+            m_sourceOrder.push_back(trackId);
+            m_position = 0;
+            return true;
+        }
+
+        const std::size_t insertPosition =
+            std::min(m_position + 1, m_order.size());
+        m_order.insert(
+            m_order.begin() + static_cast<std::ptrdiff_t>(insertPosition),
+            trackId);
+
+        const auto current = currentTrackId();
+        if (current) {
+            const auto sourceCurrent =
+                std::find(m_sourceOrder.begin(), m_sourceOrder.end(), *current);
+            if (sourceCurrent != m_sourceOrder.end()) {
+                const auto sourcePosition =
+                    std::distance(m_sourceOrder.begin(), sourceCurrent) + 1;
+                m_sourceOrder.insert(
+                    m_sourceOrder.begin() + sourcePosition, trackId);
+            } else {
+                m_sourceOrder.push_back(trackId);
+            }
+        } else {
+            m_sourceOrder.push_back(trackId);
+        }
+        return true;
+    }
+
     std::optional<qint64> currentTrackId() const
     {
         if (m_order.empty() || m_position >= m_order.size()) {

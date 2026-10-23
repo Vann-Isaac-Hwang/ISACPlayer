@@ -55,6 +55,23 @@ QString libraryDatabasePath()
     return QDir(dataDirectory).filePath(QStringLiteral("library.sqlite"));
 }
 
+int normalizedVisualizationFftSize(int value)
+{
+    constexpr std::array<int, 4> supportedSizes{
+        2048, 4096, 8192, 16384};
+    const auto closest = std::min_element(
+        supportedSizes.cbegin(), supportedSizes.cend(),
+        [value](int left, int right) {
+            return std::abs(left - value) < std::abs(right - value);
+        });
+    return *closest;
+}
+
+int normalizedVisualizationUpdateInterval(int value)
+{
+    return std::clamp(value, 16, 200);
+}
+
 }
 
 MainWindow::MainWindow(QWidget *parent)
@@ -394,6 +411,35 @@ MainWindow::MainWindow(QWidget *parent)
         infoForm->addRow(channelsLabel, showChannels);
         infoForm->addRow(bitrateLabel, showBitrate);
         layout->addLayout(infoForm);
+
+        addSectionTitle(QStringLiteral("Visualization"));
+        auto* visualizationForm = new QFormLayout();
+        auto* fftSize = new QComboBox(&dialog);
+        fftSize->addItem(QStringLiteral("2048 points"), 2048);
+        fftSize->addItem(QStringLiteral("4096 points"), 4096);
+        fftSize->addItem(QStringLiteral("8192 points"), 8192);
+        fftSize->addItem(QStringLiteral("16384 points"), 16384);
+        const int savedFftSize = normalizedVisualizationFftSize(
+            settings.value(QStringLiteral("visualization/fftSize"), 8192)
+                .toInt());
+        const int fftIndex = fftSize->findData(savedFftSize);
+        fftSize->setCurrentIndex(fftIndex >= 0 ? fftIndex : 2);
+        fftSize->setToolTip(
+            QStringLiteral("Larger FFT sizes improve frequency resolution and use more CPU"));
+        visualizationForm->addRow(QStringLiteral("FFT size"), fftSize);
+
+        auto* updateInterval = new QSpinBox(&dialog);
+        updateInterval->setRange(16, 200);
+        updateInterval->setSingleStep(1);
+        updateInterval->setSuffix(QStringLiteral(" ms"));
+        updateInterval->setValue(normalizedVisualizationUpdateInterval(
+            settings.value(QStringLiteral("visualization/updateIntervalMs"), 33)
+                .toInt()));
+        updateInterval->setToolTip(
+            QStringLiteral("Visualization refresh interval; it does not affect audio playback"));
+        visualizationForm->addRow(QStringLiteral("Update interval"), updateInterval);
+        layout->addLayout(visualizationForm);
+
         layout->addStretch();
         scrollArea->setWidget(content);
         dialogLayout->addWidget(scrollArea, 1);
@@ -441,6 +487,18 @@ MainWindow::MainWindow(QWidget *parent)
             showFormat->isChecked(), showSampleRate->isChecked(),
             showBitDepth->isChecked(), showChannels->isChecked(),
             showBitrate->isChecked());
+        const int selectedFftSize = normalizedVisualizationFftSize(
+            fftSize->currentData().toInt());
+        const int selectedUpdateInterval =
+            normalizedVisualizationUpdateInterval(updateInterval->value());
+        settings.setValue(QStringLiteral("visualization/fftSize"),
+                          selectedFftSize);
+        settings.setValue(QStringLiteral("visualization/updateIntervalMs"),
+                          selectedUpdateInterval);
+        m_nowPlayingHeader->setWaterfallFftSize(selectedFftSize);
+        if (m_visualizationTimer) {
+            m_visualizationTimer->setInterval(selectedUpdateInterval);
+        }
     });
 
     auto* fileMenu = ui->menubar->addMenu(QStringLiteral("File"));
@@ -579,7 +637,7 @@ MainWindow::MainWindow(QWidget *parent)
     patchStatusBar->setObjectName(QStringLiteral("dspRouterStatusBar"));
     patchStatusBar->setFixedHeight(28);
     patchStatusBar->setStyleSheet(
-        "QWidget#dspRouterStatusBar { background: #1B1D24; "
+        "QWidget#dspRouterStatusBar { background: transparent; "
         "border-top: 1px solid #30333D; }"
         "QLabel { color: #9499A6; font-size: 11px; padding: 0 10px; }");
     auto* patchStatusRow = new QHBoxLayout(patchStatusBar);
@@ -880,6 +938,9 @@ MainWindow::MainWindow(QWidget *parent)
 
     // ==================== 3. 顶部常驻播放工作区 ====================
     m_nowPlayingHeader = new isac::ui::NowPlayingHeader(this);
+    m_nowPlayingHeader->setWaterfallFftSize(normalizedVisualizationFftSize(
+        settings.value(QStringLiteral("visualization/fftSize"), 8192)
+            .toInt()));
     m_nowPlayingHeader->setVolumeMaximum(std::clamp(
         settings.value(QStringLiteral("playback/gainMaximum"), 2.0).toDouble(),
         1.0, 4.0));
@@ -1064,6 +1125,9 @@ MainWindow::MainWindow(QWidget *parent)
     // 双击表格歌曲播放
     connect(m_libraryPage, &isac::ui::AppleLibraryPage::trackDoubleClicked,
             this, &MainWindow::playTrackById);
+    connect(m_libraryPage,
+            &isac::ui::AppleLibraryPage::trackPlayNextRequested,
+            this, &MainWindow::queueTrackNext);
 
     connect(m_nowPlayingHeader,
             &isac::ui::NowPlayingHeader::coverContextMenuRequested,
@@ -1132,6 +1196,11 @@ MainWindow::MainWindow(QWidget *parent)
             });
         }
 
+        QAction* playNextAction = menu.addAction(QStringLiteral("Play Next"));
+        connect(playNextAction, &QAction::triggered, this,
+                [this, trackId = track->id]() {
+            queueTrackNext(trackId);
+        });
         menu.addSeparator();
         QMenu* addMenu = menu.addMenu(QStringLiteral("Add to Playlist"));
         const auto playlists = m_libraryRepository.playlists();
@@ -1644,7 +1713,9 @@ MainWindow::MainWindow(QWidget *parent)
             m_postVisualizationLeft.data(), m_postVisualizationRight.data(),
             frames, m_audioEngine.outputSampleRate());
     });
-    m_visualizationTimer->start(33);
+    m_visualizationTimer->start(normalizedVisualizationUpdateInterval(
+        settings.value(QStringLiteral("visualization/updateIntervalMs"), 33)
+            .toInt()));
 }
 
 void MainWindow::setRouterDockWidgetsVisible(bool visible)
@@ -1665,6 +1736,24 @@ void MainWindow::playTrackById(qint64 trackId) {
             m_lastPlaybackError.isEmpty()
                 ? QStringLiteral("The selected track could not be played.")
                 : m_lastPlaybackError);
+    }
+}
+
+void MainWindow::queueTrackNext(qint64 trackId)
+{
+    const auto track = m_libraryRepository.trackById(trackId);
+    if (!track || !m_playbackQueue.insertNext(trackId)) {
+        if (m_libraryPage) {
+            m_libraryPage->setScanStatus(
+                QStringLiteral("Unable to queue the selected track"));
+        }
+        return;
+    }
+
+    persistPlaybackQueue(true);
+    if (m_libraryPage) {
+        m_libraryPage->setScanStatus(
+            QStringLiteral("Queued next: %1").arg(track->title));
     }
 }
 

@@ -12,10 +12,11 @@
 namespace isac::ui {
 namespace {
 
-constexpr int kFftSize = 4096;
+constexpr int kDefaultFftSize = 8192;
+constexpr int kMinimumFftSize = 2048;
+constexpr int kMaximumFftSize = 16384;
 constexpr int kWaterfallWidth = 512;
 constexpr int kWaterfallHeight = 128;
-constexpr int kFrequencyBins = kFftSize / 2 + 1;
 
 qreal mouseX(const QMouseEvent* event)
 {
@@ -207,25 +208,35 @@ QString WaveformProgressWidget::formatTime(double seconds)
 }
 
 struct WaterfallWidget::FftState {
-    double* input = static_cast<double*>(
-        fftw_malloc(sizeof(double) * kFftSize));
-    fftw_complex* output = static_cast<fftw_complex*>(
-        fftw_malloc(sizeof(fftw_complex) * kFrequencyBins));
-    fftw_plan plan = input && output
-        ? fftw_plan_dft_r2c_1d(
-              kFftSize, input, output, FFTW_ESTIMATE)
-        : nullptr;
-    std::vector<double> windowCoefficients = std::vector<double>(
-        static_cast<std::size_t>(kFftSize), 0.0);
+    int fftSize = 0;
+    int frequencyBins = 0;
+    double* input = nullptr;
+    fftw_complex* output = nullptr;
+    fftw_plan plan = nullptr;
+    std::vector<double> windowCoefficients;
     std::vector<double> bandMagnitudes = std::vector<double>(
         static_cast<std::size_t>(kWaterfallWidth), 0.0);
 
-    FftState()
+    explicit FftState(int requestedFftSize)
+        : fftSize(requestedFftSize)
+        , frequencyBins(requestedFftSize / 2 + 1)
+        , input(static_cast<double*>(
+              fftw_malloc(sizeof(double) *
+                          static_cast<std::size_t>(requestedFftSize))))
+        , output(static_cast<fftw_complex*>(
+              fftw_malloc(sizeof(fftw_complex) *
+                          static_cast<std::size_t>(frequencyBins))))
+        , plan(input && output
+                   ? fftw_plan_dft_r2c_1d(
+                         fftSize, input, output, FFTW_ESTIMATE)
+                   : nullptr)
+        , windowCoefficients(
+              static_cast<std::size_t>(requestedFftSize), 0.0)
     {
-        for (int index = 0; index < kFftSize; ++index) {
+        for (int index = 0; index < fftSize; ++index) {
             windowCoefficients[static_cast<std::size_t>(index)] =
                 0.5 - 0.5 * std::cos(
-                    2.0 * std::numbers::pi * index / (kFftSize - 1));
+                    2.0 * std::numbers::pi * index / (fftSize - 1));
         }
     }
 
@@ -241,7 +252,7 @@ struct WaterfallWidget::FftState {
 
 WaterfallWidget::WaterfallWidget(QWidget* parent)
     : QWidget(parent)
-    , m_fft(std::make_unique<FftState>())
+    , m_fft(std::make_unique<FftState>(kDefaultFftSize))
     , m_history(kWaterfallWidth, kWaterfallHeight, QImage::Format_RGB32)
 {
     m_history.fill(QColor(22, 24, 29));
@@ -251,6 +262,29 @@ WaterfallWidget::WaterfallWidget(QWidget* parent)
 
 WaterfallWidget::~WaterfallWidget() = default;
 
+void WaterfallWidget::setFftSize(int fftSize)
+{
+    const int normalizedSize = std::clamp(
+        fftSize, kMinimumFftSize, kMaximumFftSize);
+    if (m_fft && m_fft->fftSize == normalizedSize) {
+        return;
+    }
+
+    auto next = std::make_unique<FftState>(normalizedSize);
+    if (!next->plan) {
+        return;
+    }
+
+    m_fft = std::move(next);
+    m_history.fill(QColor(22, 24, 29));
+    update();
+}
+
+int WaterfallWidget::fftSize() const noexcept
+{
+    return m_fft ? m_fft->fftSize : kDefaultFftSize;
+}
+
 void WaterfallWidget::pushSamples(const double* left, const double* right,
                                   std::size_t count,
                                   std::uint32_t sampleRate)
@@ -259,9 +293,11 @@ void WaterfallWidget::pushSamples(const double* left, const double* right,
         return;
     }
     m_sampleRate = std::max<std::uint32_t>(1, sampleRate);
-    const std::size_t available = std::min<std::size_t>(count, kFftSize);
+    const std::size_t fftSize = static_cast<std::size_t>(m_fft->fftSize);
+    const int frequencyBins = m_fft->frequencyBins;
+    const std::size_t available = std::min(count, fftSize);
     const std::size_t sourceStart = count - available;
-    const std::size_t windowStart = kFftSize - available;
+    const std::size_t windowStart = fftSize - available;
     std::fill(m_fft->input, m_fft->input + windowStart, 0.0);
     for (std::size_t index = 0; index < available; ++index) {
         const double mono =
@@ -284,12 +320,12 @@ void WaterfallWidget::pushSamples(const double* left, const double* right,
                 maxFrequency / minFrequency,
                 static_cast<double>(column + 1) / (kWaterfallWidth - 1));
         const int firstBin = std::clamp(
-            static_cast<int>(lowFrequency * kFftSize / m_sampleRate),
-            1, kFrequencyBins - 1);
+            static_cast<int>(lowFrequency * m_fft->fftSize / m_sampleRate),
+            1, frequencyBins - 1);
         const int lastBin = std::clamp(
             static_cast<int>(std::ceil(
-                highFrequency * kFftSize / m_sampleRate)),
-            firstBin + 1, kFrequencyBins);
+                highFrequency * m_fft->fftSize / m_sampleRate)),
+            firstBin + 1, frequencyBins);
         double magnitude = 0.0;
         for (int bin = firstBin; bin < lastBin; ++bin) {
             magnitude = std::max(

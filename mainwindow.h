@@ -33,6 +33,7 @@ public:
 private:
     void setRouterDockWidgetsVisible(bool visible);
     void playTrackById(qint64 trackId);
+    void queueTrackNext(qint64 trackId);
     bool playQueuedTrack(qint64 trackId);
     void rebuildPlaybackQueue(qint64 currentTrackId);
     void persistPlaybackQueue(bool includeOrder);
@@ -58,10 +59,10 @@ private:
     QDockWidget* m_inspectorDock = nullptr;
     QTimer* m_progressTimer = nullptr;
     QTimer* m_visualizationTimer = nullptr;
-    std::array<double, 4096> m_preVisualizationLeft{};
-    std::array<double, 4096> m_preVisualizationRight{};
-    std::array<double, 4096> m_postVisualizationLeft{};
-    std::array<double, 4096> m_postVisualizationRight{};
+    std::array<double, 16384> m_preVisualizationLeft{};
+    std::array<double, 16384> m_preVisualizationRight{};
+    std::array<double, 16384> m_postVisualizationLeft{};
+    std::array<double, 16384> m_postVisualizationRight{};
     isac::library::LibraryScanner* m_libraryScanner = nullptr;
     isac::library::PlaybackQueue m_playbackQueue;
     isac::library::PlaybackMode m_playbackMode =

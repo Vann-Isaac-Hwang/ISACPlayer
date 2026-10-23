@@ -1139,6 +1139,12 @@ AppleLibraryPage::AppleLibraryPage(library::LibraryRepository* repository,
         }
         if (selectedTrack) {
             menu.addSeparator();
+            QAction* playNextAction =
+                menu.addAction(QStringLiteral("Play Next"));
+            connect(playNextAction, &QAction::triggered, this,
+                    [this, trackId = selectedTrack->id]() {
+                emit trackPlayNextRequested(trackId);
+            });
             QMenu* artistMenu = menu.addMenu(QStringLiteral("View Artist"));
             QStringList artists = selectedTrack->artist.split(
                 QRegularExpression(QStringLiteral("\\s*/\\s*")),
@@ -2057,6 +2063,17 @@ void NowPlayingHeader::setVolume(double volume) {
         QStringLiteral("Gain %1x").arg(m_volumeFactor, 0, 'f', 2));
     const int value = static_cast<int>(m_volumeFactor * 100.0);
     m_volumeSlider->setValue(value);
+}
+
+void NowPlayingHeader::setWaterfallFftSize(int fftSize)
+{
+    m_preDspWaterfall->setFftSize(fftSize);
+    m_postDspWaterfall->setFftSize(fftSize);
+}
+
+int NowPlayingHeader::waterfallFftSize() const noexcept
+{
+    return m_preDspWaterfall ? m_preDspWaterfall->fftSize() : 8192;
 }
 
 void NowPlayingHeader::updateProgress(double currentSec, double totalSec) {
