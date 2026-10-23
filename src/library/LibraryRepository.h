@@ -42,6 +42,7 @@ enum class TrackSort {
     Artist,
     Album,
     Duration,
+    TrackNumber,
     AddedAt
 };
 
@@ -95,11 +96,11 @@ public:
                             const QString& searchText = {}) const;
     std::vector<TrackInfo> queryAlbumTracks(
         const QString& album,
-        const QString& searchText = {}, TrackSort sort = TrackSort::Title,
+        const QString& searchText = {}, TrackSort sort = TrackSort::TrackNumber,
         bool ascending = true, int limit = 256, int offset = 0) const;
     std::vector<qint64> queryAlbumTrackIds(
         const QString& album,
-        const QString& searchText = {}, TrackSort sort = TrackSort::Title,
+        const QString& searchText = {}, TrackSort sort = TrackSort::TrackNumber,
         bool ascending = true, int limit = 10000, int offset = 0) const;
     qint64 albumTrackCount(const QString& album,
                            const QString& searchText = {}) const;

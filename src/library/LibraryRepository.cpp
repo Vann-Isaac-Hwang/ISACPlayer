@@ -48,6 +48,7 @@ QString sortColumn(TrackSort sort)
     case TrackSort::Artist: return QStringLiteral("artist");
     case TrackSort::Album: return QStringLiteral("album");
     case TrackSort::Duration: return QStringLiteral("duration_seconds");
+    case TrackSort::TrackNumber: return QStringLiteral("track_number");
     case TrackSort::AddedAt: return QStringLiteral("added_at");
     }
     return QStringLiteral("added_at");

@@ -223,6 +223,16 @@ bool AudioEngine::removeNode(NodeId id) {
                 return connection.srcNode == id || connection.dstNode == id;
             }),
         m_connections.end());
+
+    if (m_gainNode && m_gainNode->id() == id) {
+        m_gainNode.reset();
+    }
+    if (m_addNode && m_addNode->id() == id) {
+        m_addNode.reset();
+    }
+    if (m_equalizerNode && m_equalizerNode->id() == id) {
+        m_equalizerNode.reset();
+    }
     m_nodes.erase(id);
     return true;
 }

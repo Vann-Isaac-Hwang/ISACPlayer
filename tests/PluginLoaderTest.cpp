@@ -196,6 +196,31 @@ int main(int argc, char** argv) {
                        1.0e-12);
             }
         }
+
+        if (QString::fromLatin1(plugin->pluginId()) ==
+            QStringLiteral("isac.stereo_width")) {
+            assert(node->numInputs() == 2);
+            assert(node->numOutputs() == 2);
+            assert(node->setParameter("width", 0.0));
+
+            isac::AudioBuffer widthInput(2, 3);
+            isac::AudioBuffer widthOutput(2, 3);
+            widthInput.channel(0)[0] = 1.0;
+            widthInput.channel(1)[0] = -1.0;
+            widthInput.channel(0)[1] = 1.0;
+            widthInput.channel(1)[1] = 1.0;
+            node->process(widthInput, widthOutput, 3);
+            assert(std::abs(widthOutput.channel(0)[0]) < 1.0e-12);
+            assert(std::abs(widthOutput.channel(1)[0]) < 1.0e-12);
+            assert(std::abs(widthOutput.channel(0)[1] - 1.0) < 1.0e-12);
+            assert(std::abs(widthOutput.channel(1)[1] - 1.0) < 1.0e-12);
+
+            assert(node->setParameter("width", 2.0));
+            node->process(widthInput, widthOutput, 3);
+            assert(std::abs(widthOutput.channel(0)[0] - 2.0) < 1.0e-12);
+            assert(std::abs(widthOutput.channel(1)[0] + 2.0) < 1.0e-12);
+            assert(!node->setParameter("missing", 0.0));
+        }
     }
 
     return 0;

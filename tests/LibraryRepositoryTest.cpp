@@ -412,6 +412,10 @@ void testArtistAndAlbumQueries(const QString& databasePath)
         makeTrack("/category/a3.flac", "A Three", "Artist A", "Other Album", 100),
         makeTrack("/category/b1.flac", "B One", "Artist B", "Shared Album", 100)
     };
+    tracks[0].trackNumber = 2;
+    tracks[1].trackNumber = 1;
+    tracks[2].trackNumber = 4;
+    tracks[3].trackNumber = 3;
     expect(repository.upsertTracks(tracks), "category fixtures must insert");
 
     const auto artists = repository.queryArtists({}, true, 1, 0);
@@ -447,6 +451,19 @@ void testArtistAndAlbumQueries(const QString& databasePath)
                albumIds[1] == tracks[1].id &&
                albumIds[2] == tracks[3].id,
            "album ID queries must use album identity only");
+    const auto albumTracksByNumber = repository.queryAlbumTracks(
+        "Shared Album", {}, TrackSort::TrackNumber, true, 10, 0);
+    expect(albumTracksByNumber.size() == 3 &&
+               albumTracksByNumber[0].id == tracks[1].id &&
+               albumTracksByNumber[1].id == tracks[0].id &&
+               albumTracksByNumber[2].id == tracks[3].id,
+           "album track queries must support numeric track-number ordering");
+    const auto albumIdsByNumber = repository.queryAlbumTrackIds(
+        "Shared Album", {}, TrackSort::TrackNumber, false, 2, 0);
+    expect(albumIdsByNumber.size() == 2 &&
+               albumIdsByNumber[0] == tracks[3].id &&
+               albumIdsByNumber[1] == tracks[0].id,
+           "album track ID pagination must follow descending track numbers");
     const auto artistIds = repository.queryArtistTrackIds(
         "Artist A", {}, TrackSort::Title, true, 10, 0);
     expect(artistIds.size() == 3 &&

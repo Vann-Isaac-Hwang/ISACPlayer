@@ -107,6 +107,7 @@ add_subdirectory(plugins/replaygain)
 add_subdirectory(plugins/gain)
 add_subdirectory(plugins/mono_gain)
 add_subdirectory(plugins/mono_delay)
+add_subdirectory(plugins/stereo_width)
 add_subdirectory(plugins/adder)
 add_subdirectory(plugins/biquad)
 
@@ -188,6 +189,7 @@ if(BUILD_TESTING)
             $<TARGET_FILE:isac_gain>
             $<TARGET_FILE:isac_mono_gain>
             $<TARGET_FILE:isac_mono_delay>
+            $<TARGET_FILE:isac_stereo_width>
             $<TARGET_FILE:isac_adder>
             $<TARGET_FILE:isac_biquad>
     )

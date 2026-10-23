@@ -75,7 +75,8 @@ The main targets are:
 - `isac_engine`: static, Qt-free audio engine library.
 - `ISACPlayer`: Qt application and UI.
 - `isac_plugin_sdk`: header-only CMake interface target.
-- `isac_gain`, `isac_adder`, `isac_replaygain`, `isac_biquad`: module plugins.
+- `isac_gain`, `isac_adder`, `isac_replaygain`, `isac_biquad`,
+  `isac_mono_gain`, `isac_mono_delay`, `isac_stereo_width`: module plugins.
 - `isac_engine_tests`, `isac_patchbay_tests`,
   `isac_plugin_loader_tests`, `isac_library_tests`: CTest targets.
 

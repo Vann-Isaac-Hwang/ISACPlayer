@@ -149,6 +149,20 @@ void testNodeRemoval()
     expect(!engine.removeNode(sinkId), "sink endpoint must not be removable");
 }
 
+void testLegacyNodeReferenceClearedOnRemoval()
+{
+    auto gain = std::make_shared<isac::MultiplyNode>();
+    isac::AudioEngine engine(gain);
+    const isac::NodeId gainId = gain->id();
+
+    expect(engine.gainNode() != nullptr,
+           "legacy gain reference must be available while the node exists");
+    expect(engine.removeNode(gainId),
+           "legacy gain node must be removable during preset replacement");
+    expect(engine.gainNode() == nullptr,
+           "removing a legacy gain node must clear its engine reference");
+}
+
 void testDefaultGraphUsesDirectOutput()
 {
     isac::AudioEngine engine;
@@ -311,6 +325,7 @@ int main()
     testBiquadPeak();
     testAtomicParameterUpdate();
     testNodeRemoval();
+    testLegacyNodeReferenceClearedOnRemoval();
     testDefaultGraphUsesDirectOutput();
     testOutputDeviceEnumeration();
     testMasterGainControl();

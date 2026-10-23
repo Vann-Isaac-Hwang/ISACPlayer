@@ -1475,38 +1475,49 @@ MainWindow::MainWindow(QWidget *parent)
         auto* scene = m_patchbayView->patchbayScene();
         QString appliedStatus =
             QStringLiteral("Loaded preset: %1").arg(preset.name);
+        QSet<isac::NodeId> configuredNodes{
+            m_audioEngine.sourceNodeId(),
+            m_audioEngine.sinkNodeId()
+        };
+        if (preset.version == 2) {
+            for (const auto& nodeSpec : preset.nodes) {
+                const isac::NodeId id = roleNodes.value(nodeSpec.role);
+                if (m_audioEngine.hasNode(id)) {
+                    configuredNodes.insert(id);
+                }
+            }
+        } else {
+            for (const auto& connection : preset.connections) {
+                for (const QString& role :
+                     {connection.sourceRole, connection.destinationRole}) {
+                    const isac::NodeId id = roleNodes.value(role);
+                    if (m_audioEngine.hasNode(id)) {
+                        configuredNodes.insert(id);
+                    }
+                }
+            }
+        }
+
+        QVector<isac::NodeId> obsoleteNodes;
+        for (const auto& entry : m_audioEngine.nodes()) {
+            const isac::NodeId id = entry.first;
+            if (!configuredNodes.contains(id)) {
+                obsoleteNodes.push_back(id);
+            }
+        }
+        for (const isac::NodeId id : obsoleteNodes) {
+            m_audioEngine.removeNode(id);
+        }
+        if (!obsoleteNodes.isEmpty() && !m_audioEngine.rebuildGraph()) {
+            appliedStatus =
+                QStringLiteral("Preset applied, but unused node cleanup failed");
+        }
+
         if (preset.version == 2) {
             QHash<isac::NodeId, QPointF> positions;
-            QSet<isac::NodeId> configuredNodes;
             for (const auto& nodeSpec : preset.nodes) {
                 const isac::NodeId id = roleNodes.value(nodeSpec.role);
                 positions.insert(id, nodeSpec.position);
-                configuredNodes.insert(id);
-            }
-
-            QVector<isac::NodeId> obsoleteNodes;
-            const auto protectedNode = [this](isac::NodeId id) {
-                const auto gain = m_audioEngine.gainNode();
-                const auto adder = m_audioEngine.addNodePtr();
-                const auto equalizer = m_audioEngine.equalizerNode();
-                return (gain && gain->id() == id) ||
-                       (adder && adder->id() == id) ||
-                       (equalizer && equalizer->id() == id);
-            };
-            for (const auto& entry : m_audioEngine.nodes()) {
-                const isac::NodeId id = entry.first;
-                if (id != m_audioEngine.sourceNodeId() &&
-                    id != m_audioEngine.sinkNodeId() &&
-                    !configuredNodes.contains(id) && !protectedNode(id)) {
-                    obsoleteNodes.push_back(id);
-                }
-            }
-            for (const isac::NodeId id : obsoleteNodes) {
-                m_audioEngine.removeNode(id);
-            }
-            if (!obsoleteNodes.isEmpty() && !m_audioEngine.rebuildGraph()) {
-                appliedStatus =
-                    QStringLiteral("Preset applied, but unused node cleanup failed");
             }
             scene->syncFromEngine();
             scene->applyNodePositions(positions);

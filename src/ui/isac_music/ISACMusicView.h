@@ -47,6 +47,7 @@ public:
     void refresh();
     void setSearchText(const QString& text);
     void setSort(library::TrackSort sort, bool ascending);
+    void setShowTrackNumber(bool visible);
     void setPlaylistId(std::optional<qint64> playlistId);
     void setCategoryFilter(const QString& artist, const QString& album);
     void setHistoryMode(bool enabled);
@@ -72,6 +73,7 @@ private:
     QString m_searchText;
     library::TrackSort m_sort = library::TrackSort::AddedAt;
     bool m_ascending = true;
+    bool m_showTrackNumber = false;
     static constexpr int kPageSize = 256;
 };
 

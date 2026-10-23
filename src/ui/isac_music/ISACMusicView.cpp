@@ -71,17 +71,27 @@ public:
     void applyAutomaticWidths()
     {
         const int availableWidth = viewport()->width();
-        if (availableWidth <= 0 || count() < 4 ||
-            availableWidth == m_lastAvailableWidth) {
+        const int columnCount = count();
+        if (availableWidth <= 0 || (columnCount != 4 && columnCount != 5) ||
+            (availableWidth == m_lastAvailableWidth &&
+             columnCount == m_lastColumnCount)) {
             return;
         }
         m_lastAvailableWidth = availableWidth;
+        m_lastColumnCount = columnCount;
         const int minimumWidth = std::min(
-            minimumSectionSize(), availableWidth / 4);
+            minimumSectionSize(), availableWidth / columnCount);
         const int durationWidth = std::clamp(
             kDurationWidth, minimumWidth,
-            std::max(minimumWidth, availableWidth - minimumWidth * 3));
-        int flexibleWidth = availableWidth - durationWidth;
+            std::max(minimumWidth,
+                     availableWidth - minimumWidth * (columnCount - 1)));
+        const int trackNumberWidth = columnCount == 5
+            ? std::clamp(kTrackNumberWidth, minimumWidth,
+                         std::max(minimumWidth,
+                                  availableWidth - durationWidth -
+                                      minimumWidth * 3))
+            : 0;
+        int flexibleWidth = availableWidth - durationWidth - trackNumberWidth;
         std::array<int, 3> widths{};
         std::array<bool, 3> active{true, true, true};
         int remainingWeight = kColumnWeights[0] +
@@ -126,10 +136,18 @@ public:
             break;
         }
 
-        resizeSection(0, widths[0]);
-        resizeSection(1, widths[1]);
-        resizeSection(2, widths[2]);
-        resizeSection(3, durationWidth);
+        if (columnCount == 5) {
+            resizeSection(0, trackNumberWidth);
+            resizeSection(1, widths[0]);
+            resizeSection(2, widths[1]);
+            resizeSection(3, widths[2]);
+            resizeSection(4, durationWidth);
+        } else {
+            resizeSection(0, widths[0]);
+            resizeSection(1, widths[1]);
+            resizeSection(2, widths[2]);
+            resizeSection(3, durationWidth);
+        }
     }
 
 protected:
@@ -142,7 +160,9 @@ protected:
 private:
     static constexpr std::array<int, 3> kColumnWeights{4, 2, 3};
     static constexpr int kDurationWidth = 76;
+    static constexpr int kTrackNumberWidth = 52;
     int m_lastAvailableWidth = -1;
+    int m_lastColumnCount = -1;
 };
 
 class ResponsiveTrackTableView final : public QTableView {
@@ -208,7 +228,7 @@ int TrackTableModel::rowCount(const QModelIndex& parent) const {
 }
 
 int TrackTableModel::columnCount(const QModelIndex& parent) const {
-    return parent.isValid() ? 0 : 4;
+    return parent.isValid() ? 0 : (m_showTrackNumber ? 5 : 4);
 }
 
 QVariant TrackTableModel::data(const QModelIndex& index, int role) const {
@@ -220,7 +240,8 @@ QVariant TrackTableModel::data(const QModelIndex& index, int role) const {
         return {};
     }
     const auto& track = m_page[static_cast<std::size_t>(index.row() - m_pageStart)];
-    if (role == Qt::DecorationRole && index.column() == 0) {
+    const int titleColumn = m_showTrackNumber ? 1 : 0;
+    if (role == Qt::DecorationRole && index.column() == titleColumn) {
         if (const auto* cached = m_coverCache.object(index.row())) {
             return *cached;
         }
@@ -230,10 +251,14 @@ QVariant TrackTableModel::data(const QModelIndex& index, int role) const {
         m_coverCache.insert(index.row(), new QIcon(icon));
         return icon;
     }
-    if (role == Qt::ForegroundRole && (index.column() == 1 || index.column() == 2)) {
+    const int artistColumn = titleColumn + 1;
+    const int albumColumn = titleColumn + 2;
+    const int durationColumn = titleColumn + 3;
+    if (role == Qt::ForegroundRole &&
+        (index.column() == artistColumn || index.column() == albumColumn)) {
         return QColor("#A5AAB8");
     }
-    if (role == Qt::ForegroundRole && index.column() == 3) {
+    if (role == Qt::ForegroundRole && index.column() == durationColumn) {
         return QColor("#8A8F9E");
     }
     if (role != Qt::DisplayRole) {
@@ -241,10 +266,19 @@ QVariant TrackTableModel::data(const QModelIndex& index, int role) const {
     }
 
     switch (index.column()) {
-    case 0: return track.title;
-    case 1: return track.artist;
-    case 2: return track.album;
-    case 3: {
+    case 0:
+        return m_showTrackNumber && track.trackNumber > 0
+            ? QString::number(track.trackNumber)
+            : m_showTrackNumber ? QString{} : track.title;
+    case 1:
+        return m_showTrackNumber ? track.title : track.artist;
+    case 2:
+        return m_showTrackNumber ? track.artist : track.album;
+    case 3:
+        return m_showTrackNumber ? track.album : QString("%1:%2")
+            .arg(track.durationSeconds / 60)
+            .arg(track.durationSeconds % 60, 2, 10, QChar('0'));
+    case 4: {
         const int mins = track.durationSeconds / 60;
         const int secs = track.durationSeconds % 60;
         return QString("%1:%2").arg(mins).arg(secs, 2, 10, QChar('0'));
@@ -259,10 +293,15 @@ QVariant TrackTableModel::headerData(int section, Qt::Orientation orientation, i
     }
 
     switch (section) {
-    case 0: return QStringLiteral("Title");
-    case 1: return QStringLiteral("Artist");
-    case 2: return QStringLiteral("Album");
-    case 3: return QStringLiteral("Duration");
+    case 0: return m_showTrackNumber
+        ? QStringLiteral("Track Number") : QStringLiteral("Title");
+    case 1: return m_showTrackNumber
+        ? QStringLiteral("Title") : QStringLiteral("Artist");
+    case 2: return m_showTrackNumber
+        ? QStringLiteral("Artist") : QStringLiteral("Album");
+    case 3: return m_showTrackNumber
+        ? QStringLiteral("Album") : QStringLiteral("Duration");
+    case 4: return QStringLiteral("Duration");
     default: return {};
     }
 }
@@ -379,6 +418,18 @@ void TrackTableModel::setSort(library::TrackSort sort, bool ascending) {
         m_ascending = ascending;
         refresh();
     }
+}
+
+void TrackTableModel::setShowTrackNumber(bool visible) {
+    if (m_showTrackNumber == visible) {
+        return;
+    }
+    beginResetModel();
+    m_showTrackNumber = visible;
+    m_page.clear();
+    m_pageStart = -1;
+    m_coverCache.clear();
+    endResetModel();
 }
 
 void TrackTableModel::setPlaylistId(std::optional<qint64> playlistId) {
@@ -551,7 +602,7 @@ QVariant LibraryGroupTableModel::data(const QModelIndex& index, int role) const 
             return *cached;
         }
         const auto tracks = m_repository->queryAlbumTracks(
-            group.name, {}, library::TrackSort::Title, true, 1, 0);
+            group.name, {}, library::TrackSort::TrackNumber, true, 1, 0);
         const QPixmap cover = tracks.empty()
             ? library::MetadataReader::generateDefaultCover(group.name, 180)
             : library::MetadataReader::loadCoverArt(tracks.front(), 180);
@@ -888,7 +939,7 @@ ISACMusicLibraryPage::ISACMusicLibraryPage(library::LibraryRepository* repositor
                     std::vector<qint64> trackIds;
                     for (int offset = 0;; offset += pageSize) {
                         const auto page = m_repository->queryAlbumTrackIds(
-                            albumName, {}, library::TrackSort::Title, true,
+                            albumName, {}, library::TrackSort::TrackNumber, true,
                             pageSize, offset);
                         if (page.empty()) {
                             break;
@@ -985,10 +1036,21 @@ ISACMusicLibraryPage::ISACMusicLibraryPage(library::LibraryRepository* repositor
     connect(m_table->horizontalHeader(), &QHeaderView::sectionClicked,
             this, [this](int section) {
         if ((m_libraryView != 0 && !m_showingGroupTracks) ||
-            section < 0 || section > 3) {
+            section < 0 ||
+            section > (m_showingGroupTracks && m_libraryView == 2 ? 4 : 3)) {
             return;
         }
+        const bool albumTracks = m_showingGroupTracks && m_libraryView == 2;
         const library::TrackSort sort = [&]() {
+            if (albumTracks) {
+                switch (section) {
+                case 0: return library::TrackSort::TrackNumber;
+                case 1: return library::TrackSort::Title;
+                case 2: return library::TrackSort::Artist;
+                case 3: return library::TrackSort::Album;
+                default: return library::TrackSort::Duration;
+                }
+            }
             switch (section) {
             case 0: return library::TrackSort::Title;
             case 1: return library::TrackSort::Artist;
@@ -996,12 +1058,21 @@ ISACMusicLibraryPage::ISACMusicLibraryPage(library::LibraryRepository* repositor
             default: return library::TrackSort::Duration;
             }
         }();
+        const library::TrackSort defaultSort = albumTracks
+            ? library::TrackSort::TrackNumber
+            : library::TrackSort::AddedAt;
         if (sort == library::TrackSort::Title &&
             m_trackSort == library::TrackSort::Title &&
             !m_trackSortAscending) {
-            m_trackSort = library::TrackSort::AddedAt;
+            m_trackSort = defaultSort;
             m_trackSortAscending = true;
-            m_table->horizontalHeader()->setSortIndicatorShown(false);
+            if (defaultSort == library::TrackSort::AddedAt) {
+                m_table->horizontalHeader()->setSortIndicatorShown(false);
+            } else {
+                m_table->horizontalHeader()->setSortIndicator(
+                    0, Qt::AscendingOrder);
+                m_table->horizontalHeader()->setSortIndicatorShown(true);
+            }
         } else if (m_trackSort == sort) {
             m_trackSortAscending = !m_trackSortAscending;
             m_table->horizontalHeader()->setSortIndicator(
@@ -1231,6 +1302,12 @@ int ISACMusicLibraryPage::rowForTrackId(qint64 id) const {
 void ISACMusicLibraryPage::showLibraryView(int view) {
     m_libraryView = std::clamp(view, 0, 3);
     m_showingGroupTracks = false;
+    m_tableModel->setShowTrackNumber(false);
+    if (m_trackSort == library::TrackSort::TrackNumber) {
+        m_trackSort = library::TrackSort::AddedAt;
+        m_trackSortAscending = true;
+    }
+    m_tableModel->setSort(m_trackSort, m_trackSortAscending);
     m_groupBackButton->hide();
     m_tableModel->setHistoryMode(m_libraryView == 3);
     if (m_libraryView == 0) {
@@ -1270,10 +1347,22 @@ void ISACMusicLibraryPage::openGroupAtRow(int row) {
 
 void ISACMusicLibraryPage::showGroupTracks(const library::LibraryGroup& group) {
     m_showingGroupTracks = true;
+    const bool albumTracks = m_libraryView == 2;
+    m_tableModel->setShowTrackNumber(albumTracks);
+    if (albumTracks) {
+        m_trackSort = library::TrackSort::TrackNumber;
+        m_trackSortAscending = true;
+    } else if (m_trackSort == library::TrackSort::TrackNumber) {
+        m_trackSort = library::TrackSort::AddedAt;
+        m_trackSortAscending = true;
+    }
     const QString artist = m_libraryView == 1 ? group.name : QString{};
     const QString album = m_libraryView == 2 ? group.name : QString{};
     m_tableModel->setCategoryFilter(artist, album);
+    m_tableModel->setSort(m_trackSort, m_trackSortAscending);
     m_table->setModel(m_tableModel);
+    static_cast<BalancedTrackHeader*>(m_table->horizontalHeader())
+        ->applyAutomaticWidths();
     m_libraryContent->setCurrentWidget(m_table);
     m_albumViewMode->hide();
     m_groupBackButton->setText(
@@ -1281,8 +1370,14 @@ void ISACMusicLibraryPage::showGroupTracks(const library::LibraryGroup& group) {
             ? QStringLiteral("Artists") : QStringLiteral("Albums")));
     m_groupBackButton->show();
     m_table->horizontalHeader()->setSectionsClickable(true);
-    m_table->horizontalHeader()->setSortIndicatorShown(
-        m_trackSort != library::TrackSort::AddedAt);
+    if (albumTracks) {
+        m_table->horizontalHeader()->setSortIndicator(
+            0, Qt::AscendingOrder);
+        m_table->horizontalHeader()->setSortIndicatorShown(true);
+    } else {
+        m_table->horizontalHeader()->setSortIndicatorShown(
+            m_trackSort != library::TrackSort::AddedAt);
+    }
     updateResultCount();
 }
 

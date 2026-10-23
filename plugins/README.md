@@ -8,8 +8,11 @@ plugins/
   libReplayGainPlugin.so
 ```
 
-The in-tree plugins include Stereo Gain, Mono Gain, Mono Delay, Adder,
-ReplayGain, and Biquad Equalizer. Mono Gain is a single-input, single-output
+The in-tree plugins include Stereo Gain, Mono Gain, Mono Delay, Stereo Width,
+Adder, ReplayGain, and Biquad Equalizer. Stereo Width performs a stateless
+Mid/Side width transformation: 0 x produces mono, 1 x preserves the original
+stereo image, and 2 x doubles the side component. Mono Gain is a single-input,
+single-output
 linear gain component; it also accepts negative factors for phase inversion. It
 does not perform channel mixing, delay, filtering, or spatial processing. Mono
 Delay is a single-input, single-output delay with a 100 ms maximum and a
