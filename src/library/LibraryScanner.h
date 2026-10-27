@@ -11,7 +11,9 @@ namespace isac::library {
 class LibraryScanner final : public QObject {
     Q_OBJECT
 public:
-    explicit LibraryScanner(QString databasePath, QObject* parent = nullptr);
+    explicit LibraryScanner(QString databasePath,
+                            QString formatPluginDirectory = {},
+                            QObject* parent = nullptr);
     ~LibraryScanner() override;
 
     bool isRunning() const noexcept;
@@ -28,6 +30,7 @@ private:
     void startScan(QStringList paths, QString directoryPath);
 
     QString m_databasePath;
+    QString m_formatPluginDirectory;
     QThread* m_thread = nullptr;
     std::atomic<bool> m_cancelRequested{false};
 };

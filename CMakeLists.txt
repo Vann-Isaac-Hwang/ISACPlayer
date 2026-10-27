@@ -20,6 +20,7 @@ pkg_check_modules(FFTW3 REQUIRED IMPORTED_TARGET fftw3)
 # Public headers consumed by external DSP plugins. This subproject intentionally
 # carries no Qt or engine implementation dependency.
 add_subdirectory(plugin_sdk)
+add_subdirectory(format_sdk)
 
 # 1. 纯 C++ 音频引擎核心库 (零 Qt 依赖)
 add_library(isac_engine STATIC
@@ -53,6 +54,10 @@ set(PROJECT_SOURCES
     src/library/LibraryRepository.cpp
     src/library/LibraryScanner.h
     src/library/LibraryScanner.cpp
+    src/media/formats/FormatCache.h
+    src/media/formats/FormatCache.cpp
+    src/media/formats/FormatPluginManager.h
+    src/media/formats/FormatPluginManager.cpp
     src/engine/plugin/IAudioPlugin.h
     src/ui/isac_music/ISACMusicView.h
     src/ui/isac_music/ISACMusicView.cpp
@@ -93,6 +98,7 @@ target_link_libraries(ISACPlayer PRIVATE
     PkgConfig::TAGLIB
     PkgConfig::FFTW3
     isac_engine
+    isac_format_sdk
 )
 
 if(UNIX AND NOT APPLE)
@@ -113,6 +119,7 @@ add_subdirectory(plugins/stereo_width)
 add_subdirectory(plugins/stereo_balance)
 add_subdirectory(plugins/adder)
 add_subdirectory(plugins/biquad)
+add_subdirectory(format_plugins/ncm)
 
 set_target_properties(ISACPlayer PROPERTIES
     MACOSX_BUNDLE TRUE
@@ -134,7 +141,11 @@ if(UNIX AND NOT APPLE)
     )
 endif()
 install(DIRECTORY DESTINATION ${CMAKE_INSTALL_BINDIR}/plugins)
+install(DIRECTORY DESTINATION ${CMAKE_INSTALL_BINDIR}/format_plugins)
 install(DIRECTORY plugin_sdk/include/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/isacplayer
+)
+install(DIRECTORY format_sdk/include/
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/isacplayer
 )
 
@@ -143,6 +154,8 @@ qt_finalize_executable(ISACPlayer)
 add_custom_command(TARGET ISACPlayer POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
         "$<TARGET_FILE_DIR:ISACPlayer>/plugins"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:ISACPlayer>/format_plugins"
 )
 
 if(BUILD_TESTING)
@@ -208,6 +221,10 @@ if(BUILD_TESTING)
         src/library/LibraryScanner.cpp
         src/library/TrackMetadata.h
         src/library/TrackMetadata.cpp
+        src/media/formats/FormatCache.h
+        src/media/formats/FormatCache.cpp
+        src/media/formats/FormatPluginManager.h
+        src/media/formats/FormatPluginManager.cpp
     )
     target_include_directories(isac_library_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -217,6 +234,7 @@ if(BUILD_TESTING)
         Qt${QT_VERSION_MAJOR}::Core
         Qt${QT_VERSION_MAJOR}::Sql
         PkgConfig::TAGLIB
+        isac_format_sdk
     )
     add_test(NAME isac_library_tests COMMAND isac_library_tests)
 endif()

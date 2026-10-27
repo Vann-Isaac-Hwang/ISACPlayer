@@ -9,6 +9,9 @@ namespace isac::library {
 struct TrackInfo {
     qint64 id = 0;
     QString filePath;
+    QString playbackPath;
+    QString formatPlugin;
+    QString coverPath;
     QString title;
     QString artist;
     QString album;

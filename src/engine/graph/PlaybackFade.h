@@ -5,6 +5,16 @@
 
 namespace isac {
 
+inline double linearFadeInGain(std::uint64_t frame,
+                               std::uint64_t fadeFrames) noexcept
+{
+    if (fadeFrames == 0 || frame >= fadeFrames) {
+        return 1.0;
+    }
+    return static_cast<double>(frame) /
+           static_cast<double>(fadeFrames);
+}
+
 inline double playbackFadeGain(std::uint64_t frame,
                               std::uint64_t totalFrames,
                               std::uint64_t fadeFrames) noexcept

@@ -48,6 +48,12 @@ void testPlaybackFadeEnvelope()
 {
     constexpr std::uint64_t fadeFrames = 100;
     constexpr std::uint64_t totalFrames = 1000;
+    expectNear(isac::linearFadeInGain(0, fadeFrames),
+               0.0, 0.0, "pause fade-in must start silent");
+    expectNear(isac::linearFadeInGain(50, fadeFrames),
+               0.5, 1.0e-12, "pause fade-in midpoint");
+    expectNear(isac::linearFadeInGain(fadeFrames, fadeFrames),
+               1.0, 0.0, "pause fade-in must reach unity");
     expectNear(isac::playbackFadeGain(0, totalFrames, fadeFrames),
                0.0, 0.0, "fade-in must start silent");
     expectNear(isac::playbackFadeGain(50, totalFrames, fadeFrames),

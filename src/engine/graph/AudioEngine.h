@@ -90,6 +90,7 @@ public:
     void setMasterGain(double factor) noexcept;
     double masterGain() const noexcept;
     void setPlaying(bool play);
+    void servicePlaybackControl();
     bool isPlaying() const;
     bool isPlaybackComplete() const noexcept;
     void seekToSeconds(double seconds);
@@ -187,6 +188,8 @@ private:
     AudioTapBuffer m_postDspTap{65536, 2};
     std::array<std::array<double, MAX_ENGINE_BLOCK_FRAMES>, 2> m_laneLeft{};
     std::array<std::array<double, MAX_ENGINE_BLOCK_FRAMES>, 2> m_laneRight{};
+    std::array<std::array<float, MAX_ENGINE_BLOCK_FRAMES>, 2> m_lastOutput{};
+    std::uint32_t m_lastOutputFrames = 0;
     std::atomic<bool> m_callbackActive{false};
     std::thread m_decoderThread;
     std::atomic<bool> m_decoderStop{false};
@@ -211,6 +214,12 @@ private:
     std::atomic<ma_uint64> m_overlapElapsedFrames{0};
     std::atomic<bool> m_overlapTransitionPending{false};
     std::atomic<double> m_masterGain{1.0};
+    std::atomic<bool> m_playbackRequested{false};
+    std::atomic<bool> m_pauseFadeOutActive{false};
+    std::atomic<bool> m_pauseFadeInActive{false};
+    std::atomic<ma_uint64> m_pauseFadeOutElapsedFrames{0};
+    std::atomic<ma_uint64> m_pauseFadeInElapsedFrames{0};
+    std::atomic<bool> m_pauseFadeOutComplete{false};
 };
 
 static_assert(std::atomic<double>::is_always_lock_free,

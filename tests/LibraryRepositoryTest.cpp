@@ -464,6 +464,35 @@ void testArtistAndAlbumQueries(const QString& databasePath)
                albumIdsByNumber[0] == tracks[3].id &&
                albumIdsByNumber[1] == tracks[0].id,
            "album track ID pagination must follow descending track numbers");
+
+    auto ncmWithoutNumbers = makeTrack(
+        "/category/unknown-track.ncm", "Unknown Track", "Artist C",
+        "NCM Album", 100);
+    ncmWithoutNumbers.formatPlugin = "isac.ncm";
+    auto ncmWithoutNumbersTwo = makeTrack(
+        "/category/another-track.ncm", "Another Track", "Artist C",
+        "NCM Album", 100);
+    ncmWithoutNumbersTwo.formatPlugin = "isac.ncm";
+    ncmWithoutNumbers.trackNumber = 0;
+    ncmWithoutNumbersTwo.trackNumber = 0;
+    std::vector<TrackInfo> ncmTracks{
+        ncmWithoutNumbers, ncmWithoutNumbersTwo};
+    expect(repository.upsertTracks(ncmTracks),
+           "NCM tracks without positions must persist");
+    const auto ncmAlbumTracks = repository.queryAlbumTracks(
+        "NCM Album", {}, TrackSort::TrackNumber, true, 10, 0);
+    expect(ncmAlbumTracks.size() == 2 &&
+               ncmAlbumTracks[0].trackNumber == 1 &&
+               ncmAlbumTracks[1].trackNumber == 2 &&
+               ncmAlbumTracks[0].title == "Another Track",
+           "album queries must provide stable fallback positions for unknown NCM tracks");
+    const auto ncmAlbumIds = repository.queryAlbumTrackIds(
+        "NCM Album", {}, TrackSort::TrackNumber, true, 10, 0);
+    expect(ncmAlbumIds.size() == 2 &&
+               ncmAlbumIds[0] == ncmTracks[1].id &&
+               ncmAlbumIds[1] == ncmTracks[0].id,
+           "album IDs must use the same fallback order as album rows");
+
     const auto artistIds = repository.queryArtistTrackIds(
         "Artist A", {}, TrackSort::Title, true, 10, 0);
     expect(artistIds.size() == 3 &&

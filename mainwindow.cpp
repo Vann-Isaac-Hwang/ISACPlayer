@@ -79,6 +79,9 @@ MainWindow::MainWindow(QWidget *parent)
     , m_themeManager(this)
     , ui(new Ui::MainWindow)
     , m_pluginManager(QCoreApplication::applicationDirPath() + "/plugins")
+    , m_formatPluginManager(
+          QDir(QCoreApplication::applicationDirPath())
+              .filePath(QStringLiteral("format_plugins")))
     , m_libraryRepository(libraryDatabasePath())
     , m_audioEngine()
 {
@@ -615,7 +618,10 @@ MainWindow::MainWindow(QWidget *parent)
     m_libraryPage = new isac::ui::ISACMusicLibraryPage(&m_libraryRepository, this);
     m_libraryPage->refreshTracks();
     m_libraryScanner = new isac::library::LibraryScanner(
-        libraryDatabasePath(), this);
+        libraryDatabasePath(),
+        QDir(QCoreApplication::applicationDirPath())
+            .filePath(QStringLiteral("format_plugins")),
+        this);
     connect(m_libraryScanner, &isac::library::LibraryScanner::batchCommitted,
             this, [this](int) { m_libraryPage->refreshTracks(); });
     connect(m_libraryScanner, &isac::library::LibraryScanner::progressChanged,
@@ -1734,6 +1740,7 @@ MainWindow::MainWindow(QWidget *parent)
     // 进度条刷新定时器 (每 200ms 同步一次底层解码器帧游标)
     m_progressTimer = new QTimer(this);
     connect(m_progressTimer, &QTimer::timeout, this, [this, outputStatus]() {
+        m_audioEngine.servicePlaybackControl();
         const auto selectedOutput = m_audioEngine.selectedOutputDevice();
         const QString outputName = selectedOutput
             ? QString::fromStdString(selectedOutput->name)
@@ -1764,8 +1771,11 @@ MainWindow::MainWindow(QWidget *parent)
                             std::max(0.0, duration - overlap - 0.5);
                         if (nextTrack && position >= prepareAt) {
                             std::string prepareError;
-                            if (m_audioEngine.prepareNext(
-                                    nextTrack->filePath.toStdString(),
+                            const QString playbackPath =
+                                resolvePlaybackPath(*nextTrack, nullptr);
+                            if (!playbackPath.isEmpty() &&
+                                m_audioEngine.prepareNext(
+                                    playbackPath.toStdString(),
                                     &prepareError)) {
                                 m_preparedNextTrackId = *next;
                             }
@@ -1948,11 +1958,26 @@ bool MainWindow::playQueuedTrack(qint64 trackId) {
 
     m_audioEngine.cancelPreparedNext();
     m_preparedNextTrackId = 0;
+    QString formatError;
+    const QString playbackPath =
+        resolvePlaybackPath(*track, &formatError);
+    if (playbackPath.isEmpty()) {
+        m_lastPlaybackError = formatError;
+        m_trackLoaded = false;
+        m_currentTrackEndHandled = false;
+        m_nowPlayingHeader->setPlayingState(false);
+        return false;
+    }
     std::string playbackError;
     if (m_audioEngine.loadAndPlay(
-            track->filePath.toStdString(), &playbackError)) {
+            playbackPath.toStdString(), &playbackError)) {
         m_lastPlaybackError.clear();
         auto displayTrack = *track;
+        displayTrack.playbackPath = playbackPath;
+        if (track->playbackPath != playbackPath) {
+            m_libraryRepository.updateTrackPlaybackPath(
+                trackId, playbackPath);
+        }
         isac::library::MetadataReader::readAudioProperties(displayTrack);
         m_currentTrackEndHandled = false;
         m_currentTrackId = trackId;
@@ -1992,6 +2017,44 @@ bool MainWindow::playQueuedTrack(qint64 trackId) {
     qWarning() << "Unable to play track"
                << track->filePath << QString::fromStdString(playbackError);
     return false;
+}
+
+QString MainWindow::resolvePlaybackPath(
+    const isac::library::TrackInfo& track, QString* error)
+{
+    if (track.formatPlugin.isEmpty()) {
+        return track.filePath;
+    }
+    if (!track.playbackPath.isEmpty() &&
+        QFileInfo::exists(track.playbackPath)) {
+        return track.playbackPath;
+    }
+
+    const auto metadata = m_formatPluginManager.inspect(track.filePath);
+    if (!metadata.valid) {
+        if (error) {
+            *error = QStringLiteral("Unable to inspect %1").arg(track.filePath);
+        }
+        return {};
+    }
+    const QString extension = metadata.decodedFormat.isEmpty()
+        ? QStringLiteral("flac")
+        : metadata.decodedFormat;
+    const QString target = isac::media::FormatCache::playbackPath(
+        track.filePath, track.formatPlugin, extension);
+    if (QFileInfo::exists(target)) {
+        return target;
+    }
+
+    QString materializeError;
+    if (!m_formatPluginManager.materialize(
+            track.filePath, target, &materializeError)) {
+        if (error) {
+            *error = materializeError;
+        }
+        return {};
+    }
+    return target;
 }
 
 void MainWindow::persistPlaybackQueue(bool includeOrder) {

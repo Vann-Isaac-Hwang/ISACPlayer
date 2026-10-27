@@ -44,13 +44,16 @@ TrackInfo MetadataReader::readTrack(const QString& filePath) {
 
 void MetadataReader::readAudioProperties(TrackInfo& track)
 {
-    track.audioFormat = QFileInfo(track.filePath).suffix().toUpper();
+    const QString& playablePath = track.playbackPath.isEmpty()
+        ? track.filePath
+        : track.playbackPath;
+    track.audioFormat = QFileInfo(playablePath).suffix().toUpper();
     track.sampleRateHz = 0;
     track.bitDepth = 0;
     track.channels = 0;
     track.bitrateKbps = 0;
 
-    TagLib::FileRef ref(track.filePath.toUtf8().constData());
+    TagLib::FileRef ref(playablePath.toUtf8().constData());
     if (ref.isNull() || !ref.audioProperties()) {
         return;
     }
@@ -90,9 +93,22 @@ static QPixmap loadScaledPixmap(const QByteArray& encodedData, int size) {
 QPixmap MetadataReader::loadCoverArt(const TrackInfo& track, int size) {
     QPixmap cover;
     const QString& filePath = track.filePath;
+    if (!track.coverPath.isEmpty()) {
+        QImageReader reader(track.coverPath);
+        reader.setAutoTransform(true);
+        reader.setScaledSize(QSize(size, size));
+        const QImage image = reader.read();
+        if (!image.isNull()) {
+            cover = QPixmap::fromImage(image);
+        }
+    }
 
-    if (filePath.endsWith(".flac", Qt::CaseInsensitive)) {
-        TagLib::FLAC::File flacFile(filePath.toUtf8().constData());
+    const QString& playablePath = track.playbackPath.isEmpty()
+        ? filePath
+        : track.playbackPath;
+    if (cover.isNull() &&
+        playablePath.endsWith(".flac", Qt::CaseInsensitive)) {
+        TagLib::FLAC::File flacFile(playablePath.toUtf8().constData());
         if (flacFile.isValid()) {
             const auto& picList = flacFile.pictureList();
             if (!picList.isEmpty()) {
@@ -103,8 +119,9 @@ QPixmap MetadataReader::loadCoverArt(const TrackInfo& track, int size) {
             }
         }
     }
-    else if (filePath.endsWith(".mp3", Qt::CaseInsensitive)) {
-        TagLib::MPEG::File mp3File(filePath.toUtf8().constData());
+    else if (cover.isNull() &&
+             playablePath.endsWith(".mp3", Qt::CaseInsensitive)) {
+        TagLib::MPEG::File mp3File(playablePath.toUtf8().constData());
         if (mp3File.isValid() && mp3File.ID3v2Tag()) {
             auto frameList = mp3File.ID3v2Tag()->frameListMap()["APIC"];
             if (!frameList.isEmpty()) {

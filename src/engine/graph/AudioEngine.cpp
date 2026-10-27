@@ -115,7 +115,9 @@ bool AudioEngine::selectOutputDevice(const AudioOutputDevice& device,
                                      std::string& error)
 {
     const bool wasStarted =
-        m_deviceInitialized && ma_device_is_started(&m_device);
+        m_deviceInitialized &&
+        ma_device_is_started(&m_device) &&
+        m_playbackRequested.load(std::memory_order_acquire);
     destroyPlaybackDevice();
 
     const auto previousSelection = m_selectedOutputDevice;
@@ -262,7 +264,10 @@ bool AudioEngine::rebuildGraph() {
         m_outputSampleRate);
     if (!newPlan) return false;
 
-    const bool wasPlaying = m_deviceInitialized && ma_device_is_started(&m_device);
+    const bool wasPlaying =
+        m_deviceInitialized &&
+        ma_device_is_started(&m_device) &&
+        m_playbackRequested.load(std::memory_order_acquire);
     if (wasPlaying) {
         ma_device_stop(&m_device);
     }
@@ -284,6 +289,54 @@ void AudioEngine::dataCallback(ma_device* pDevice, void* pOutput, const void*, m
 void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
                               uint32_t channels) noexcept {
     m_callbackActive.store(true, std::memory_order_release);
+    const bool playbackRequested =
+        m_playbackRequested.load(std::memory_order_acquire);
+    const bool pauseFadeOut =
+        m_pauseFadeOutActive.load(std::memory_order_acquire);
+    if (!playbackRequested) {
+        if (!pauseFadeOut) {
+            std::fill_n(pInterleavedOutput, frameCount * channels, 0.0f);
+            m_callbackActive.store(false, std::memory_order_release);
+            return;
+        }
+
+        const ma_uint64 fadeFrames =
+            m_fadeDurationFrames.load(std::memory_order_relaxed);
+        ma_uint64 elapsed =
+            m_pauseFadeOutElapsedFrames.load(std::memory_order_relaxed);
+        uint32_t framesRemaining = frameCount;
+        float* currentOutPtr = pInterleavedOutput;
+        while (framesRemaining > 0) {
+            const uint32_t chunkFrames = std::min<uint32_t>(
+                framesRemaining, MAX_ENGINE_BLOCK_FRAMES);
+            for (uint32_t i = 0; i < chunkFrames; ++i) {
+                const double gain = playbackFadeOutGain(
+                    elapsed + i, fadeFrames, fadeFrames);
+                const std::size_t sourceFrame =
+                    m_lastOutputFrames == 0
+                    ? 0
+                    : std::min<std::size_t>(
+                          i, static_cast<std::size_t>(m_lastOutputFrames - 1));
+                for (uint32_t ch = 0; ch < channels; ++ch) {
+                    currentOutPtr[i * channels + ch] =
+                        ch < 2
+                        ? m_lastOutput[ch][sourceFrame] *
+                              static_cast<float>(gain)
+                        : 0.0f;
+                }
+            }
+            elapsed += static_cast<ma_uint64>(chunkFrames);
+            currentOutPtr += chunkFrames * channels;
+            framesRemaining -= chunkFrames;
+        }
+        m_pauseFadeOutElapsedFrames.store(elapsed, std::memory_order_release);
+        if (fadeFrames == 0 || elapsed >= fadeFrames) {
+            m_pauseFadeOutComplete.store(true, std::memory_order_release);
+        }
+        m_callbackActive.store(false, std::memory_order_release);
+        return;
+    }
+
     ExecutionPlan* plan = m_activePlan.load(std::memory_order_acquire);
     if (!m_decoderLoaded.load() || !plan || plan->sinkStepIndex < 0) {
         std::fill_n(pInterleavedOutput, frameCount * channels, 0.0f);
@@ -299,6 +352,10 @@ void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
         m_fadeDurationFrames.load(std::memory_order_relaxed);
     const double masterGain =
         m_masterGain.load(std::memory_order_relaxed);
+    const bool pauseFadeIn =
+        m_pauseFadeInActive.load(std::memory_order_acquire);
+    const ma_uint64 pauseFadeElapsed =
+        m_pauseFadeInElapsedFrames.load(std::memory_order_relaxed);
 
     while (framesRemaining > 0) {
         uint32_t chunkFrames = std::min<uint32_t>(framesRemaining, MAX_ENGINE_BLOCK_FRAMES);
@@ -410,6 +467,9 @@ void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
         };
         m_postDspTap.write(postDspChannels, chunkFrames);
         for (uint32_t i = 0; i < chunkFrames; ++i) {
+            const double pauseGain = pauseFadeIn
+                ? linearFadeInGain(pauseFadeElapsed + i, fadeFrames)
+                : 1.0;
             for (uint32_t ch = 0; ch < channels; ++ch) {
                 double gain = 1.0;
                 if (!hasPreparedLane && fadeEnabled) {
@@ -421,13 +481,19 @@ void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
                               blockStartFrame + std::min<std::size_t>(i, framesRead),
                               totalFrames, fadeFrames);
                 }
+                gain *= pauseGain;
                 currentOutPtr[i * channels + ch] =
                     ch < 2
                         ? static_cast<float>(
                               finalBus.channel(ch)[i] * masterGain * gain)
                         : 0.0f;
+                if (ch < 2) {
+                    m_lastOutput[ch][i] =
+                        currentOutPtr[i * channels + ch];
+                }
             }
         }
+        m_lastOutputFrames = chunkFrames;
 
         currentOutPtr += chunkFrames * channels;
         framesRemaining -= chunkFrames;
@@ -452,6 +518,15 @@ void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
             }
         }
     }
+    if (pauseFadeIn) {
+        const ma_uint64 elapsed =
+            pauseFadeElapsed + static_cast<ma_uint64>(frameCount);
+        m_pauseFadeInElapsedFrames.store(elapsed, std::memory_order_release);
+        if (fadeFrames == 0 || elapsed >= fadeFrames) {
+            m_pauseFadeInActive.store(false, std::memory_order_release);
+            m_pauseFadeInElapsedFrames.store(0, std::memory_order_release);
+        }
+    }
     m_callbackActive.store(false, std::memory_order_release);
 }
 
@@ -472,6 +547,11 @@ std::size_t AudioEngine::readPostDspSamples(
 void AudioEngine::setFadeEnabled(bool enabled) noexcept
 {
     m_fadeEnabled.store(enabled, std::memory_order_relaxed);
+    if (!enabled &&
+        !m_playbackRequested.load(std::memory_order_acquire) &&
+        m_pauseFadeOutActive.load(std::memory_order_acquire)) {
+        m_pauseFadeOutComplete.store(true, std::memory_order_release);
+    }
 }
 
 void AudioEngine::setFadeDurationSeconds(double seconds) noexcept
@@ -811,6 +891,13 @@ bool AudioEngine::loadAndPlay(const std::string& filePath, std::string* error) {
         error->clear();
     }
     m_decoderLoaded.store(false, std::memory_order_release);
+    m_playbackRequested.store(false, std::memory_order_release);
+    m_pauseFadeOutActive.store(false, std::memory_order_release);
+    m_pauseFadeInActive.store(false, std::memory_order_release);
+    m_pauseFadeOutElapsedFrames.store(0, std::memory_order_release);
+    m_pauseFadeInElapsedFrames.store(0, std::memory_order_release);
+    m_pauseFadeOutComplete.store(false, std::memory_order_release);
+    m_lastOutputFrames = 0;
     destroyPlaybackDevice();
     stopDecoderThread();
     clearAllLanes();
@@ -884,11 +971,13 @@ bool AudioEngine::loadAndPlay(const std::string& filePath, std::string* error) {
     }
 
     m_decoderLoaded.store(true, std::memory_order_release);
+    m_playbackRequested.store(true, std::memory_order_release);
     if (ma_device_start(&m_device) != MA_SUCCESS) {
         if (error) {
             *error = "Unable to start audio output device";
         }
         m_decoderLoaded.store(false, std::memory_order_release);
+        m_playbackRequested.store(false, std::memory_order_release);
         destroyPlaybackDevice();
         stopDecoderThread();
         clearAllLanes();
@@ -898,13 +987,63 @@ bool AudioEngine::loadAndPlay(const std::string& filePath, std::string* error) {
 }
 
 void AudioEngine::setPlaying(bool play) {
-    if (!m_decoderLoaded.load() || !m_deviceInitialized) return;
-    if (play) ma_device_start(&m_device);
-    else      ma_device_stop(&m_device);
+    if (!m_decoderLoaded.load(std::memory_order_acquire) ||
+        !m_deviceInitialized) {
+        return;
+    }
+
+    if (play) {
+        m_playbackRequested.store(true, std::memory_order_release);
+        m_pauseFadeOutActive.store(false, std::memory_order_release);
+        m_pauseFadeOutComplete.store(false, std::memory_order_release);
+        if (m_fadeEnabled.load(std::memory_order_relaxed)) {
+            m_pauseFadeInElapsedFrames.store(0, std::memory_order_release);
+            m_pauseFadeInActive.store(true, std::memory_order_release);
+        } else {
+            m_pauseFadeInActive.store(false, std::memory_order_release);
+        }
+        if (!ma_device_is_started(&m_device) &&
+            ma_device_start(&m_device) != MA_SUCCESS) {
+            m_playbackRequested.store(false, std::memory_order_release);
+            m_pauseFadeInActive.store(false, std::memory_order_release);
+        }
+        return;
+    }
+
+    m_playbackRequested.store(false, std::memory_order_release);
+    m_pauseFadeInActive.store(false, std::memory_order_release);
+    m_pauseFadeOutElapsedFrames.store(0, std::memory_order_release);
+    m_pauseFadeInElapsedFrames.store(0, std::memory_order_release);
+    if (!ma_device_is_started(&m_device)) {
+        return;
+    }
+    if (m_fadeEnabled.load(std::memory_order_relaxed) &&
+        m_fadeDurationFrames.load(std::memory_order_relaxed) > 0) {
+        m_pauseFadeOutComplete.store(false, std::memory_order_release);
+        m_pauseFadeOutActive.store(true, std::memory_order_release);
+        return;
+    }
+    m_pauseFadeOutActive.store(false, std::memory_order_release);
+    ma_device_stop(&m_device);
+}
+
+void AudioEngine::servicePlaybackControl()
+{
+    if (!m_pauseFadeOutComplete.exchange(
+            false, std::memory_order_acq_rel) ||
+        m_playbackRequested.load(std::memory_order_acquire) ||
+        !m_deviceInitialized) {
+        return;
+    }
+    m_pauseFadeOutActive.store(false, std::memory_order_release);
+    if (ma_device_is_started(&m_device)) {
+        ma_device_stop(&m_device);
+    }
 }
 
 bool AudioEngine::isPlaying() const {
-    return m_decoderLoaded.load() && ma_device_is_started(&m_device);
+    return m_decoderLoaded.load(std::memory_order_acquire) &&
+           m_playbackRequested.load(std::memory_order_acquire);
 }
 
 bool AudioEngine::isPlaybackComplete() const noexcept
@@ -928,10 +1067,18 @@ void AudioEngine::seekToSeconds(double seconds) {
         m_decoderLanes[static_cast<std::size_t>(active)]
             .totalFrames.load(std::memory_order_acquire));
 
-    const bool wasPlaying = m_deviceInitialized && ma_device_is_started(&m_device);
+    const bool wasPlaying =
+        m_deviceInitialized &&
+        ma_device_is_started(&m_device) &&
+        m_playbackRequested.load(std::memory_order_acquire);
     if (wasPlaying) {
         ma_device_stop(&m_device);
     }
+    m_pauseFadeOutActive.store(false, std::memory_order_release);
+    m_pauseFadeInActive.store(false, std::memory_order_release);
+    m_pauseFadeOutElapsedFrames.store(0, std::memory_order_release);
+    m_pauseFadeInElapsedFrames.store(0, std::memory_order_release);
+    m_pauseFadeOutComplete.store(false, std::memory_order_release);
 
     cancelPreparedNext();
     m_decoderLanes[static_cast<std::size_t>(active)]

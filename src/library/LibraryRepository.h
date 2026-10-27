@@ -60,6 +60,7 @@ public:
 
     bool upsertTrack(TrackInfo& track);
     bool upsertTracks(std::vector<TrackInfo>& tracks);
+    bool updateTrackPlaybackPath(qint64 trackId, const QString& playbackPath);
     std::optional<TrackInfo> trackById(qint64 id) const;
     std::optional<TrackInfo> trackByPath(const QString& path) const;
     qint64 rowForTrackId(qint64 id, TrackSort sort = TrackSort::AddedAt,

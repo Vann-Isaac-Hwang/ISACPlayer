@@ -14,6 +14,8 @@
 #include "ui/theme/ThemeManager.h"
 #include "library/LibraryScanner.h"
 #include "library/PlaybackQueue.h"
+#include "media/formats/FormatCache.h"
+#include "media/formats/FormatPluginManager.h"
 #ifdef ISAC_HAS_MPRIS
 #include "platform/mpris/MprisController.h"
 #endif
@@ -42,10 +44,13 @@ private:
     void setPlaybackMode(isac::library::PlaybackMode mode);
     void refreshPlaybackQueueView(bool force = false);
     std::vector<qint64> currentTrackIds() const;
+    QString resolvePlaybackPath(const isac::library::TrackInfo& track,
+                                QString* error = nullptr);
 
     isac::ui::ThemeManager m_themeManager;
     Ui::MainWindow *ui;
     isac::ui::PluginManager m_pluginManager;
+    isac::media::FormatPluginManager m_formatPluginManager;
     isac::library::LibraryRepository m_libraryRepository;
     isac::AudioEngine m_audioEngine;
 
