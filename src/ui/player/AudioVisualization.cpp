@@ -1,4 +1,5 @@
 #include "AudioVisualization.h"
+#include "ui/theme/ThemeManager.h"
 
 #include <QMouseEvent>
 #include <QPainter>
@@ -29,10 +30,17 @@ qreal mouseX(const QMouseEvent* event)
 
 QColor monochromeLevel(double value)
 {
-    const int level = std::clamp(
-        static_cast<int>(std::pow(std::clamp(value, 0.0, 1.0), 0.72) * 235.0),
-        12, 235);
-    return QColor(level, level, level);
+    const auto& colors = ThemeManager::paletteColors();
+    const qreal amount = std::clamp(
+        static_cast<qreal>(std::pow(std::clamp(value, 0.0, 1.0), 0.72)),
+        0.0, 1.0);
+    return QColor(
+        std::lerp(colors.visualizationLow.red(),
+                  colors.visualizationHigh.red(), amount),
+        std::lerp(colors.visualizationLow.green(),
+                  colors.visualizationHigh.green(), amount),
+        std::lerp(colors.visualizationLow.blue(),
+                  colors.visualizationHigh.blue(), amount));
 }
 
 } // namespace
@@ -78,7 +86,8 @@ void WaveformProgressWidget::paintEvent(QPaintEvent*)
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, false);
     const QRectF bounds = rect().adjusted(1, 1, -1, -1);
-    painter.fillRect(bounds, QColor(39, 42, 51));
+    const auto& colors = ThemeManager::paletteColors();
+    painter.fillRect(bounds, colors.visualizationBackground);
 
     const qreal centerY = bounds.center().y();
     const qreal halfHeight = std::max<qreal>(2.0, bounds.height() * 0.43);
@@ -103,26 +112,26 @@ void WaveformProgressWidget::paintEvent(QPaintEvent*)
             static_cast<qreal>(peak), 0.035, 1.0) * halfHeight;
         const qreal xPosition = bounds.left() + x;
         painter.setPen(QPen(xPosition <= progressX
-                                ? QColor(235, 237, 240)
-                                : QColor(155, 159, 169),
+                                ? colors.visualizationHigh
+                                : colors.visualizationLow,
                             1.0));
         painter.drawLine(QPointF(xPosition, centerY - amplitude),
                          QPointF(xPosition, centerY + amplitude));
     }
 
-    painter.setPen(QPen(QColor(255, 255, 255, 235), 4.0));
+    painter.setPen(QPen(colors.textPrimary, 4.0));
     painter.drawLine(QPointF(progressX, bounds.top()),
                      QPointF(progressX, bounds.bottom()));
 
     if (m_hovered && width() > 0) {
         const qreal hoverX = std::clamp(
             m_hoverX, bounds.left(), bounds.right());
-        painter.setPen(QPen(QColor(255, 255, 255, 235), 1.0));
+        painter.setPen(QPen(colors.accentHover, 1.0));
         painter.drawLine(QPointF(hoverX, bounds.top()),
                          QPointF(hoverX, bounds.bottom()));
     }
 
-    painter.setPen(QPen(QColor(70, 73, 81), 1.0));
+    painter.setPen(QPen(colors.visualizationBorder, 1.0));
     painter.drawRect(bounds);
 }
 
@@ -255,9 +264,16 @@ WaterfallWidget::WaterfallWidget(QWidget* parent)
     , m_fft(std::make_unique<FftState>(kDefaultFftSize))
     , m_history(kWaterfallWidth, kWaterfallHeight, QImage::Format_RGB32)
 {
-    m_history.fill(QColor(22, 24, 29));
+    m_history.fill(ThemeManager::paletteColors().visualizationBackground);
     setMinimumSize(120, 72);
     setAccessibleName(QStringLiteral("Live spectrum waterfall"));
+    if (auto* themeManager = ThemeManager::instance()) {
+        connect(themeManager, &ThemeManager::themeChanged, this, [this]() {
+            m_history.fill(
+                ThemeManager::paletteColors().visualizationBackground);
+            update();
+        });
+    }
 }
 
 WaterfallWidget::~WaterfallWidget() = default;
@@ -276,7 +292,7 @@ void WaterfallWidget::setFftSize(int fftSize)
     }
 
     m_fft = std::move(next);
-    m_history.fill(QColor(22, 24, 29));
+    m_history.fill(ThemeManager::paletteColors().visualizationBackground);
     update();
 }
 
@@ -356,10 +372,11 @@ void WaterfallWidget::pushSamples(const double* left, const double* right,
 void WaterfallWidget::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
-    painter.fillRect(rect(), QColor(22, 24, 29));
+    const auto& colors = ThemeManager::paletteColors();
+    painter.fillRect(rect(), colors.visualizationBackground);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
     painter.drawImage(rect().adjusted(1, 1, -1, -1), m_history);
-    painter.setPen(QPen(QColor(73, 76, 84), 1.0));
+    painter.setPen(QPen(colors.visualizationBorder, 1.0));
     painter.drawRect(rect().adjusted(0, 0, -1, -1));
 }
 

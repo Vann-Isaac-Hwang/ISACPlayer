@@ -1,4 +1,5 @@
 #include "PatchbayView.h"
+#include "ui/theme/ThemeManager.h"
 #include <QPainter>
 #include <QCursor>
 #include <QGraphicsSceneMouseEvent>
@@ -16,13 +17,14 @@ VisualPortItem::VisualPortItem(VisualNodeItem* parentNode, bool isOutput, PortIn
     , m_isOutput(isOutput)
     , m_portIndex(index)
 {
+    const auto& colors = ThemeManager::paletteColors();
     setAcceptHoverEvents(true);
-    setBrush(isOutput ? QColor(240, 140, 50) : QColor(70, 160, 245));
-    setPen(QPen(QColor(25, 25, 30), 2.0));
+    setBrush(isOutput ? colors.portOutput : colors.portInput);
+    setPen(QPen(colors.nodeBody, 2.0));
 
     // 绘制端口名称标签
     auto* label = new QGraphicsSimpleTextItem(name, this);
-    label->setBrush(QColor(210, 215, 225));
+    label->setBrush(colors.text);
     QFont f = label->font();
     f.setPointSize(9);
     label->setFont(f);
@@ -46,6 +48,18 @@ void VisualPortItem::removeCable(VisualCableItem* cable) {
 void VisualPortItem::updateCables() {
     for (auto* c : m_cables) {
         c->updatePath();
+    }
+}
+
+void VisualPortItem::applyTheme()
+{
+    const auto& colors = ThemeManager::paletteColors();
+    setBrush(m_isOutput ? colors.portOutput : colors.portInput);
+    setPen(QPen(colors.nodeBody, 2.0));
+    for (QGraphicsItem* child : childItems()) {
+        if (auto* label = dynamic_cast<QGraphicsSimpleTextItem*>(child)) {
+            label->setBrush(colors.text);
+        }
     }
 }
 
@@ -94,10 +108,29 @@ void VisualCableItem::updatePath(const QPointF& tempEndPos) {
     path.cubicTo(QPointF(p1.x() + dx, p1.y()), QPointF(p2.x() - dx, p2.y()), p2);
     setPath(path);
 
+    const auto& colors = ThemeManager::paletteColors();
     if (m_endPort) {
-        setPen(QPen(QColor(95, 185, 255, 220), 3.0, Qt::SolidLine, Qt::RoundCap));
+        QColor cable = colors.cable;
+        cable.setAlpha(220);
+        setPen(QPen(cable, 3.0, Qt::SolidLine, Qt::RoundCap));
     } else {
-        setPen(QPen(QColor(255, 190, 90, 200), 2.5, Qt::DashLine, Qt::RoundCap));
+        QColor pending = colors.cablePending;
+        pending.setAlpha(200);
+        setPen(QPen(pending, 2.5, Qt::DashLine, Qt::RoundCap));
+    }
+}
+
+void VisualCableItem::applyTheme()
+{
+    const auto& colors = ThemeManager::paletteColors();
+    if (m_endPort) {
+        QColor cable = colors.cable;
+        cable.setAlpha(220);
+        setPen(QPen(cable, 3.0, Qt::SolidLine, Qt::RoundCap));
+    } else {
+        QColor pending = colors.cablePending;
+        pending.setAlpha(200);
+        setPen(QPen(pending, 2.5, Qt::DashLine, Qt::RoundCap));
     }
 }
 
@@ -131,27 +164,35 @@ QRectF VisualNodeItem::boundingRect() const {
 
 void VisualNodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) {
     painter->setRenderHint(QPainter::Antialiasing);
+    const auto& colors = ThemeManager::paletteColors();
 
     // 1. 节点主体暗黑半透明背景
     QPainterPath bodyPath;
     bodyPath.addRoundedRect(boundingRect(), 8, 8);
-    painter->fillPath(bodyPath, QColor(38, 41, 48, 240));
+    QColor body = colors.nodeBody;
+    body.setAlpha(240);
+    painter->fillPath(bodyPath, body);
 
     // 2. 顶部彩色标题栏 (区分源节点、处理算子与声卡输出)
     QPainterPath headerPath;
     headerPath.addRoundedRect(QRectF(0, 0, m_width, 30), 8, 8);
-    QColor headerColor(60, 105, 165); // 默认算子蓝色
-    if (m_audioNode->numInputs() == 0)  headerColor = QColor(45, 140, 95);  // 源节点绿色
-    if (m_audioNode->numOutputs() == 0) headerColor = QColor(165, 65, 80);  // 声卡输出红色
+    QColor headerColor = colors.accent;
+    if (m_audioNode->numInputs() == 0) {
+        headerColor = colors.sourceNode;
+    }
+    if (m_audioNode->numOutputs() == 0) {
+        headerColor = colors.sinkNode;
+    }
     painter->fillPath(headerPath, headerColor);
 
     // 3. 边框高亮
-    QPen borderPen(isSelected() ? QColor(120, 195, 255) : QColor(70, 75, 88), isSelected() ? 2.0 : 1.2);
+    QPen borderPen(isSelected() ? colors.nodeSelected : colors.nodeBorder,
+                   isSelected() ? 2.0 : 1.2);
     painter->setPen(borderPen);
     painter->drawPath(bodyPath);
 
     // 4. 绘制节点标题
-    painter->setPen(Qt::white);
+    painter->setPen(colors.textPrimary);
     QFont titleFont = painter->font();
     titleFont.setBold(true);
     titleFont.setPointSize(9);
@@ -174,6 +215,19 @@ PatchbayScene::PatchbayScene(AudioEngine& engine, QObject* parent)
 {
     setSceneRect(-1000, -1000, 2000, 2000);
     syncFromEngine();
+    if (auto* themeManager = ThemeManager::instance()) {
+        connect(themeManager, &ThemeManager::themeChanged, this, [this]() {
+            for (QGraphicsItem* item : items()) {
+                if (auto* port = dynamic_cast<VisualPortItem*>(item)) {
+                    port->applyTheme();
+                } else if (auto* cable =
+                               dynamic_cast<VisualCableItem*>(item)) {
+                    cable->applyTheme();
+                }
+            }
+            update();
+        });
+    }
 }
 
 void PatchbayScene::syncFromEngine() {
@@ -249,13 +303,14 @@ void PatchbayScene::applyNodePositions(
 }
 
 void PatchbayScene::drawBackground(QPainter* painter, const QRectF& rect) {
-    painter->fillRect(rect, QColor(24, 26, 31)); // 深灰背景
+    const auto& colors = ThemeManager::paletteColors();
+    painter->fillRect(rect, colors.canvas);
 
     const int gridSize = 25;
     qreal left = int(rect.left()) - (int(rect.left()) % gridSize);
     qreal top  = int(rect.top())  - (int(rect.top())  % gridSize);
 
-    painter->setPen(QPen(QColor(46, 50, 60), 1.5));
+    painter->setPen(QPen(colors.canvasGrid, 1.5));
     for (qreal x = left; x < rect.right(); x += gridSize) {
         for (qreal y = top; y < rect.bottom(); y += gridSize) {
             painter->drawPoint(QPointF(x, y));

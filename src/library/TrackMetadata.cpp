@@ -3,7 +3,6 @@
 #include <QFileInfo>
 #include <QImageReader>
 #include <QPainter>
-#include <QPainterPath>
 #include <QLinearGradient>
 #include <algorithm>
 
@@ -140,9 +139,7 @@ QPixmap MetadataReader::generateDefaultCover(const QString& title, int size) {
     grad.setColorAt(0.0, c1);
     grad.setColorAt(1.0, c2);
 
-    QPainterPath path;
-    path.addRoundedRect(QRectF(0, 0, size, size), 18, 18);
-    p.fillPath(path, grad);
+    p.fillRect(QRectF(0, 0, size, size), grad);
 
     // 绘制居中音符图标
     p.setPen(QColor(255, 255, 255, 190));

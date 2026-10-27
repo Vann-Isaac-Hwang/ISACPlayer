@@ -19,14 +19,22 @@ public:
 
 protected:
     bool event(QEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
 
 private:
     void animateHoverTo(qreal progress);
+    int handleLength() const noexcept;
+    QRect visualHandleRect() const noexcept;
+    void setSliderPositionFromPoint(const QPoint& point);
 
     qreal m_hoverProgress = 0.0;
     int m_normalHandleHeight = 12;
     int m_hoverHandleHeight = 20;
+    bool m_dragging = false;
+    int m_dragOffset = 0;
     QPropertyAnimation* m_hoverAnimation = nullptr;
 };
 

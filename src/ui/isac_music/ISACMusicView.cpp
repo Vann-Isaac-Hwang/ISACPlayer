@@ -1,6 +1,7 @@
 #include "ISACMusicView.h"
 #include "ui/widgets/HoverIconButton.h"
 #include "ui/widgets/HoverSlider.h"
+#include "ui/theme/ThemeManager.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -20,6 +21,8 @@
 #include <QResizeEvent>
 #include <QStyledItemDelegate>
 #include <QStyle>
+#include <QPainter>
+#include <QPixmap>
 #include <QToolButton>
 #include <QRegularExpression>
 #include <algorithm>
@@ -256,10 +259,10 @@ QVariant TrackTableModel::data(const QModelIndex& index, int role) const {
     const int durationColumn = titleColumn + 3;
     if (role == Qt::ForegroundRole &&
         (index.column() == artistColumn || index.column() == albumColumn)) {
-        return QColor("#A5AAB8");
+        return ThemeManager::paletteColors().textSecondary;
     }
     if (role == Qt::ForegroundRole && index.column() == durationColumn) {
-        return QColor("#8A8F9E");
+        return ThemeManager::paletteColors().textMuted;
     }
     if (role != Qt::DisplayRole) {
         return {};
@@ -294,7 +297,7 @@ QVariant TrackTableModel::headerData(int section, Qt::Orientation orientation, i
 
     switch (section) {
     case 0: return m_showTrackNumber
-        ? QStringLiteral("Track Number") : QStringLiteral("Title");
+        ? QStringLiteral("#") : QStringLiteral("Title");
     case 1: return m_showTrackNumber
         ? QStringLiteral("Title") : QStringLiteral("Artist");
     case 2: return m_showTrackNumber
@@ -1885,9 +1888,6 @@ NowPlayingHeader::NowPlayingHeader(QWidget* parent) : QWidget(parent) {
     m_btnPrev = new HoverIconButton(this);
     m_btnPlayPause = new HoverIconButton(this);
     m_btnNext = new HoverIconButton(this);
-    m_btnPrev->setIcon(QIcon(QStringLiteral(":/buttons/previous.png")));
-    m_btnNext->setIcon(QIcon(QStringLiteral(":/buttons/next.png")));
-    m_btnPlayPause->setIcon(QIcon(QStringLiteral(":/buttons/play.png")));
     for (auto* button : {m_btnPrev, m_btnPlayPause, m_btnNext,
                          m_playbackModeButton}) {
         button->setIconSize(QSize(31, 31));
@@ -2035,6 +2035,45 @@ NowPlayingHeader::NowPlayingHeader(QWidget* parent) : QWidget(parent) {
             QStringLiteral("Gain %1x").arg(m_volumeFactor, 0, 'f', 2));
         emit volumeChanged(static_cast<float>(m_volumeFactor));
     });
+    updateControlIcons();
+    if (auto* themeManager = ThemeManager::instance()) {
+        connect(themeManager, &ThemeManager::themeChanged, this,
+                &NowPlayingHeader::updateControlIcons);
+    }
+}
+
+void NowPlayingHeader::updateControlIcons()
+{
+    const QColor iconColor = ThemeManager::paletteColors().textPrimary;
+    const auto themedIcon = [&iconColor](const QString& resourcePath) {
+        QPixmap pixmap(resourcePath);
+        if (pixmap.isNull()) {
+            return QIcon(resourcePath);
+        }
+        pixmap = pixmap.scaled(64, 64, Qt::KeepAspectRatio,
+                               Qt::SmoothTransformation);
+        QPainter painter(&pixmap);
+        painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+        painter.fillRect(pixmap.rect(), iconColor);
+        return QIcon(pixmap);
+    };
+
+    m_btnPrev->setIcon(themedIcon(QStringLiteral(":/buttons/previous.png")));
+    m_btnNext->setIcon(themedIcon(QStringLiteral(":/buttons/next.png")));
+    m_btnPlayPause->setIcon(themedIcon(
+        m_isPlaying
+            ? QStringLiteral(":/buttons/pause.png")
+            : QStringLiteral(":/buttons/play.png")));
+
+    static const QStringList modeIcons{
+        QStringLiteral(":/buttons/sequential.png"),
+        QStringLiteral(":/buttons/shuffle.png"),
+        QStringLiteral(":/buttons/repeat-one.png"),
+        QStringLiteral(":/buttons/repeat-all.png")};
+    if (m_playbackModeValue >= 0 && m_playbackModeValue < modeIcons.size()) {
+        m_playbackModeButton->setIcon(
+            themedIcon(modeIcons[m_playbackModeValue]));
+    }
 }
 
 void NowPlayingHeader::setTrackInfo(const library::TrackInfo& info) {
@@ -2112,27 +2151,21 @@ void NowPlayingHeader::updateWaveformHoverLabel(bool visible, double progress)
 }
 
 void NowPlayingHeader::setPlayingState(bool playing) {
-    m_btnPlayPause->setIcon(QIcon(playing
-        ? QStringLiteral(":/buttons/pause.png")
-        : QStringLiteral(":/buttons/play.png")));
+    m_isPlaying = playing;
     m_btnPlayPause->setToolTip(
         playing ? QStringLiteral("Pause") : QStringLiteral("Play"));
+    updateControlIcons();
 }
 
 void NowPlayingHeader::setPlaybackMode(int mode) {
     static const QStringList descriptions{
         QStringLiteral("Sequential"), QStringLiteral("Shuffle"),
         QStringLiteral("Repeat One"), QStringLiteral("Repeat All")};
-    static const QStringList icons{
-        QStringLiteral(":/buttons/sequential.png"),
-        QStringLiteral(":/buttons/shuffle.png"),
-        QStringLiteral(":/buttons/repeat-one.png"),
-        QStringLiteral(":/buttons/repeat-all.png")};
-    if (mode < 0 || mode >= icons.size()) {
+    if (mode < 0 || mode >= descriptions.size()) {
         return;
     }
     m_playbackModeValue = mode;
-    m_playbackModeButton->setIcon(QIcon(icons[mode]));
+    updateControlIcons();
     m_playbackModeButton->setToolTip(descriptions[mode]);
 }
 

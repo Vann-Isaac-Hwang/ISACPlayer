@@ -27,6 +27,7 @@ public:
     void addCable(VisualCableItem* cable) { m_cables.push_back(cable); }
     void removeCable(VisualCableItem* cable);
     void updateCables();
+    void applyTheme();
 
 protected:
     void hoverEnterEvent(QGraphicsSceneHoverEvent* event) override;
@@ -46,6 +47,7 @@ public:
     ~VisualCableItem() override;
 
     void updatePath(const QPointF& tempEndPos = QPointF());
+    void applyTheme();
     VisualPortItem* startPort() const { return m_startPort; }
     VisualPortItem* endPort() const { return m_endPort; }
     void setEndPort(VisualPortItem* port);

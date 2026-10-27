@@ -1,4 +1,5 @@
 #include "PlaybackQueueView.h"
+#include "ui/theme/ThemeManager.h"
 
 #include <algorithm>
 #include <QFont>
@@ -32,7 +33,7 @@ QVariant PlaybackQueueListModel::data(const QModelIndex& index, int role) const
         return font;
     }
     if (role == Qt::ForegroundRole && trackId == m_currentTrackId) {
-        return QColor(QStringLiteral("#FA2D48"));
+        return ThemeManager::paletteColors().accent;
     }
     if (role != Qt::DisplayRole && role != Qt::ToolTipRole) {
         return {};

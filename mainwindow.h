@@ -11,6 +11,7 @@
 #include "ui/isac_music/PlaybackQueueView.h"
 #include "ui/patchbay/PatchbayView.h"
 #include "ui/plugins/PluginManager.h"
+#include "ui/theme/ThemeManager.h"
 #include "library/LibraryScanner.h"
 #include "library/PlaybackQueue.h"
 #ifdef ISAC_HAS_MPRIS
@@ -42,6 +43,7 @@ private:
     void refreshPlaybackQueueView(bool force = false);
     std::vector<qint64> currentTrackIds() const;
 
+    isac::ui::ThemeManager m_themeManager;
     Ui::MainWindow *ui;
     isac::ui::PluginManager m_pluginManager;
     isac::library::LibraryRepository m_libraryRepository;

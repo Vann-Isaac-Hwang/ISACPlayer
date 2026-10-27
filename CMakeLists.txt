@@ -70,6 +70,8 @@ set(PROJECT_SOURCES
     src/ui/patchbay/DspPresetCatalog.cpp
     src/ui/inspector/NodeInspectorWidget.h
     src/ui/inspector/NodeInspectorWidget.cpp
+    src/ui/theme/ThemeManager.h
+    src/ui/theme/ThemeManager.cpp
     src/ui/plugins/PluginManager.h
     src/ui/plugins/PluginManager.cpp
     config/app-icons.qrc
@@ -160,6 +162,8 @@ if(BUILD_TESTING)
         src/ui/patchbay/PatchbayView.cpp
         src/ui/patchbay/DspPresetCatalog.h
         src/ui/patchbay/DspPresetCatalog.cpp
+        src/ui/theme/ThemeManager.h
+        src/ui/theme/ThemeManager.cpp
     )
     target_include_directories(isac_patchbay_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src

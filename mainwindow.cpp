@@ -76,6 +76,7 @@ int normalizedVisualizationUpdateInterval(int value)
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
+    , m_themeManager(this)
     , ui(new Ui::MainWindow)
     , m_pluginManager(QCoreApplication::applicationDirPath() + "/plugins")
     , m_libraryRepository(libraryDatabasePath())
@@ -183,6 +184,21 @@ MainWindow::MainWindow(QWidget *parent)
                 "padding-top: 8px; border-bottom: 1px solid #343846;");
             layout->addWidget(heading);
         };
+
+        addSectionTitle(QStringLiteral("Appearance"));
+        auto* appearanceForm = new QFormLayout();
+        auto* themeSelector = new QComboBox(&dialog);
+        themeSelector->addItem(QStringLiteral("Follow System"),
+                               static_cast<int>(isac::ui::ThemeMode::System));
+        themeSelector->addItem(QStringLiteral("Light"),
+                               static_cast<int>(isac::ui::ThemeMode::Light));
+        themeSelector->addItem(QStringLiteral("Dark"),
+                               static_cast<int>(isac::ui::ThemeMode::Dark));
+        const int themeIndex = themeSelector->findData(
+            static_cast<int>(m_themeManager.mode()));
+        themeSelector->setCurrentIndex(themeIndex >= 0 ? themeIndex : 0);
+        appearanceForm->addRow(QStringLiteral("Color theme"), themeSelector);
+        layout->addLayout(appearanceForm);
 
         addSectionTitle(QStringLiteral("Music Library"));
         auto* pathList = new QListWidget(content);
@@ -472,6 +488,8 @@ MainWindow::MainWindow(QWidget *parent)
             return;
         }
 
+        m_themeManager.setMode(static_cast<isac::ui::ThemeMode>(
+            themeSelector->currentData().toInt()));
         settings.setValue(QStringLiteral("playback/fadeEnabled"),
                           fadeEnabled->isChecked());
         settings.setValue(QStringLiteral("playback/fadeDurationSeconds"),
@@ -1858,6 +1876,11 @@ MainWindow::MainWindow(QWidget *parent)
     m_visualizationTimer->start(normalizedVisualizationUpdateInterval(
         settings.value(QStringLiteral("visualization/updateIntervalMs"), 33)
             .toInt()));
+
+    // Local widget stylesheets are kept as compact component styles. The
+    // theme manager records those base styles and expands their color tokens
+    // after the complete widget tree has been assembled.
+    m_themeManager.applyToExistingWidgets();
 }
 
 void MainWindow::setRouterDockWidgetsVisible(bool visible)

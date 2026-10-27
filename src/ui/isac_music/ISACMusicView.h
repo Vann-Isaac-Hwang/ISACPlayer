@@ -236,6 +236,7 @@ signals:
 
 private:
     static QString formatTime(double seconds);
+    void updateControlIcons();
     void updateAudioInfoLabel();
     void updateWaveformHoverLabel(bool visible, double progress);
 
@@ -264,6 +265,7 @@ private:
     double m_totalDuration = 0.0;
     double m_hoverPreviewProgress = 0.0;
     bool m_hoverPreviewVisible = false;
+    bool m_isPlaying = false;
     library::TrackInfo m_trackInfo;
     bool m_showAudioFormat = true;
     bool m_showSampleRate = true;
