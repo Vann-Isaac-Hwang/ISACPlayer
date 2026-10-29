@@ -28,6 +28,7 @@ namespace Ui { class MainWindow; }
 QT_END_NAMESPACE
 
 class QDockWidget;
+namespace isac::ui { class SmoothScrollFilter; }
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -52,6 +53,7 @@ private:
                                 QString* error = nullptr);
 
     isac::ui::ThemeManager m_themeManager;
+    isac::ui::SmoothScrollFilter* m_smoothScrollFilter = nullptr;
     Ui::MainWindow *ui;
     isac::ui::PluginManager m_pluginManager;
     isac::media::FormatPluginManager m_formatPluginManager;

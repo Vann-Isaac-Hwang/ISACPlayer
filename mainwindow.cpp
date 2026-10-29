@@ -2,6 +2,7 @@
 #include "./ui_mainwindow.h"
 #include "ui/inspector/NodeInspectorWidget.h"
 #include "ui/patchbay/DspPresetCatalog.h"
+#include "ui/widgets/SmoothScrollFilter.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -95,6 +96,39 @@ MainWindow::MainWindow(QWidget *parent)
 {
     ui->setupUi(this);
     QSettings settings;
+    if (settings.value(QStringLiteral("display/scrollTuningVersion"), 0)
+            .toInt() < 1) {
+        const double previousSensitivity = settings.value(
+            QStringLiteral("display/scrollSensitivity"), 1.0).toDouble();
+        const int previousDuration = settings.value(
+            QStringLiteral("display/scrollAnimationDurationMs"), 210).toInt();
+        if (qFuzzyCompare(previousSensitivity, 1.0)) {
+            settings.setValue(
+                QStringLiteral("display/scrollSensitivity"), 1.25);
+        }
+        if (previousDuration == 210) {
+            settings.setValue(
+                QStringLiteral("display/scrollAnimationDurationMs"), 140);
+        }
+        settings.setValue(
+            QStringLiteral("display/scrollTuningVersion"), 1);
+    }
+    m_smoothScrollFilter =
+        new isac::ui::SmoothScrollFilter(this);
+    if (QApplication::instance()) {
+        QApplication::instance()->installEventFilter(m_smoothScrollFilter);
+    }
+    m_smoothScrollFilter->setSmoothScrollingEnabled(
+        settings.value(
+            QStringLiteral("display/smoothScrollingEnabled"), true)
+            .toBool());
+    m_smoothScrollFilter->setSensitivity(
+        settings.value(QStringLiteral("display/scrollSensitivity"), 1.25)
+            .toDouble());
+    m_smoothScrollFilter->setAnimationDurationMs(
+        settings.value(
+            QStringLiteral("display/scrollAnimationDurationMs"), 140)
+            .toInt());
     m_audioEngine.setFadeEnabled(
         settings.value(QStringLiteral("playback/fadeEnabled"), false).toBool());
     m_audioEngine.setFadeDurationSeconds(
@@ -251,6 +285,48 @@ MainWindow::MainWindow(QWidget *parent)
         appearanceForm->addRow(
             QStringLiteral("Playback header order"), playbackHeaderOrder);
         layout->addLayout(appearanceForm);
+
+        addSectionTitle(QStringLiteral("Scrolling"));
+        auto* smoothScrollingEnabled = new QCheckBox(
+            QStringLiteral("Enable smooth scrolling"), content);
+        smoothScrollingEnabled->setChecked(settings.value(
+            QStringLiteral("display/smoothScrollingEnabled"), true)
+                                                .toBool());
+        layout->addWidget(smoothScrollingEnabled);
+        auto* scrollingForm = new QFormLayout();
+        auto* scrollSensitivity = new QDoubleSpinBox(content);
+        scrollSensitivity->setRange(0.5, 10.0);
+        scrollSensitivity->setSingleStep(0.1);
+        scrollSensitivity->setDecimals(1);
+        scrollSensitivity->setSuffix(QStringLiteral("x"));
+        scrollSensitivity->setValue(std::clamp(
+            settings.value(QStringLiteral("display/scrollSensitivity"), 1.25)
+                .toDouble(),
+            0.5, 10.0));
+        scrollSensitivity->setToolTip(
+            QStringLiteral("Adjust distance traveled per wheel input"));
+        scrollingForm->addRow(
+            QStringLiteral("Scroll sensitivity"), scrollSensitivity);
+        auto* scrollDuration = new QSpinBox(content);
+        scrollDuration->setRange(60, 350);
+        scrollDuration->setSingleStep(10);
+        scrollDuration->setSuffix(QStringLiteral(" ms"));
+        scrollDuration->setValue(std::clamp(
+            settings.value(
+                QStringLiteral("display/scrollAnimationDurationMs"), 140)
+                .toInt(),
+            60, 350));
+        scrollDuration->setToolTip(
+            QStringLiteral("Controls how long mouse-wheel momentum glides; trackpad pixel scrolling follows device input directly"));
+        scrollingForm->addRow(
+            QStringLiteral("Wheel glide duration"), scrollDuration);
+        layout->addLayout(scrollingForm);
+        connect(smoothScrollingEnabled, &QCheckBox::toggled,
+                scrollSensitivity, &QWidget::setEnabled);
+        connect(smoothScrollingEnabled, &QCheckBox::toggled,
+                scrollDuration, &QWidget::setEnabled);
+        scrollSensitivity->setEnabled(smoothScrollingEnabled->isChecked());
+        scrollDuration->setEnabled(smoothScrollingEnabled->isChecked());
 
         addSectionTitle(QStringLiteral("Music Library"));
         auto* pathList = new QListWidget(content);
@@ -583,6 +659,20 @@ MainWindow::MainWindow(QWidget *parent)
             QStringLiteral("display/playbackHeaderOrder"),
             selectedPlaybackHeaderOrder);
         m_nowPlayingHeader->setControlOrder(selectedPlaybackHeaderOrder);
+        settings.setValue(
+            QStringLiteral("display/smoothScrollingEnabled"),
+            smoothScrollingEnabled->isChecked());
+        settings.setValue(QStringLiteral("display/scrollSensitivity"),
+                          scrollSensitivity->value());
+        settings.setValue(
+            QStringLiteral("display/scrollAnimationDurationMs"),
+            scrollDuration->value());
+        m_smoothScrollFilter->setSensitivity(
+            scrollSensitivity->value());
+        m_smoothScrollFilter->setAnimationDurationMs(
+            scrollDuration->value());
+        m_smoothScrollFilter->setSmoothScrollingEnabled(
+            smoothScrollingEnabled->isChecked());
         settings.setValue(QStringLiteral("playback/fadeEnabled"),
                           fadeEnabled->isChecked());
         settings.setValue(QStringLiteral("playback/fadeDurationSeconds"),

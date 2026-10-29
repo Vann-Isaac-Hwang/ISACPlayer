@@ -69,6 +69,8 @@ set(PROJECT_SOURCES
     src/ui/widgets/HoverIconButton.cpp
     src/ui/widgets/HoverSlider.h
     src/ui/widgets/HoverSlider.cpp
+    src/ui/widgets/SmoothScrollFilter.h
+    src/ui/widgets/SmoothScrollFilter.cpp
     src/ui/player/AudioVisualization.h
     src/ui/player/AudioVisualization.cpp
     src/ui/patchbay/PatchbayView.h
@@ -191,6 +193,22 @@ if(BUILD_TESTING)
     )
     add_test(NAME isac_patchbay_tests COMMAND isac_patchbay_tests)
     set_tests_properties(isac_patchbay_tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+
+    add_executable(isac_smooth_scroll_tests
+        tests/SmoothScrollFilterTest.cpp
+        src/ui/widgets/SmoothScrollFilter.h
+        src/ui/widgets/SmoothScrollFilter.cpp
+    )
+    target_include_directories(isac_smooth_scroll_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(isac_smooth_scroll_tests PRIVATE
+        Qt${QT_VERSION_MAJOR}::Widgets
+    )
+    add_test(NAME isac_smooth_scroll_tests COMMAND isac_smooth_scroll_tests)
+    set_tests_properties(isac_smooth_scroll_tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
 
