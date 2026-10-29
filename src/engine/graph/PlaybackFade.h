@@ -5,6 +5,15 @@
 
 namespace isac {
 
+inline std::uint64_t transitionFadeFrameCount(
+    bool enabled, std::uint64_t configuredFrames,
+    std::uint64_t safetyFrames) noexcept
+{
+    return enabled && configuredFrames > 0
+        ? configuredFrames
+        : safetyFrames;
+}
+
 inline double linearFadeInGain(std::uint64_t frame,
                                std::uint64_t fadeFrames) noexcept
 {

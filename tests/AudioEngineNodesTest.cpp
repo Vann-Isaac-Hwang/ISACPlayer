@@ -46,6 +46,13 @@ void testDoublePlanarBus()
 
 void testPlaybackFadeEnvelope()
 {
+    expect(isac::transitionFadeFrameCount(true, 4800, 128) == 4800,
+           "enabled play/pause fade must use its configured duration");
+    expect(isac::transitionFadeFrameCount(false, 4800, 128) == 128,
+           "disabled play/pause fade must retain the click-prevention ramp");
+    expect(isac::transitionFadeFrameCount(true, 0, 128) == 128,
+           "zero configured duration must retain the click-prevention ramp");
+
     constexpr std::uint64_t fadeFrames = 100;
     constexpr std::uint64_t totalFrames = 1000;
     expectNear(isac::linearFadeInGain(0, fadeFrames),

@@ -328,12 +328,8 @@ void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
         m_fadeDurationFrames.load(std::memory_order_relaxed);
     const double masterGain =
         m_masterGain.load(std::memory_order_relaxed);
-    // Even when the user-facing fade is disabled, keep a short output ramp
-    // around start/stop transitions so a non-zero sample is never truncated.
     const ma_uint64 transitionFadeFrames =
-        fadeEnabled && fadeFrames > 0
-        ? fadeFrames
-        : OUTPUT_TRANSITION_RAMP_FRAMES;
+        m_activeTransitionFadeFrames.load(std::memory_order_relaxed);
     const bool pauseFadeIn =
         m_pauseFadeInActive.load(std::memory_order_acquire);
     const ma_uint64 pauseFadeElapsed =
@@ -635,6 +631,32 @@ void AudioEngine::setFadeDurationSeconds(double seconds) noexcept
         static_cast<ma_uint64>(
             clampedSeconds * static_cast<double>(m_outputSampleRate)),
         std::memory_order_relaxed);
+}
+
+void AudioEngine::setPlayPauseFadeEnabled(bool enabled) noexcept
+{
+    m_playPauseFadeEnabled.store(enabled, std::memory_order_relaxed);
+}
+
+void AudioEngine::setPlayPauseFadeDurationSeconds(double seconds) noexcept
+{
+    if (!std::isfinite(seconds)) {
+        return;
+    }
+    const double clampedSeconds = std::clamp(seconds, 0.05, 30.0);
+    m_playPauseFadeDurationSeconds = clampedSeconds;
+    m_playPauseFadeDurationFrames.store(
+        static_cast<ma_uint64>(
+            clampedSeconds * static_cast<double>(m_outputSampleRate)),
+        std::memory_order_relaxed);
+}
+
+ma_uint64 AudioEngine::configuredPlayPauseFadeFrames() const noexcept
+{
+    return transitionFadeFrameCount(
+        m_playPauseFadeEnabled.load(std::memory_order_relaxed),
+        m_playPauseFadeDurationFrames.load(std::memory_order_relaxed),
+        OUTPUT_TRANSITION_RAMP_FRAMES);
 }
 
 void AudioEngine::setOverlapEnabled(bool enabled) noexcept
@@ -989,6 +1011,11 @@ bool AudioEngine::loadAndPlay(const std::string& filePath, std::string* error) {
         static_cast<ma_uint64>(
             m_fadeDurationSeconds * static_cast<double>(m_outputSampleRate)),
         std::memory_order_relaxed);
+    m_playPauseFadeDurationFrames.store(
+        static_cast<ma_uint64>(
+            m_playPauseFadeDurationSeconds *
+            static_cast<double>(m_outputSampleRate)),
+        std::memory_order_relaxed);
     m_overlapDurationFrames.store(
         static_cast<ma_uint64>(
             m_overlapDurationSeconds *
@@ -1044,6 +1071,8 @@ bool AudioEngine::loadAndPlay(const std::string& filePath, std::string* error) {
     }
 
     m_decoderLoaded.store(true, std::memory_order_release);
+    m_activeTransitionFadeFrames.store(
+        configuredPlayPauseFadeFrames(), std::memory_order_relaxed);
     m_pauseFadeInElapsedFrames.store(0, std::memory_order_release);
     m_pauseFadeInActive.store(true, std::memory_order_release);
     m_playbackRequested.store(true, std::memory_order_release);
@@ -1080,6 +1109,8 @@ void AudioEngine::setPlaying(bool play) {
             }
             restorePausedPosition();
         }
+        m_activeTransitionFadeFrames.store(
+            configuredPlayPauseFadeFrames(), std::memory_order_relaxed);
         m_playbackRequested.store(true, std::memory_order_release);
         m_pauseFadeOutComplete.store(false, std::memory_order_release);
         m_pauseFadeInElapsedFrames.store(0, std::memory_order_release);
@@ -1101,6 +1132,8 @@ void AudioEngine::setPlaying(bool play) {
         return;
     }
     if (m_deviceInitialized) {
+        m_activeTransitionFadeFrames.store(
+            configuredPlayPauseFadeFrames(), std::memory_order_relaxed);
         const int active = m_activeLane.load(std::memory_order_acquire);
         m_pauseRestoreFrame.store(
             m_decoderLanes[static_cast<std::size_t>(active)]

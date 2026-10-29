@@ -79,6 +79,8 @@ public:
     std::optional<AudioOutputDevice> selectedOutputDevice() const;
     void setFadeEnabled(bool enabled) noexcept;
     void setFadeDurationSeconds(double seconds) noexcept;
+    void setPlayPauseFadeEnabled(bool enabled) noexcept;
+    void setPlayPauseFadeDurationSeconds(double seconds) noexcept;
     void setOverlapEnabled(bool enabled) noexcept;
     void setOverlapDurationSeconds(double seconds) noexcept;
     bool overlapEnabled() const noexcept;
@@ -150,6 +152,7 @@ private:
     void decoderLoop();
     void stopDecoderThread();
     void notifyDecoder();
+    ma_uint64 configuredPlayPauseFadeFrames() const noexcept;
     void restorePausedPosition();
     void seekToFrame(ma_uint64 requestedFrame);
     void markLaneReady(DecoderLane& lane);
@@ -167,6 +170,7 @@ private:
     std::optional<AudioOutputDevice> m_selectedOutputDevice;
     std::uint32_t m_outputSampleRate = 48000;
     double m_fadeDurationSeconds = 2.0;
+    double m_playPauseFadeDurationSeconds = 2.0;
     double m_overlapDurationSeconds = 2.0;
     std::atomic<bool> m_decoderLoaded{false};
     bool m_deviceInitialized = false;
@@ -213,6 +217,8 @@ private:
     std::atomic<ma_uint64> m_underrunFrames{0};
     std::atomic<bool> m_fadeEnabled{false};
     std::atomic<ma_uint64> m_fadeDurationFrames{96000};
+    std::atomic<bool> m_playPauseFadeEnabled{false};
+    std::atomic<ma_uint64> m_playPauseFadeDurationFrames{96000};
     std::atomic<bool> m_overlapEnabled{false};
     std::atomic<ma_uint64> m_overlapDurationFrames{96000};
     std::atomic<bool> m_overlapActive{false};
@@ -225,6 +231,8 @@ private:
     std::atomic<bool> m_pauseFadeInActive{false};
     std::atomic<ma_uint64> m_pauseFadeOutElapsedFrames{0};
     std::atomic<ma_uint64> m_pauseFadeInElapsedFrames{0};
+    std::atomic<ma_uint64> m_activeTransitionFadeFrames{
+        OUTPUT_TRANSITION_RAMP_FRAMES};
     std::atomic<bool> m_pauseFadeOutComplete{false};
     std::atomic<bool> m_pauseFrameCaptured{false};
     std::atomic<ma_uint64> m_pauseRestoreFrame{0};

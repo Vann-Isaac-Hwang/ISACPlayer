@@ -91,6 +91,14 @@ MainWindow::MainWindow(QWidget *parent)
         settings.value(QStringLiteral("playback/fadeEnabled"), false).toBool());
     m_audioEngine.setFadeDurationSeconds(
         settings.value(QStringLiteral("playback/fadeDurationSeconds"), 2.0).toDouble());
+    m_audioEngine.setPlayPauseFadeEnabled(settings.value(
+        QStringLiteral("playback/playPauseFadeEnabled"),
+        settings.value(QStringLiteral("playback/fadeEnabled"), false))
+                                              .toBool());
+    m_audioEngine.setPlayPauseFadeDurationSeconds(settings.value(
+        QStringLiteral("playback/playPauseFadeDurationSeconds"),
+        settings.value(QStringLiteral("playback/fadeDurationSeconds"), 2.0))
+                                                       .toDouble());
     m_audioEngine.setOverlapEnabled(
         settings.value(QStringLiteral("playback/overlapEnabled"), false).toBool());
     m_audioEngine.setOverlapDurationSeconds(
@@ -359,7 +367,8 @@ MainWindow::MainWindow(QWidget *parent)
 
         addSectionTitle(QStringLiteral("Playback"));
         auto* playbackForm = new QFormLayout();
-        auto* fadeEnabled = new QCheckBox("Enable fade in/out", &dialog);
+        auto* fadeEnabled = new QCheckBox(
+            QStringLiteral("Fade at track start/end"), &dialog);
         fadeEnabled->setChecked(
             settings.value(QStringLiteral("playback/fadeEnabled"), false).toBool());
         auto* fadeDuration = new QDoubleSpinBox(&dialog);
@@ -374,7 +383,36 @@ MainWindow::MainWindow(QWidget *parent)
         connect(fadeEnabled, &QCheckBox::toggled,
                 fadeDuration, &QDoubleSpinBox::setEnabled);
         playbackForm->addRow(fadeEnabled);
-        playbackForm->addRow("Fade duration", fadeDuration);
+        playbackForm->addRow(QStringLiteral("Track fade duration"),
+                             fadeDuration);
+        auto* playPauseFadeEnabled = new QCheckBox(
+            QStringLiteral("Fade when playing/pausing"), &dialog);
+        playPauseFadeEnabled->setChecked(settings.value(
+            QStringLiteral("playback/playPauseFadeEnabled"),
+            settings.value(QStringLiteral("playback/fadeEnabled"), false))
+                                             .toBool());
+        auto* playPauseFadeDuration = new QDoubleSpinBox(&dialog);
+        playPauseFadeDuration->setRange(0.05, 10.0);
+        playPauseFadeDuration->setSingleStep(0.05);
+        playPauseFadeDuration->setSuffix(QStringLiteral(" s"));
+        playPauseFadeDuration->setDecimals(2);
+        playPauseFadeDuration->setToolTip(
+            QStringLiteral("Duration used for manual play and pause transitions"));
+        playPauseFadeDuration->setValue(std::clamp(
+            settings.value(
+                QStringLiteral("playback/playPauseFadeDurationSeconds"),
+                settings.value(
+                    QStringLiteral("playback/fadeDurationSeconds"), 2.0))
+                .toDouble(),
+            0.05, 10.0));
+        playPauseFadeDuration->setEnabled(
+            playPauseFadeEnabled->isChecked());
+        connect(playPauseFadeEnabled, &QCheckBox::toggled,
+                playPauseFadeDuration, &QDoubleSpinBox::setEnabled);
+        playbackForm->addRow(playPauseFadeEnabled);
+        playbackForm->addRow(
+            QStringLiteral("Play/pause fade duration"),
+            playPauseFadeDuration);
         auto* overlapEnabled = new QCheckBox(
             QStringLiteral("Enable track overlap"), &dialog);
         overlapEnabled->setChecked(settings.value(
@@ -497,6 +535,11 @@ MainWindow::MainWindow(QWidget *parent)
                           fadeEnabled->isChecked());
         settings.setValue(QStringLiteral("playback/fadeDurationSeconds"),
                           fadeDuration->value());
+        settings.setValue(QStringLiteral("playback/playPauseFadeEnabled"),
+                          playPauseFadeEnabled->isChecked());
+        settings.setValue(
+            QStringLiteral("playback/playPauseFadeDurationSeconds"),
+            playPauseFadeDuration->value());
         settings.setValue(QStringLiteral("playback/overlapEnabled"),
                           overlapEnabled->isChecked());
         settings.setValue(QStringLiteral("playback/overlapDurationSeconds"),
@@ -517,6 +560,10 @@ MainWindow::MainWindow(QWidget *parent)
         }
         m_audioEngine.setFadeDurationSeconds(fadeDuration->value());
         m_audioEngine.setFadeEnabled(fadeEnabled->isChecked());
+        m_audioEngine.setPlayPauseFadeDurationSeconds(
+            playPauseFadeDuration->value());
+        m_audioEngine.setPlayPauseFadeEnabled(
+            playPauseFadeEnabled->isChecked());
         m_audioEngine.setOverlapDurationSeconds(overlapDuration->value());
         m_audioEngine.setOverlapEnabled(overlapEnabled->isChecked());
         m_nowPlayingHeader->setVolumeMaximum(gainMaximum->value());
