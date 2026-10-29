@@ -27,8 +27,10 @@ struct AudioOutputDevice {
 
 constexpr int MAX_ENGINE_BLOCK_FRAMES = 8192; // 防御 PipeWire 大帧数回调
 constexpr std::uint32_t MAX_PLAYBACK_SAMPLE_RATE = 768000;
-constexpr std::uint32_t PCM_PREBUFFER_MILLISECONDS = 250;
-constexpr std::size_t DECODER_CHUNK_FRAMES = 2048;
+constexpr std::uint32_t PCM_PREBUFFER_MILLISECONDS = 500;
+constexpr std::uint32_t OUTPUT_TRANSITION_RAMP_FRAMES = 128;
+constexpr std::uint32_t UNDERRUN_CROSSFADE_FRAMES = 128;
+constexpr std::size_t DECODER_CHUNK_FRAMES = 8192;
 
 // 内部源节点：代表当前正在播放的音乐解码器 (0输入, 2输出: Out L, Out R)
 class DecoderSourceNode : public IAudioNode {
@@ -148,6 +150,8 @@ private:
     void decoderLoop();
     void stopDecoderThread();
     void notifyDecoder();
+    void restorePausedPosition();
+    void seekToFrame(ma_uint64 requestedFrame);
     void markLaneReady(DecoderLane& lane);
     bool initializeLane(DecoderLane& lane, const std::string& filePath,
                         std::uint32_t requestedSampleRate,
@@ -190,6 +194,8 @@ private:
     std::array<std::array<double, MAX_ENGINE_BLOCK_FRAMES>, 2> m_laneRight{};
     std::array<std::array<float, MAX_ENGINE_BLOCK_FRAMES>, 2> m_lastOutput{};
     std::uint32_t m_lastOutputFrames = 0;
+    std::uint32_t m_underrunRecoveryElapsedFrames = 0;
+    bool m_underrunRecoveryActive = false;
     std::atomic<bool> m_callbackActive{false};
     std::thread m_decoderThread;
     std::atomic<bool> m_decoderStop{false};
@@ -220,6 +226,8 @@ private:
     std::atomic<ma_uint64> m_pauseFadeOutElapsedFrames{0};
     std::atomic<ma_uint64> m_pauseFadeInElapsedFrames{0};
     std::atomic<bool> m_pauseFadeOutComplete{false};
+    std::atomic<bool> m_pauseFrameCaptured{false};
+    std::atomic<ma_uint64> m_pauseRestoreFrame{0};
 };
 
 static_assert(std::atomic<double>::is_always_lock_free,
