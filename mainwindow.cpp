@@ -72,6 +72,11 @@ int normalizedVisualizationUpdateInterval(int value)
     return std::clamp(value, 16, 200);
 }
 
+int normalizedNavigationWidth(int value)
+{
+    return std::clamp(value, 88, 180);
+}
+
 }
 
 MainWindow::MainWindow(QWidget *parent)
@@ -80,6 +85,9 @@ MainWindow::MainWindow(QWidget *parent)
     , ui(new Ui::MainWindow)
     , m_pluginManager(QCoreApplication::applicationDirPath() + "/plugins")
     , m_formatPluginManager(
+          QDir(QCoreApplication::applicationDirPath())
+              .filePath(QStringLiteral("format_plugins")))
+    , m_formatPlaybackPrefetcher(
           QDir(QCoreApplication::applicationDirPath())
               .filePath(QStringLiteral("format_plugins")))
     , m_libraryRepository(libraryDatabasePath())
@@ -135,7 +143,9 @@ MainWindow::MainWindow(QWidget *parent)
     // ==================== 1. 左侧页面导航栏 ====================
     auto* sidebar = new QWidget(this);
     sidebar->setObjectName(QStringLiteral("sidebar"));
-    sidebar->setFixedWidth(88);
+    sidebar->setFixedWidth(normalizedNavigationWidth(
+        settings.value(QStringLiteral("display/navigationWidth"), 140)
+            .toInt()));
     sidebar->setStyleSheet(R"(
         QWidget#sidebar {
             background-color: #191B22;
@@ -171,11 +181,8 @@ MainWindow::MainWindow(QWidget *parent)
     sideLayout->addWidget(btnNavPlaylists);
     sideLayout->addWidget(btnNavPatchbay);
     sideLayout->addStretch();
-    auto* settingsButton = new QPushButton("Settings", sidebar);
-    settingsButton->setFixedHeight(44);
-    settingsButton->setToolTip("Settings");
-    sideLayout->addWidget(settingsButton);
-    connect(settingsButton, &QPushButton::clicked, this, [this]() {
+    sidebar->setContextMenuPolicy(Qt::CustomContextMenu);
+    auto openSettings = [this, sidebar]() {
         QSettings settings;
         QDialog dialog(this);
         dialog.setWindowTitle("Settings");
@@ -209,6 +216,40 @@ MainWindow::MainWindow(QWidget *parent)
             static_cast<int>(m_themeManager.mode()));
         themeSelector->setCurrentIndex(themeIndex >= 0 ? themeIndex : 0);
         appearanceForm->addRow(QStringLiteral("Color theme"), themeSelector);
+        auto* navigationWidth = new QSpinBox(&dialog);
+        navigationWidth->setRange(88, 180);
+        navigationWidth->setSingleStep(4);
+        navigationWidth->setSuffix(QStringLiteral(" px"));
+        navigationWidth->setValue(normalizedNavigationWidth(
+            settings.value(QStringLiteral("display/navigationWidth"), 140)
+                .toInt()));
+        navigationWidth->setToolTip(
+            QStringLiteral("Width of the main left navigation bar"));
+        appearanceForm->addRow(
+            QStringLiteral("Navigation bar width"), navigationWidth);
+        auto* playbackHeaderOrder = new QComboBox(content);
+        playbackHeaderOrder->addItem(
+            QStringLiteral("Buttons | Volume | Cover"), 0);
+        playbackHeaderOrder->addItem(
+            QStringLiteral("Buttons | Cover | Volume"), 1);
+        playbackHeaderOrder->addItem(
+            QStringLiteral("Volume | Buttons | Cover"), 2);
+        playbackHeaderOrder->addItem(
+            QStringLiteral("Volume | Cover | Buttons"), 3);
+        playbackHeaderOrder->addItem(
+            QStringLiteral("Cover | Buttons | Volume"), 4);
+        playbackHeaderOrder->addItem(
+            QStringLiteral("Cover | Volume | Buttons"), 5);
+        const int savedPlaybackHeaderOrder = std::clamp(
+            settings.value(QStringLiteral("display/playbackHeaderOrder"), 0)
+                .toInt(),
+            0, 5);
+        playbackHeaderOrder->setCurrentIndex(
+            playbackHeaderOrder->findData(savedPlaybackHeaderOrder));
+        playbackHeaderOrder->setToolTip(
+            QStringLiteral("Choose the left-to-right order of playback controls, volume, and cover"));
+        appearanceForm->addRow(
+            QStringLiteral("Playback header order"), playbackHeaderOrder);
         layout->addLayout(appearanceForm);
 
         addSectionTitle(QStringLiteral("Music Library"));
@@ -531,6 +572,17 @@ MainWindow::MainWindow(QWidget *parent)
 
         m_themeManager.setMode(static_cast<isac::ui::ThemeMode>(
             themeSelector->currentData().toInt()));
+        const int selectedNavigationWidth =
+            normalizedNavigationWidth(navigationWidth->value());
+        settings.setValue(QStringLiteral("display/navigationWidth"),
+                          selectedNavigationWidth);
+        sidebar->setFixedWidth(selectedNavigationWidth);
+        const int selectedPlaybackHeaderOrder = std::clamp(
+            playbackHeaderOrder->currentData().toInt(), 0, 5);
+        settings.setValue(
+            QStringLiteral("display/playbackHeaderOrder"),
+            selectedPlaybackHeaderOrder);
+        m_nowPlayingHeader->setControlOrder(selectedPlaybackHeaderOrder);
         settings.setValue(QStringLiteral("playback/fadeEnabled"),
                           fadeEnabled->isChecked());
         settings.setValue(QStringLiteral("playback/fadeDurationSeconds"),
@@ -593,6 +645,14 @@ MainWindow::MainWindow(QWidget *parent)
         if (m_visualizationTimer) {
             m_visualizationTimer->setInterval(selectedUpdateInterval);
         }
+    };
+    connect(sidebar, &QWidget::customContextMenuRequested, this,
+            [this, sidebar, openSettings](const QPoint& position) {
+        QMenu menu(sidebar);
+        QAction* settingsAction =
+            menu.addAction(QStringLiteral("Settings"));
+        connect(settingsAction, &QAction::triggered, this, openSettings);
+        menu.exec(sidebar->mapToGlobal(position));
     });
 
     auto* fileMenu = ui->menubar->addMenu(QStringLiteral("File"));
@@ -655,8 +715,7 @@ MainWindow::MainWindow(QWidget *parent)
     QAction* preferencesAction =
         settingsMenu->addAction(QStringLiteral("Preferences..."));
     preferencesAction->setShortcut(QKeySequence::Preferences);
-    connect(preferencesAction, &QAction::triggered, settingsButton,
-            &QPushButton::click);
+    connect(preferencesAction, &QAction::triggered, this, openSettings);
 
     // ==================== 2. 中央多页面切换容器 (QStackedWidget) ====================
     m_stackedWidget = new QStackedWidget(this);
@@ -1035,6 +1094,10 @@ MainWindow::MainWindow(QWidget *parent)
 
     // ==================== 3. 顶部常驻播放工作区 ====================
     m_nowPlayingHeader = new isac::ui::NowPlayingHeader(this);
+    m_nowPlayingHeader->setControlOrder(std::clamp(
+        settings.value(QStringLiteral("display/playbackHeaderOrder"), 0)
+            .toInt(),
+        0, 5));
     m_nowPlayingHeader->setWaterfallFftSize(normalizedVisualizationFftSize(
         settings.value(QStringLiteral("visualization/fftSize"), 8192)
             .toInt()));
@@ -1788,6 +1851,37 @@ MainWindow::MainWindow(QWidget *parent)
     m_progressTimer = new QTimer(this);
     connect(m_progressTimer, &QTimer::timeout, this, [this, outputStatus]() {
         m_audioEngine.servicePlaybackControl();
+        const std::array<std::uint64_t, 3> diagnosticCounts{
+            m_audioEngine.underrunFrames(),
+            m_audioEngine.nonFiniteOutputSamples(),
+            m_audioEngine.overRangeOutputSamples()};
+        bool countersReset = false;
+        bool countersIncreased = false;
+        for (std::size_t index = 0; index < diagnosticCounts.size(); ++index) {
+            countersReset |=
+                diagnosticCounts[index] < m_lastAudioDiagnosticCounts[index];
+            countersIncreased |=
+                diagnosticCounts[index] > m_lastAudioDiagnosticCounts[index];
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (countersReset) {
+            m_lastAudioDiagnosticCounts = diagnosticCounts;
+        } else {
+            if (countersIncreased &&
+                (m_lastAudioDiagnosticLog.time_since_epoch().count() == 0 ||
+                 now - m_lastAudioDiagnosticLog >=
+                     std::chrono::seconds(2))) {
+                qWarning()
+                    << "Audio diagnostics: underrun frames ="
+                    << diagnosticCounts[0]
+                    << ", non-finite output samples ="
+                    << diagnosticCounts[1]
+                    << ", samples above +/-1.0 ="
+                    << diagnosticCounts[2];
+                m_lastAudioDiagnosticLog = now;
+            }
+            m_lastAudioDiagnosticCounts = diagnosticCounts;
+        }
         const auto selectedOutput = m_audioEngine.selectedOutputDevice();
         const QString outputName = selectedOutput
             ? QString::fromStdString(selectedOutput->name)
@@ -1796,6 +1890,18 @@ MainWindow::MainWindow(QWidget *parent)
             QStringLiteral("%1 | DSP request: %2 kHz")
                 .arg(outputName)
                 .arg(m_audioEngine.outputSampleRate() / 1000.0, 0, 'g', 4));
+        if (m_trackLoaded && m_audioEngine.playbackDecodeFailed()) {
+            m_audioEngine.setPlaying(false);
+            m_lastPlaybackError =
+                QStringLiteral("Audio decoding failed during playback");
+            m_trackLoaded = false;
+            m_nowPlayingHeader->setPlayingState(false);
+            m_libraryPage->setScanStatus(m_lastPlaybackError);
+            qWarning() << m_lastPlaybackError;
+#ifdef ISAC_HAS_MPRIS
+            m_mprisController->setPlaybackState(false);
+#endif
+        }
         if (m_audioEngine.isPlaying()) {
             const double position = m_audioEngine.currentPositionSeconds();
             const double duration = m_audioEngine.totalDurationSeconds();
@@ -1986,6 +2092,7 @@ void MainWindow::rebuildPlaybackQueue(qint64 currentTrackId) {
     m_playbackQueue.reset(std::move(trackIds), currentTrackId, m_playbackMode);
     m_playbackQueueNeedsSave = true;
     refreshPlaybackQueueView();
+    prefetchUpcomingFormatTracks();
 }
 
 std::vector<qint64> MainWindow::currentTrackIds() const {
@@ -1995,6 +2102,48 @@ std::vector<qint64> MainWindow::currentTrackIds() const {
     }
     return m_libraryPage ? m_libraryPage->trackIds()
                          : std::vector<qint64>{};
+}
+
+void MainWindow::prefetchUpcomingFormatTracks()
+{
+    constexpr std::size_t kLookAheadTracks = 2;
+    const auto& trackIds = m_playbackQueue.orderedTrackIds();
+    const std::size_t position = m_playbackQueue.position();
+    if (trackIds.empty() || position >= trackIds.size()) {
+        m_formatPlaybackPrefetcher.updateUpcomingTracks({});
+        return;
+    }
+
+    std::vector<isac::media::FormatPlaybackPrefetcher::TrackRequest> requests;
+    QSet<qint64> visited;
+    visited.insert(trackIds[position]);
+    const std::size_t lookAhead = std::min(
+        kLookAheadTracks, trackIds.size() - 1);
+    for (std::size_t offset = 1; offset <= lookAhead; ++offset) {
+        std::size_t index = position + offset;
+        if (index >= trackIds.size()) {
+            if (m_playbackMode != isac::library::PlaybackMode::RepeatAll) {
+                break;
+            }
+            index %= trackIds.size();
+        }
+
+        const qint64 trackId = trackIds[index];
+        if (visited.contains(trackId)) {
+            continue;
+        }
+        visited.insert(trackId);
+
+        const auto track = m_libraryRepository.trackById(trackId);
+        if (!track || track->formatPlugin.isEmpty()) {
+            continue;
+        }
+        requests.push_back({
+            track->filePath,
+            track->formatPlugin
+        });
+    }
+    m_formatPlaybackPrefetcher.updateUpcomingTracks(requests);
 }
 
 bool MainWindow::playQueuedTrack(qint64 trackId) {
@@ -2120,6 +2269,7 @@ void MainWindow::persistPlaybackQueue(bool includeOrder) {
         }
     }
     refreshPlaybackQueueView();
+    prefetchUpcomingFormatTracks();
 }
 
 void MainWindow::restorePlaybackQueue() {
@@ -2144,6 +2294,7 @@ void MainWindow::restorePlaybackQueue() {
         }
     }
     refreshPlaybackQueueView();
+    prefetchUpcomingFormatTracks();
 }
 
 void MainWindow::setPlaybackMode(isac::library::PlaybackMode mode)

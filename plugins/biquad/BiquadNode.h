@@ -16,7 +16,8 @@ enum class BiquadType : uint8_t {
     LowShelf,
     HighShelf,
     Peak,
-    Notch
+    Notch,
+    AllPass
 };
 
 class BiquadNode final : public IAudioNode {
@@ -269,6 +270,14 @@ private:
             b0 = 1.0;
             b1 = -2.0 * cosine;
             b2 = 1.0;
+            a0 = 1.0 + alpha;
+            a1 = -2.0 * cosine;
+            a2 = 1.0 - alpha;
+            break;
+        case BiquadType::AllPass:
+            b0 = 1.0 - alpha;
+            b1 = -2.0 * cosine;
+            b2 = 1.0 + alpha;
             a0 = 1.0 + alpha;
             a1 = -2.0 * cosine;
             a2 = 1.0 - alpha;

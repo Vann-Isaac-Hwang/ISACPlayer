@@ -31,6 +31,10 @@
 
 namespace {
 
+constexpr int kPlaybackControlsSize = 140;
+constexpr int kPlaybackVolumeWidth = 24;
+constexpr int kPlaybackCoverSize = 140;
+
 class ResponsiveAlbumView final : public QListView {
 public:
     using QListView::QListView;
@@ -817,7 +821,16 @@ ISACMusicLibraryPage::ISACMusicLibraryPage(library::LibraryRepository* repositor
         "QTabBar::tab:selected { color: #FFFFFF; border-bottom-color: #FA2D48; }"
         "QTabBar::tab:selected:hover { background: #343A4B; "
         "border-bottom-color: #FF5268; }");
-    m_groupBackButton = new QPushButton(QStringLiteral("Back to Category"), this);
+    m_groupBackButton = new QToolButton(this);
+    m_groupBackButton->setIcon(QIcon::fromTheme(
+        QStringLiteral("go-previous"),
+        style()->standardIcon(QStyle::SP_ArrowBack)));
+    m_groupBackButton->setFixedSize(34, 34);
+    m_groupBackButton->setToolTip(QStringLiteral("Back"));
+    m_groupBackButton->setStyleSheet(
+        "QToolButton { color: #E6E8ED; background: transparent; border: none; }"
+        "QToolButton:hover { background: #343740; }"
+        "QToolButton:checked { background: #343740; }");
     m_groupBackButton->hide();
 
     m_albumViewMode = new QWidget(this);
@@ -1094,7 +1107,7 @@ ISACMusicLibraryPage::ISACMusicLibraryPage(library::LibraryRepository* repositor
     });
     connect(m_libraryTabs, &QTabBar::currentChanged,
             this, [this](int index) { showLibraryView(index); });
-    connect(m_groupBackButton, &QPushButton::clicked, this, [this]() {
+    connect(m_groupBackButton, &QToolButton::clicked, this, [this]() {
         m_showingGroupTracks = false;
         m_tableModel->setCategoryFilter({}, {});
         showLibraryView(m_libraryView);
@@ -1368,7 +1381,7 @@ void ISACMusicLibraryPage::showGroupTracks(const library::LibraryGroup& group) {
         ->applyAutomaticWidths();
     m_libraryContent->setCurrentWidget(m_table);
     m_albumViewMode->hide();
-    m_groupBackButton->setText(
+    m_groupBackButton->setToolTip(
         QStringLiteral("Back to %1").arg(m_libraryView == 1
             ? QStringLiteral("Artists") : QStringLiteral("Albums")));
     m_groupBackButton->show();
@@ -1544,7 +1557,8 @@ PlaylistPage::PlaylistPage(library::LibraryRepository* repository,
     m_playlistSplitter->addWidget(tracksPanel);
     m_playlistSplitter->setStretchFactor(0, 0);
     m_playlistSplitter->setStretchFactor(1, 1);
-    m_playlistSplitter->setSizes({232, 800});
+    m_playlistSplitter->setSizes({
+        kPlaybackVolumeWidth + kPlaybackCoverSize, 800});
     auto* root = new QHBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
@@ -1874,13 +1888,14 @@ NowPlayingHeader::NowPlayingHeader(QWidget* parent) : QWidget(parent) {
 
     auto* contentWidget = new QWidget(this);
     contentWidget->setFixedHeight(140);
-    auto* content = new QHBoxLayout(contentWidget);
-    content->setContentsMargins(0, 0, 0, 0);
-    content->setSpacing(0);
-    auto* controlGroup = new QWidget(this);
-    controlGroup->setFixedSize(140, 140);
-    controlGroup->setStyleSheet(QStringLiteral("background: #292C34;"));
-    auto* controlGrid = new QGridLayout(controlGroup);
+    m_contentLayout = new QHBoxLayout(contentWidget);
+    m_contentLayout->setContentsMargins(0, 0, 0, 0);
+    m_contentLayout->setSpacing(0);
+    m_controlGroup = new QWidget(this);
+    m_controlGroup->setFixedSize(
+        kPlaybackControlsSize, kPlaybackControlsSize);
+    m_controlGroup->setStyleSheet(QStringLiteral("background: #292C34;"));
+    auto* controlGrid = new QGridLayout(m_controlGroup);
     controlGrid->setContentsMargins(0, 0, 0, 0);
     controlGrid->setHorizontalSpacing(0);
     controlGrid->setVerticalSpacing(0);
@@ -1916,17 +1931,15 @@ NowPlayingHeader::NowPlayingHeader(QWidget* parent) : QWidget(parent) {
     controlGrid->addWidget(m_playbackModeButton, 0, 1);
     controlGrid->addWidget(m_btnPrev, 1, 0);
     controlGrid->addWidget(m_btnNext, 1, 1);
-    content->addWidget(controlGroup);
-
     m_volumeSlider = new HoverSlider(Qt::Vertical, this);
     m_volumeSlider->setRange(0, qRound(m_volumeMaximum * 100.0));
     m_volumeSlider->setValue(100);
-    m_volumeSlider->setFixedSize(24, 140);
+    m_volumeSlider->setFixedSize(
+        kPlaybackVolumeWidth, kPlaybackControlsSize);
     m_volumeSlider->setToolTip(QStringLiteral("Volume"));
-    content->addWidget(m_volumeSlider);
 
     m_coverThumb = new QLabel(this);
-    m_coverThumb->setFixedSize(140, 140);
+    m_coverThumb->setFixedSize(kPlaybackCoverSize, kPlaybackCoverSize);
     m_coverThumb->setScaledContents(true);
     m_coverThumb->setPixmap(library::MetadataReader::generateDefaultCover("ISAC", 280));
     m_coverThumb->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -1935,8 +1948,6 @@ NowPlayingHeader::NowPlayingHeader(QWidget* parent) : QWidget(parent) {
         emit coverContextMenuRequested(
             m_trackInfo.id, m_coverThumb->mapToGlobal(position));
     });
-    content->addWidget(m_coverThumb);
-
     auto* visualColumn = new QVBoxLayout();
     visualColumn->setContentsMargins(0, 0, 0, 0);
     visualColumn->setSpacing(0);
@@ -1951,7 +1962,8 @@ NowPlayingHeader::NowPlayingHeader(QWidget* parent) : QWidget(parent) {
     spectrumRow->addWidget(m_postDspWaterfall, 1);
     visualColumn->addWidget(m_waveform);
     visualColumn->addLayout(spectrumRow, 1);
-    content->addLayout(visualColumn, 1);
+    m_contentLayout->addLayout(visualColumn, 1);
+    setControlOrder(0);
 
     m_waveformHoverLabel = new QLabel(this);
     m_waveformHoverLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -2202,6 +2214,43 @@ void NowPlayingHeader::setWaterfallFftSize(int fftSize)
 int NowPlayingHeader::waterfallFftSize() const noexcept
 {
     return m_preDspWaterfall ? m_preDspWaterfall->fftSize() : 8192;
+}
+
+void NowPlayingHeader::setControlOrder(int order)
+{
+    if (!m_contentLayout || !m_controlGroup || !m_volumeSlider ||
+        !m_coverThumb) {
+        return;
+    }
+
+    static constexpr std::array<std::array<int, 3>, 6> permutations{{
+        {{0, 1, 2}},
+        {{0, 2, 1}},
+        {{1, 0, 2}},
+        {{1, 2, 0}},
+        {{2, 0, 1}},
+        {{2, 1, 0}}
+    }};
+    const int normalizedOrder = std::clamp(order, 0, 5);
+    const std::array<QWidget*, 3> widgets{
+        m_controlGroup, m_volumeSlider, m_coverThumb};
+
+    for (QWidget* widget : widgets) {
+        m_contentLayout->removeWidget(widget);
+    }
+    for (int index = 0; index < 3; ++index) {
+        m_contentLayout->insertWidget(
+            index,
+            widgets[static_cast<std::size_t>(
+                permutations[static_cast<std::size_t>(normalizedOrder)]
+                            [static_cast<std::size_t>(index)])]);
+    }
+    m_controlOrder = normalizedOrder;
+}
+
+int NowPlayingHeader::controlOrder() const noexcept
+{
+    return m_controlOrder;
 }
 
 void NowPlayingHeader::updateProgress(double currentSec, double totalSec) {

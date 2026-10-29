@@ -24,6 +24,8 @@
 #include "library/TrackMetadata.h"
 #include "ui/player/AudioVisualization.h"
 
+class QHBoxLayout;
+
 namespace isac::ui {
 
 class TrackTableModel final : public QAbstractTableModel {
@@ -139,7 +141,7 @@ private:
     LibraryGroupTableModel* m_artistModel;
     LibraryGroupTableModel* m_albumModel;
     QTabBar* m_libraryTabs;
-    QPushButton* m_groupBackButton;
+    QToolButton* m_groupBackButton;
     QToolButton* m_albumListButton = nullptr;
     QToolButton* m_albumCoverButton = nullptr;
     QWidget* m_albumViewMode = nullptr;
@@ -219,6 +221,8 @@ public:
     void setVolume(double volume);
     void setWaterfallFftSize(int fftSize);
     int waterfallFftSize() const noexcept;
+    void setControlOrder(int order);
+    int controlOrder() const noexcept;
     void updateProgress(double currentSec, double totalSec);
     void updateVisualization(const double* preLeft, const double* preRight,
                              const double* postLeft, const double* postRight,
@@ -257,9 +261,12 @@ private:
     WaterfallWidget* m_preDspWaterfall = nullptr;
     WaterfallWidget* m_postDspWaterfall = nullptr;
     QSlider* m_volumeSlider;
+    QHBoxLayout* m_contentLayout = nullptr;
+    QWidget* m_controlGroup = nullptr;
 
     std::vector<double> m_waveformSamples;
     int m_playbackModeValue = 0;
+    int m_controlOrder = 0;
     double m_volumeFactor = 1.0;
     double m_volumeMaximum = 2.0;
     double m_totalDuration = 0.0;

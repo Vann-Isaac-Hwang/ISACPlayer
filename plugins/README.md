@@ -8,8 +8,8 @@ plugins/
   libReplayGainPlugin.so
 ```
 
-The in-tree plugins include Stereo Gain, Mono Gain, Mono Delay, Stereo Width,
-Stereo Balance,
+The in-tree plugins include Stereo Gain, Mono Gain, Mono Delay,
+Mono Feedback Delay, Mono Modulated Delay, Stereo Width, Stereo Balance,
 Adder, ReplayGain, and Biquad Equalizer. Stereo Width performs a stateless
 Mid/Side width transformation: 0 x produces mono, 1 x preserves the original
 stereo image, and 2 x doubles the side component. Mono Gain is a single-input,
@@ -20,6 +20,11 @@ Delay is a single-input, single-output delay with a 100 ms maximum and a
 preallocated buffer sized for the engine's 768 kHz maximum sample rate.
 Stereo Balance is a linked left/right level control: -1.0 routes to the left
 channel, 0.0 preserves both channels, and 1.0 routes to the right channel.
+Mono Feedback Delay emits a delayed wet signal and feeds a bounded portion of
+that signal back into its preallocated delay line. Mono Modulated Delay uses a
+sine-table LFO to vary a fractional delay; its phase parameter can offset
+paired instances. The Biquad Equalizer also provides an All-Pass filter mode
+for phase rotation without an intended magnitude response change.
 
 The plugin SDK is located at `plugin_sdk/include/isac/plugin/`. DSP plugins
 only need to depend on `isac/plugin/IAudioPlugin.h`. The Qt discovery boundary

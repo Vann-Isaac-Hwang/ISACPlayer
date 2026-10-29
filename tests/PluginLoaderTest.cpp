@@ -1,4 +1,5 @@
 #include <isac/plugin/QtAudioPlugin.h>
+#include "BiquadNode.h"
 #include "ReplayGainNode.h"
 
 #include <QCoreApplication>
@@ -195,6 +196,132 @@ int main(int argc, char** argv) {
                                 secondFractionalOutput.channel(0)[frame]) <
                        1.0e-12);
             }
+        }
+
+        if (QString::fromLatin1(plugin->pluginId()) ==
+            QStringLiteral("isac.mono_feedback_delay")) {
+            assert(node->numInputs() == 1);
+            assert(node->numOutputs() == 1);
+
+            auto feedbackNode = plugin->createNode();
+            assert(feedbackNode);
+            assert(feedbackNode->setParameter("delayMs", 1.0));
+            assert(feedbackNode->setParameter("feedback", 0.5));
+            assert(!feedbackNode->setParameter("missing", 0.0));
+
+            isac::AudioBuffer feedbackInput(1, 160, 48000);
+            isac::AudioBuffer feedbackOutput(1, 160, 48000);
+            feedbackInput.channel(0)[0] = 1.0;
+            feedbackNode->process(
+                feedbackInput, feedbackOutput, feedbackInput.numFrames());
+
+            assert(std::abs(feedbackOutput.channel(0)[48] - 1.0) < 1.0e-12);
+            assert(std::abs(feedbackOutput.channel(0)[96] - 0.5) < 1.0e-12);
+            assert(std::abs(feedbackOutput.channel(0)[144] - 0.25) <
+                   1.0e-12);
+
+            auto highRateFeedbackNode = plugin->createNode();
+            assert(highRateFeedbackNode);
+            assert(highRateFeedbackNode->setParameter("delayMs", 0.1));
+            assert(highRateFeedbackNode->setParameter("feedback", 0.95));
+            isac::AudioBuffer highRateInput(1, 8192, 768000);
+            isac::AudioBuffer highRateOutput(1, 8192, 768000);
+            highRateInput.channel(0)[0] = 1.0;
+            highRateFeedbackNode->process(
+                highRateInput, highRateOutput, highRateInput.numFrames());
+            for (int frame = 0; frame < highRateInput.numFrames(); ++frame) {
+                assert(std::isfinite(highRateOutput.channel(0)[frame]));
+            }
+        }
+
+        if (QString::fromLatin1(plugin->pluginId()) ==
+            QStringLiteral("isac.mono_modulated_delay")) {
+            assert(node->numInputs() == 1);
+            assert(node->numOutputs() == 1);
+
+            auto inPhaseNode = plugin->createNode();
+            auto oppositePhaseNode = plugin->createNode();
+            assert(inPhaseNode && oppositePhaseNode);
+            for (const auto& currentNode : {inPhaseNode, oppositePhaseNode}) {
+                assert(currentNode->setParameter("baseDelayMs", 20.0));
+                assert(currentNode->setParameter("depthMs", 5.0));
+                assert(currentNode->setParameter("rateHz", 2.0));
+            }
+            assert(inPhaseNode->setParameter("phaseDeg", 0.0));
+            assert(oppositePhaseNode->setParameter("phaseDeg", 180.0));
+            assert(!inPhaseNode->setParameter("missing", 0.0));
+
+            constexpr int sampleCount = 48000;
+            isac::AudioBuffer modulatedInput(1, sampleCount, 48000);
+            isac::AudioBuffer inPhaseOutput(1, sampleCount, 48000);
+            isac::AudioBuffer oppositePhaseOutput(1, sampleCount, 48000);
+            for (int frame = 0; frame < sampleCount; ++frame) {
+                modulatedInput.channel(0)[frame] =
+                    std::sin(2.0 * std::acos(-1.0) * 440.0 *
+                             static_cast<double>(frame) / 48000.0);
+            }
+            inPhaseNode->process(
+                modulatedInput, inPhaseOutput, sampleCount);
+            oppositePhaseNode->process(
+                modulatedInput, oppositePhaseOutput, sampleCount);
+
+            double maximumPhaseDifference = 0.0;
+            for (int frame = 0; frame < sampleCount; ++frame) {
+                assert(std::isfinite(inPhaseOutput.channel(0)[frame]));
+                assert(std::isfinite(oppositePhaseOutput.channel(0)[frame]));
+                maximumPhaseDifference = std::max(
+                    maximumPhaseDifference,
+                    std::abs(inPhaseOutput.channel(0)[frame] -
+                             oppositePhaseOutput.channel(0)[frame]));
+            }
+            assert(maximumPhaseDifference > 0.01);
+
+            auto highRateModulatedNode = plugin->createNode();
+            assert(highRateModulatedNode);
+            isac::AudioBuffer highRateModulatedInput(1, 8192, 768000);
+            isac::AudioBuffer highRateModulatedOutput(1, 8192, 768000);
+            highRateModulatedInput.channel(0)[0] = 1.0;
+            highRateModulatedNode->process(
+                highRateModulatedInput, highRateModulatedOutput,
+                highRateModulatedInput.numFrames());
+            for (int frame = 0;
+                 frame < highRateModulatedInput.numFrames(); ++frame) {
+                assert(std::isfinite(
+                    highRateModulatedOutput.channel(0)[frame]));
+            }
+        }
+
+        if (QString::fromLatin1(plugin->pluginId()) ==
+            QStringLiteral("isac.biquad")) {
+            auto* biquad =
+                dynamic_cast<isac::plugins::BiquadNode*>(node.get());
+            assert(biquad);
+            biquad->setBandType(0, isac::plugins::BiquadType::AllPass);
+            biquad->setBandFrequency(0, 1000.0);
+            biquad->setBandQ(0, 0.707);
+
+            constexpr int sampleCount = 48000;
+            isac::AudioBuffer allPassInput(2, sampleCount, 48000);
+            isac::AudioBuffer allPassOutput(2, sampleCount, 48000);
+            for (int frame = 0; frame < sampleCount; ++frame) {
+                const double sample =
+                    std::sin(2.0 * std::acos(-1.0) * 1000.0 *
+                             static_cast<double>(frame) / 48000.0);
+                allPassInput.channel(0)[frame] = sample;
+                allPassInput.channel(1)[frame] = sample;
+            }
+            biquad->process(allPassInput, allPassOutput, sampleCount);
+
+            double inputEnergy = 0.0;
+            double outputEnergy = 0.0;
+            for (int frame = 1000; frame < sampleCount; ++frame) {
+                inputEnergy += allPassInput.channel(0)[frame] *
+                               allPassInput.channel(0)[frame];
+                outputEnergy += allPassOutput.channel(0)[frame] *
+                                allPassOutput.channel(0)[frame];
+                assert(std::isfinite(allPassOutput.channel(0)[frame]));
+            }
+            assert(std::abs(outputEnergy / inputEnergy - 1.0) < 1.0e-6);
         }
 
         if (QString::fromLatin1(plugin->pluginId()) ==

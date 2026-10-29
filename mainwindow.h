@@ -5,6 +5,8 @@
 #include <QStackedWidget>
 #include <QTimer>
 #include <array>
+#include <chrono>
+#include <cstdint>
 #include <memory>
 #include "engine/graph/AudioEngine.h"
 #include "ui/isac_music/ISACMusicView.h"
@@ -16,6 +18,7 @@
 #include "library/PlaybackQueue.h"
 #include "media/formats/FormatCache.h"
 #include "media/formats/FormatPluginManager.h"
+#include "media/formats/FormatPlaybackPrefetcher.h"
 #ifdef ISAC_HAS_MPRIS
 #include "platform/mpris/MprisController.h"
 #endif
@@ -44,6 +47,7 @@ private:
     void setPlaybackMode(isac::library::PlaybackMode mode);
     void refreshPlaybackQueueView(bool force = false);
     std::vector<qint64> currentTrackIds() const;
+    void prefetchUpcomingFormatTracks();
     QString resolvePlaybackPath(const isac::library::TrackInfo& track,
                                 QString* error = nullptr);
 
@@ -51,6 +55,7 @@ private:
     Ui::MainWindow *ui;
     isac::ui::PluginManager m_pluginManager;
     isac::media::FormatPluginManager m_formatPluginManager;
+    isac::media::FormatPlaybackPrefetcher m_formatPlaybackPrefetcher;
     isac::library::LibraryRepository m_libraryRepository;
     isac::AudioEngine m_audioEngine;
 
@@ -70,6 +75,8 @@ private:
     std::array<double, 16384> m_preVisualizationRight{};
     std::array<double, 16384> m_postVisualizationLeft{};
     std::array<double, 16384> m_postVisualizationRight{};
+    std::array<std::uint64_t, 3> m_lastAudioDiagnosticCounts{};
+    std::chrono::steady_clock::time_point m_lastAudioDiagnosticLog{};
     isac::library::LibraryScanner* m_libraryScanner = nullptr;
     isac::library::PlaybackQueue m_playbackQueue;
     isac::library::PlaybackMode m_playbackMode =

@@ -27,10 +27,10 @@ struct AudioOutputDevice {
 
 constexpr int MAX_ENGINE_BLOCK_FRAMES = 8192; // 防御 PipeWire 大帧数回调
 constexpr std::uint32_t MAX_PLAYBACK_SAMPLE_RATE = 768000;
-constexpr std::uint32_t PCM_PREBUFFER_MILLISECONDS = 500;
+constexpr std::uint32_t PCM_PREBUFFER_MILLISECONDS = 100;
 constexpr std::uint32_t OUTPUT_TRANSITION_RAMP_FRAMES = 128;
 constexpr std::uint32_t UNDERRUN_CROSSFADE_FRAMES = 128;
-constexpr std::size_t DECODER_CHUNK_FRAMES = 8192;
+constexpr std::size_t DECODER_CHUNK_FRAMES = 2048;
 
 // 内部源节点：代表当前正在播放的音乐解码器 (0输入, 2输出: Out L, Out R)
 class DecoderSourceNode : public IAudioNode {
@@ -97,11 +97,18 @@ public:
     void servicePlaybackControl();
     bool isPlaying() const;
     bool isPlaybackComplete() const noexcept;
+    bool playbackDecodeFailed() const noexcept;
     void seekToSeconds(double seconds);
     double currentPositionSeconds() const;
     double totalDurationSeconds() const;
     ma_uint64 underrunFrames() const noexcept {
         return m_underrunFrames.load(std::memory_order_acquire);
+    }
+    ma_uint64 nonFiniteOutputSamples() const noexcept {
+        return m_nonFiniteOutputSamples.load(std::memory_order_acquire);
+    }
+    ma_uint64 overRangeOutputSamples() const noexcept {
+        return m_overRangeOutputSamples.load(std::memory_order_acquire);
     }
     std::size_t readPreDspSamples(double* left, double* right,
                                   std::size_t maxFrames) noexcept;
@@ -189,6 +196,7 @@ private:
     // rebuildGraph() stops the device before replacing this owner, so the
     // callback can use a raw plan pointer without refcounting or reclamation.
     std::shared_ptr<ExecutionPlan> m_activePlanOwner;
+    std::uint32_t m_activePlanSampleRate = 0;
     std::array<DecoderLane, 2> m_decoderLanes;
     std::atomic<int> m_activeLane{0};
     std::atomic<int> m_preparedLane{-1};
@@ -215,6 +223,8 @@ private:
     std::atomic<ma_uint64> m_pendingSeekFrame{0};
     std::atomic<bool> m_seekCompleted{false};
     std::atomic<ma_uint64> m_underrunFrames{0};
+    std::atomic<ma_uint64> m_nonFiniteOutputSamples{0};
+    std::atomic<ma_uint64> m_overRangeOutputSamples{0};
     std::atomic<bool> m_fadeEnabled{false};
     std::atomic<ma_uint64> m_fadeDurationFrames{96000};
     std::atomic<bool> m_playPauseFadeEnabled{false};

@@ -18,6 +18,7 @@ void addTypeItems(QComboBox* combo)
     combo->addItem("High Shelf", static_cast<int>(isac::plugins::BiquadType::HighShelf));
     combo->addItem("Peak", static_cast<int>(isac::plugins::BiquadType::Peak));
     combo->addItem("Notch", static_cast<int>(isac::plugins::BiquadType::Notch));
+    combo->addItem("All-Pass", static_cast<int>(isac::plugins::BiquadType::AllPass));
 }
 
 int typeIndex(isac::plugins::BiquadType type)
@@ -28,6 +29,7 @@ int typeIndex(isac::plugins::BiquadType type)
     case isac::plugins::BiquadType::HighShelf: return 2;
     case isac::plugins::BiquadType::Peak: return 3;
     case isac::plugins::BiquadType::Notch: return 4;
+    case isac::plugins::BiquadType::AllPass: return 5;
     }
     return 0;
 }
@@ -92,6 +94,11 @@ QWidget* BiquadPlugin::createControlWidget(isac::IAudioNode* node,
         frequency->setValue(equalizer->bandFrequency(band));
         gain->setValue(equalizer->bandGainDb(band));
         q->setValue(equalizer->bandQ(band));
+        const auto selectedType = equalizer->bandType(band);
+        gain->setEnabled(
+            selectedType == isac::plugins::BiquadType::LowShelf ||
+            selectedType == isac::plugins::BiquadType::HighShelf ||
+            selectedType == isac::plugins::BiquadType::Peak);
 
         form->addRow("Type", type);
         form->addRow("Frequency", frequency);
@@ -100,10 +107,18 @@ QWidget* BiquadPlugin::createControlWidget(isac::IAudioNode* node,
         bandsLayout->addWidget(group);
 
         QObject::connect(type, &QComboBox::currentIndexChanged, panel,
-                         [equalizer, type, band](int index) {
-                             equalizer->setBandType(
-                                 band, static_cast<isac::plugins::BiquadType>(
-                                           type->itemData(index).toInt()));
+                         [equalizer, type, gain, band](int index) {
+                             const auto nextType =
+                                 static_cast<isac::plugins::BiquadType>(
+                                     type->itemData(index).toInt());
+                             equalizer->setBandType(band, nextType);
+                             gain->setEnabled(
+                                 nextType ==
+                                     isac::plugins::BiquadType::LowShelf ||
+                                 nextType ==
+                                     isac::plugins::BiquadType::HighShelf ||
+                                 nextType ==
+                                     isac::plugins::BiquadType::Peak);
                          });
         QObject::connect(frequency, &QDoubleSpinBox::valueChanged, panel,
                          [equalizer, band](double value) {

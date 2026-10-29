@@ -58,6 +58,8 @@ set(PROJECT_SOURCES
     src/media/formats/FormatCache.cpp
     src/media/formats/FormatPluginManager.h
     src/media/formats/FormatPluginManager.cpp
+    src/media/formats/FormatPlaybackPrefetcher.h
+    src/media/formats/FormatPlaybackPrefetcher.cpp
     src/engine/plugin/IAudioPlugin.h
     src/ui/isac_music/ISACMusicView.h
     src/ui/isac_music/ISACMusicView.cpp
@@ -115,7 +117,9 @@ add_subdirectory(plugins/replaygain)
 add_subdirectory(plugins/gain)
 add_subdirectory(plugins/mono_gain)
 add_subdirectory(plugins/mono_delay)
+add_subdirectory(plugins/mono_feedback_delay)
 add_subdirectory(plugins/stereo_width)
+add_subdirectory(plugins/mono_modulated_delay)
 add_subdirectory(plugins/stereo_balance)
 add_subdirectory(plugins/adder)
 add_subdirectory(plugins/biquad)
@@ -196,6 +200,7 @@ if(BUILD_TESTING)
     target_include_directories(isac_plugin_loader_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/plugin_sdk/include
         ${CMAKE_CURRENT_SOURCE_DIR}/plugins/replaygain
+        ${CMAKE_CURRENT_SOURCE_DIR}/plugins/biquad
     )
     target_link_libraries(isac_plugin_loader_tests PRIVATE isac_plugin_sdk)
     target_link_libraries(isac_plugin_loader_tests PRIVATE
@@ -207,7 +212,9 @@ if(BUILD_TESTING)
             $<TARGET_FILE:isac_gain>
             $<TARGET_FILE:isac_mono_gain>
             $<TARGET_FILE:isac_mono_delay>
+            $<TARGET_FILE:isac_mono_feedback_delay>
             $<TARGET_FILE:isac_stereo_width>
+            $<TARGET_FILE:isac_mono_modulated_delay>
             $<TARGET_FILE:isac_stereo_balance>
             $<TARGET_FILE:isac_adder>
             $<TARGET_FILE:isac_biquad>

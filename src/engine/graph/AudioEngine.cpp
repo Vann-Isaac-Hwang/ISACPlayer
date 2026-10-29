@@ -273,6 +273,7 @@ bool AudioEngine::rebuildGraph() {
     }
     m_activePlanOwner = std::move(newPlan);
     m_activePlan.store(m_activePlanOwner.get(), std::memory_order_release);
+    m_activePlanSampleRate = m_outputSampleRate;
     if (wasPlaying) {
         ma_device_start(&m_device);
     }
@@ -315,6 +316,16 @@ void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
 
     ExecutionPlan* plan = m_activePlan.load(std::memory_order_acquire);
     if (!m_decoderLoaded.load() || !plan || plan->sinkStepIndex < 0) {
+        std::fill_n(pInterleavedOutput, frameCount * channels, 0.0f);
+        m_callbackActive.store(false, std::memory_order_release);
+        return;
+    }
+    const int initialLaneIndex = m_activeLane.load(std::memory_order_acquire);
+    const auto& initialLane =
+        m_decoderLanes[static_cast<std::size_t>(initialLaneIndex)];
+    if (playbackRequested &&
+        (!initialLane.ready.load(std::memory_order_acquire) ||
+         initialLane.failed.load(std::memory_order_acquire))) {
         std::fill_n(pInterleavedOutput, frameCount * channels, 0.0f);
         m_callbackActive.store(false, std::memory_order_release);
         return;
@@ -466,6 +477,8 @@ void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
             m_underrunRecoveryActive && framesRead > 0;
         const std::uint32_t recoveryElapsed =
             m_underrunRecoveryElapsedFrames;
+        ma_uint64 nonFiniteSamples = 0;
+        ma_uint64 overRangeSamples = 0;
         std::array<float, 2> recoveryAnchor{};
         if (recoveringFromUnderrun && m_lastOutputFrames > 0) {
             for (std::size_t channel = 0; channel < recoveryAnchor.size();
@@ -536,12 +549,26 @@ void AudioEngine::renderAudio(float* pInterleavedOutput, uint32_t frameCount,
                             static_cast<double>(outputSample) * progress);
                     }
                 }
+                if (!std::isfinite(outputSample)) {
+                    outputSample = 0.0f;
+                    ++nonFiniteSamples;
+                } else if (std::abs(outputSample) > 1.0f) {
+                    ++overRangeSamples;
+                }
                 currentOutPtr[i * channels + ch] = outputSample;
                 if (ch < 2) {
                     m_lastOutput[ch][i] =
                         currentOutPtr[i * channels + ch];
                 }
             }
+        }
+        if (nonFiniteSamples > 0) {
+            m_nonFiniteOutputSamples.fetch_add(
+                nonFiniteSamples, std::memory_order_relaxed);
+        }
+        if (overRangeSamples > 0) {
+            m_overRangeOutputSamples.fetch_add(
+                overRangeSamples, std::memory_order_relaxed);
         }
         m_lastOutputFrames = chunkFrames;
         if (sourceUnderrun) {
@@ -1023,7 +1050,8 @@ bool AudioEngine::loadAndPlay(const std::string& filePath, std::string* error) {
         std::memory_order_relaxed);
     m_preDspTap.reset();
     m_postDspTap.reset();
-    if (!rebuildGraph()) {
+    if (m_activePlanSampleRate != m_outputSampleRate &&
+        !rebuildGraph()) {
         if (error) {
             *error = "Unable to prepare the DSP graph for the source sample rate";
         }
@@ -1033,33 +1061,12 @@ bool AudioEngine::loadAndPlay(const std::string& filePath, std::string* error) {
     m_seekPending.store(false, std::memory_order_release);
     m_seekCompleted.store(false, std::memory_order_release);
     m_underrunFrames.store(0, std::memory_order_release);
+    m_nonFiniteOutputSamples.store(0, std::memory_order_release);
+    m_overRangeOutputSamples.store(0, std::memory_order_release);
     m_preDspTap.reset();
     m_postDspTap.reset();
 
     m_decoderThread = std::thread(&AudioEngine::decoderLoop, this);
-    bool prebufferReady = false;
-    {
-        std::unique_lock lock(m_decoderMutex);
-        prebufferReady = m_decoderReadyCondition.wait_for(
-            lock, std::chrono::seconds(2), [this] {
-                return m_decoderLanes[0].ready.load(
-                           std::memory_order_acquire) ||
-                       m_decoderLanes[0].failed.load(
-                           std::memory_order_acquire);
-            });
-    }
-    if (!prebufferReady ||
-        m_decoderLanes[0].failed.load(std::memory_order_acquire)) {
-        if (error) {
-            *error = !prebufferReady
-                ? "Timed out while preparing audio for playback"
-                : "Audio decoding failed while preparing playback";
-        }
-        stopDecoderThread();
-        clearAllLanes();
-        return false;
-    }
-
     std::string outputError;
     if (!initializePlaybackDevice(outputError)) {
         if (error) {
@@ -1123,6 +1130,22 @@ void AudioEngine::setPlaying(bool play) {
         return;
     }
 
+    const int activeLaneIndex = m_activeLane.load(std::memory_order_acquire);
+    const auto& activeLane =
+        m_decoderLanes[static_cast<std::size_t>(activeLaneIndex)];
+    if (!activeLane.ready.load(std::memory_order_acquire) ||
+        activeLane.failed.load(std::memory_order_acquire)) {
+        m_pauseFadeInActive.store(false, std::memory_order_release);
+        m_pauseFadeOutActive.store(false, std::memory_order_seq_cst);
+        m_pauseFadeInElapsedFrames.store(0, std::memory_order_release);
+        m_pauseFadeOutComplete.store(false, std::memory_order_seq_cst);
+        m_playbackRequested.store(false, std::memory_order_seq_cst);
+        if (ma_device_is_started(&m_device)) {
+            ma_device_stop(&m_device);
+        }
+        return;
+    }
+
     m_pauseFadeInActive.store(false, std::memory_order_release);
     m_pauseFadeOutElapsedFrames.store(0, std::memory_order_release);
     m_pauseFadeInElapsedFrames.store(0, std::memory_order_release);
@@ -1181,6 +1204,14 @@ bool AudioEngine::isPlaybackComplete() const noexcept
            !m_overlapActive.load(std::memory_order_acquire) &&
            lane.eof.load(std::memory_order_acquire) &&
            lane.pcmRing.readableFrames() == 0;
+}
+
+bool AudioEngine::playbackDecodeFailed() const noexcept
+{
+    const int active = m_activeLane.load(std::memory_order_acquire);
+    return m_decoderLoaded.load(std::memory_order_acquire) &&
+           m_decoderLanes[static_cast<std::size_t>(active)]
+               .failed.load(std::memory_order_acquire);
 }
 
 void AudioEngine::restorePausedPosition()
