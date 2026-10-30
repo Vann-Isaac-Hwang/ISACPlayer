@@ -1,33 +1,41 @@
 # ISACPlayer
 
-ISACPlayer is a Qt desktop music player for local libraries, playlists, and real-time DSP routing. It combines a compact music-library interface with a visual node-based audio graph and loadable DSP plugins.
+ISACPlayer is a Qt desktop music player for local libraries, playlists, and real-time DSP routing. It combines a library browser with a visual node-based audio graph and loadable audio-format and DSP plugins.
+
+## Interface Preview
+
+![ISACPlayer main interface showing the library, playback controls, waveform, and spectrum visualizers](screenshots/main-interface.png)
+
+![ISACPlayer DSP Router interface showing the audio node graph](screenshots/dsp-router-interface.png)
 
 ## Features
 
-- SQLite-backed music library with background TagLib scanning, paginated queries, search, and sorting
-- Track, artist, album, and playback-history views, including album artwork
+- SQLite-backed music library with background metadata scanning, paginated queries, search, and sorting
+- Track, artist, album, and playback-history views, including artwork and album track numbers
 - User-managed playlists with track addition, removal, drag reordering, and playlist playback
 - Persistent playback queue with sequential, shuffle, repeat-one, and repeat-all modes
-- Linux desktop media integration through MPRIS, including track metadata, playback controls, and media keys
-- Audio output device selection from the DSP Router page
-- DSP graph built around a DAG engine and 64-bit planar `double` audio buses
-- Independent master gain applied at the final soundcard output stage
-- Built-in Gain, Mono Gain, Mono Delay, Mono Feedback Delay, Mono Modulated Delay, Stereo Width, Stereo Balance, Adder, ReplayGain, and Biquad Equalizer (including All-Pass) plugins
-- Plugin library and node inspector docks that can be shown, hidden, or rearranged
-- Playback settings for fade in/out, history retention, and displayed audio metadata
+- NCM format plugin for metadata and cover extraction, cached playback materialization, and upcoming-track prefetch
+- DSP Router with a DAG graph, editable routing presets, selectable output devices, and dockable plugin library and node inspector
+- Planar 64-bit floating-point DSP buses, with conversion to interleaved 32-bit float at the device callback boundary
+- Independent master Gain at the final output stage; it does not depend on a Gain plugin instance
+- DSP plugins: Gain, Mono Gain, Mono Delay, Mono Feedback Delay, Mono Modulated Delay, Stereo Width, Stereo Balance, Adder, ReplayGain, and Biquad Equalizer
+- Playback controls for track fade, play/pause fade, and optional track overlap
+- Configurable playback history, displayed audio metadata, FFT visualization, smooth scrolling, themes, and selected display effects
+- Linux MPRIS integration for desktop media controls and metadata; optional KDE global-menu and compositor integrations when supported by the build/session
 - English application interface
 
-Audio is decoded and processed at the source sample rate where supported by the selected output path. The engine requests the configured native rate from the audio backend; shared desktop audio services or hardware may resample it. Current device output is stereo. Multi-device aggregation and channel mapping are not implemented.
+The current playback path is stereo. The engine supports graph rates up to 768 kHz, but the actual device rate depends on the selected device, backend, and desktop audio server. The operating system or hardware may resample audio. Multi-device aggregation and arbitrary channel mapping are not implemented, and the float device boundary does not promise bit-perfect output.
 
 ## Requirements
 
 - CMake 3.16 or newer
 - A C++20 compiler
-- Qt 5 or Qt 6 with Widgets and SQL modules
-- Qt DBus on Linux
+- Qt 5 or Qt 6 with Widgets and SQL
+- Qt DBus on Unix-like non-Apple builds
 - TagLib and FFTW3 development packages discoverable through `pkg-config`
+- Optional: KDE Window System development package for supported KDE compositor effects
 
-Check that the required packages are visible to `pkg-config`:
+Check that the core `pkg-config` dependencies are visible:
 
 ```sh
 pkg-config --modversion taglib fftw3
@@ -42,7 +50,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j2
 ```
 
-The application is written to `build/ISACPlayer`. Runtime DSP plugins are built under `build/plugins/`.
+The application is written to `build/ISACPlayer`. DSP modules are emitted to `build/plugins/`; audio-format modules are emitted to `build/format_plugins/`.
 
 ## Run
 
@@ -50,31 +58,27 @@ The application is written to `build/ISACPlayer`. Runtime DSP plugins are built 
 ./build/ISACPlayer
 ```
 
-The application searches for dynamic plugins in a `plugins/` directory beside the executable. Keep the plugin libraries in that directory when deploying the application.
+Both plugin directories must be beside the executable at runtime. The application discovers dynamic libraries there; copying only the executable is not a complete deployment.
 
 ## Usage
 
-### Library
+### Library and Playlists
 
-Add music files or folders and scan them from **Settings > Music Library**. The library presents tracks, artists, albums, and playback history. Use the search control to filter the current view; click track-list headers to sort.
-
-### Playlists
-
-Create, rename, or delete playlists from the playlist list's context menu. Add tracks from the library context menu or from the playlist tools. Playlist tracks can be reordered by dragging rows.
+Manage library paths from **Settings > Music Library**, then scan those folders. The Library provides track, artist, album, and history views. Use list headers to sort and the search control to filter the active view. Create and manage playlists from the Playlists page; tracks can be added from library context menus and reordered by dragging.
 
 ### DSP Router
 
-Choose an output device and routing preset from the top control bar. Instantiate DSP modules from the module library, connect node ports on the canvas, and select a node to edit its parameters in the inspector. Custom presets are stored in the application configuration directory under `dsp-presets/`.
+Choose an output device and routing preset from the control bar. Add modules from the plugin library, connect node ports on the canvas, and select a node to edit its parameters in the inspector. Custom presets are stored in the application's configuration directory under `dsp-presets/`.
 
 ### KDE and MPRIS
 
-On Linux, ISACPlayer exports an MPRIS media-player service over the session D-Bus. KDE Plasma media controls and keyboard media keys can control playback and display the current track metadata. When a KDE global menu registrar is available, application menus are exported to the desktop; otherwise, the menus remain in the application window.
+On Linux, ISACPlayer exports an MPRIS media-player service over the session D-Bus. KDE Plasma media controls and hardware media keys can control playback and display track metadata. Global-menu export and compositor blur depend on the corresponding KDE support being available in the build and desktop session.
 
-## DSP Plugin Development
+## Plugin Development
 
-The public plugin SDK is in `plugin_sdk/include/isac/plugin/`. Plugins implement the C++ audio-plugin interface and may optionally provide Qt controls. See [plugins/README.md](plugins/README.md) for the plugin ABI, metadata interfaces, and a minimal CMake example.
+The framework-independent DSP SDK is in `plugin_sdk/include/isac/plugin/`. Format plugins use the separate SDK in `format_sdk/include/isac/format/`; they are not DSP nodes and must not run from the audio callback. See [plugins/README.md](plugins/README.md), [format_plugins/README.md](format_plugins/README.md), and the [engineering guide](docs/ENGINEERING.md) for interfaces, deployment, and thread rules.
 
-Each plugin factory must create an independent node instance. Audio-node `process()` methods run on the real-time audio thread and must not allocate memory, acquire blocking locks, perform I/O, or access Qt UI objects. Parameter changes should be validated and transferred to the audio thread using lock-free state.
+DSP node `process()` methods run on the real-time audio thread. They must not allocate or free memory, acquire blocking locks, perform I/O, call Qt, or emit signals. Validate parameter values on the control side and publish them to DSP state through lock-free mechanisms.
 
 ## Tests
 
@@ -84,4 +88,4 @@ Run the test suite after building:
 ctest --test-dir build --output-on-failure
 ```
 
-The tests cover the audio graph and DSP nodes, dynamic plugin loading, patchbay interactions, and library storage, scanning, search, and playlist behavior.
+The tests cover audio-engine and node behavior, plugin discovery, patchbay and preset behavior, smooth scrolling, and library persistence, scanning, search, sorting, and playlists.
