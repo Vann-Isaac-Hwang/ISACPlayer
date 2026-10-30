@@ -28,6 +28,8 @@ namespace Ui { class MainWindow; }
 QT_END_NAMESPACE
 
 class QDockWidget;
+class QResizeEvent;
+class QShowEvent;
 namespace isac::ui { class SmoothScrollFilter; }
 
 class MainWindow : public QMainWindow {
@@ -37,7 +39,16 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
+protected:
+    void resizeEvent(QResizeEvent *event) override;
+    void showEvent(QShowEvent *event) override;
+
 private:
+    void updateBlurRegion();
+    void updateSidebarAppearance();
+    void updateInfoBarAppearance();
+    void updatePlaybackSurfacesAppearance();
+    void updateMainPageBackground();
     void setRouterDockWidgetsVisible(bool visible);
     void playTrackById(qint64 trackId);
     void queueTrackNext(qint64 trackId);
@@ -61,11 +72,30 @@ private:
     isac::library::LibraryRepository m_libraryRepository;
     isac::AudioEngine m_audioEngine;
 
+    QWidget* m_navigationSidebar = nullptr;
+    bool m_sidebarTransparencySupported = false;
+    bool m_sidebarBlurSupported = false;
+    bool m_sidebarTransparencyEnabled = false;
+    bool m_sidebarBlurEnabled = false;
+    int m_sidebarOpacityPercent = 78;
+    bool m_infoBarTransparencyEnabled = false;
+    bool m_infoBarBlurEnabled = false;
+    int m_infoBarOpacityPercent = 78;
+    bool m_playbackControlsTransparencyEnabled = false;
+    bool m_playbackControlsBlurEnabled = false;
+    int m_playbackControlsOpacityPercent = 78;
+    bool m_progressBarTransparencyEnabled = false;
+    bool m_progressBarBlurEnabled = false;
+    int m_progressBarOpacityPercent = 78;
     QStackedWidget* m_stackedWidget = nullptr;
     QPushButton* m_navLibraryButton = nullptr;
     isac::ui::ISACMusicLibraryPage* m_libraryPage = nullptr;
     isac::ui::PlaylistPage* m_playlistPage = nullptr;
     isac::ui::NowPlayingHeader* m_nowPlayingHeader = nullptr;
+    QWidget* m_playbackInfoBar = nullptr;
+    QWidget* m_playbackControlBlurRegion = nullptr;
+    QWidget* m_playbackVolumeBlurRegion = nullptr;
+    QWidget* m_progressBarBlurRegion = nullptr;
     isac::ui::PlaybackQueueView* m_playbackQueueView = nullptr;
     isac::ui::PatchbayView* m_patchbayView = nullptr;
     QMainWindow* m_routerWorkspace = nullptr;

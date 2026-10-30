@@ -15,6 +15,7 @@ public:
     void setSamples(const double* samples, std::size_t count);
     void setProgress(double progress);
     void setDuration(double seconds);
+    void setBackgroundOpacityPercent(int percent);
 
 signals:
     void seekRequested(double progress);
@@ -33,6 +34,7 @@ private:
     std::vector<double> m_samples;
     double m_progress = 0.0;
     double m_durationSeconds = 0.0;
+    int m_backgroundOpacityPercent = 100;
     qreal m_hoverX = 0.0;
     bool m_hovered = false;
     bool m_dragging = false;

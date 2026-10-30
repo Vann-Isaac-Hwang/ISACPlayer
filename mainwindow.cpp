@@ -9,6 +9,7 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QGuiApplication>
 #include <QPushButton>
 #include <QLabel>
 #include <QSplitter>
@@ -40,6 +41,12 @@
 #include <QKeySequence>
 #include <QMetaObject>
 #include <QRegularExpression>
+#include <QResizeEvent>
+#include <QShowEvent>
+#ifdef ISAC_HAS_KWINDOWSYSTEM
+#include <QRegion>
+#include <kwindoweffects.h>
+#endif
 #ifdef ISAC_HAS_MPRIS
 #include <QDBusConnection>
 #include <QDBusConnectionInterface>
@@ -78,6 +85,15 @@ int normalizedNavigationWidth(int value)
     return std::clamp(value, 88, 180);
 }
 
+QString rgbaColor(const QColor& color, int alpha)
+{
+    return QStringLiteral("rgba(%1, %2, %3, %4)")
+        .arg(color.red())
+        .arg(color.green())
+        .arg(color.blue())
+        .arg(alpha);
+}
+
 }
 
 MainWindow::MainWindow(QWidget *parent)
@@ -94,8 +110,62 @@ MainWindow::MainWindow(QWidget *parent)
     , m_libraryRepository(libraryDatabasePath())
     , m_audioEngine()
 {
+#if defined(Q_OS_LINUX)
+    m_sidebarTransparencySupported =
+        QGuiApplication::platformName().startsWith(
+            QStringLiteral("wayland"), Qt::CaseInsensitive);
+    if (m_sidebarTransparencySupported) {
+        setAttribute(Qt::WA_TranslucentBackground);
+    }
+#endif
+#ifdef ISAC_HAS_KWINDOWSYSTEM
+    m_sidebarBlurSupported = m_sidebarTransparencySupported;
+#endif
     ui->setupUi(this);
     QSettings settings;
+    m_sidebarTransparencyEnabled = m_sidebarTransparencySupported &&
+        settings.value(QStringLiteral("display/sidebarTransparencyEnabled"),
+                       m_sidebarTransparencySupported).toBool();
+    m_sidebarBlurEnabled = m_sidebarBlurSupported &&
+        settings.value(QStringLiteral("display/sidebarBlurEnabled"),
+                       m_sidebarBlurSupported).toBool();
+    m_sidebarOpacityPercent = std::clamp(
+        settings.value(QStringLiteral("display/sidebarOpacityPercent"), 78)
+            .toInt(),
+        35, 100);
+    m_infoBarTransparencyEnabled = m_sidebarTransparencySupported &&
+        settings.value(QStringLiteral("display/infoBarTransparencyEnabled"),
+                       m_sidebarTransparencySupported).toBool();
+    m_infoBarBlurEnabled = m_sidebarBlurSupported &&
+        settings.value(QStringLiteral("display/infoBarBlurEnabled"),
+                       m_sidebarBlurSupported).toBool();
+    m_infoBarOpacityPercent = std::clamp(
+        settings.value(QStringLiteral("display/infoBarOpacityPercent"), 78)
+            .toInt(),
+        35, 100);
+    m_playbackControlsTransparencyEnabled = m_sidebarTransparencySupported &&
+        settings.value(
+            QStringLiteral("display/playbackControlsTransparencyEnabled"),
+            m_sidebarTransparencySupported).toBool();
+    m_playbackControlsBlurEnabled = m_sidebarBlurSupported &&
+        settings.value(
+            QStringLiteral("display/playbackControlsBlurEnabled"),
+            m_sidebarBlurSupported).toBool();
+    m_playbackControlsOpacityPercent = std::clamp(
+        settings.value(
+            QStringLiteral("display/playbackControlsOpacityPercent"), 78)
+            .toInt(),
+        35, 100);
+    m_progressBarTransparencyEnabled = m_sidebarTransparencySupported &&
+        settings.value(QStringLiteral("display/progressBarTransparencyEnabled"),
+                       m_sidebarTransparencySupported).toBool();
+    m_progressBarBlurEnabled = m_sidebarBlurSupported &&
+        settings.value(QStringLiteral("display/progressBarBlurEnabled"),
+                       m_sidebarBlurSupported).toBool();
+    m_progressBarOpacityPercent = std::clamp(
+        settings.value(QStringLiteral("display/progressBarOpacityPercent"), 78)
+            .toInt(),
+        35, 100);
     if (settings.value(QStringLiteral("display/scrollTuningVersion"), 0)
             .toInt() < 1) {
         const double previousSensitivity = settings.value(
@@ -149,8 +219,13 @@ MainWindow::MainWindow(QWidget *parent)
     setWindowTitle(QStringLiteral("ISACPlayer"));
     resize(1180, 760);
 
-    // 全局暗黑主题背景
-    ui->centralwidget->setStyleSheet("background-color: #14161C;");
+    if (m_sidebarTransparencySupported) {
+        ui->centralwidget->setStyleSheet(
+            QStringLiteral("QWidget#centralwidget { background: transparent; }"));
+    } else {
+        ui->centralwidget->setStyleSheet(
+            QStringLiteral("QWidget#centralwidget { background-color: #14161C; }"));
+    }
 #if defined(Q_OS_LINUX) && defined(ISAC_HAS_MPRIS)
     bool globalMenuAvailable = false;
     const QDBusConnection sessionBus = QDBusConnection::sessionBus();
@@ -176,24 +251,14 @@ MainWindow::MainWindow(QWidget *parent)
 
     // ==================== 1. 左侧页面导航栏 ====================
     auto* sidebar = new QWidget(this);
+    m_navigationSidebar = sidebar;
     sidebar->setObjectName(QStringLiteral("sidebar"));
     sidebar->setFixedWidth(normalizedNavigationWidth(
         settings.value(QStringLiteral("display/navigationWidth"), 140)
             .toInt()));
-    sidebar->setStyleSheet(R"(
-        QWidget#sidebar {
-            background-color: #191B22;
-            border-right: 1px solid #262934;
-        }
-        QPushButton {
-            text-align: center; padding: 0; margin: 0; border: none;
-            border-radius: 0; color: #E6E8ED; font-size: 11px;
-            font-weight: 500; background: #292C34;
-        }
-        QPushButton:hover { background: #454952; color: white; }
-        QPushButton:pressed { background: #565A64; }
-        QPushButton:checked { background: #393C45; color: white; font-weight: bold; }
-    )");
+    updateSidebarAppearance();
+    connect(&m_themeManager, &isac::ui::ThemeManager::themeChanged,
+            this, &MainWindow::updateSidebarAppearance);
 
     auto* sideLayout = new QVBoxLayout(sidebar);
     sideLayout->setContentsMargins(0, 0, 0, 0);
@@ -261,6 +326,145 @@ MainWindow::MainWindow(QWidget *parent)
             QStringLiteral("Width of the main left navigation bar"));
         appearanceForm->addRow(
             QStringLiteral("Navigation bar width"), navigationWidth);
+        auto* sidebarTransparency = new QCheckBox(
+            QStringLiteral("Transparent navigation sidebar"), content);
+        sidebarTransparency->setChecked(m_sidebarTransparencyEnabled);
+        sidebarTransparency->setEnabled(m_sidebarTransparencySupported);
+        sidebarTransparency->setToolTip(
+            m_sidebarTransparencySupported
+                ? QStringLiteral("Let the desktop show through the navigation sidebar")
+                : QStringLiteral("Sidebar transparency is available in a Wayland session"));
+        appearanceForm->addRow(sidebarTransparency);
+        auto* sidebarBlur = new QCheckBox(
+            QStringLiteral("Blur behind navigation sidebar"), content);
+        sidebarBlur->setChecked(m_sidebarBlurEnabled);
+        sidebarBlur->setEnabled(
+            m_sidebarBlurSupported && m_sidebarTransparencyEnabled);
+        sidebarBlur->setToolTip(
+            m_sidebarBlurSupported
+                ? QStringLiteral("Use the KDE compositor blur effect behind the sidebar")
+                : QStringLiteral("KWindowSystem blur support is unavailable in this build/session"));
+        appearanceForm->addRow(sidebarBlur);
+        auto* sidebarOpacity = new QSpinBox(content);
+        sidebarOpacity->setRange(35, 100);
+        sidebarOpacity->setSuffix(QStringLiteral("%"));
+        sidebarOpacity->setValue(m_sidebarOpacityPercent);
+        sidebarOpacity->setToolTip(
+            QStringLiteral("Opacity of the navigation sidebar when transparency is enabled"));
+        sidebarOpacity->setEnabled(
+            m_sidebarTransparencySupported && m_sidebarTransparencyEnabled);
+        appearanceForm->addRow(
+            QStringLiteral("Sidebar opacity"), sidebarOpacity);
+        connect(sidebarTransparency, &QCheckBox::toggled, &dialog,
+                [this, sidebarBlur, sidebarOpacity](bool enabled) {
+            sidebarBlur->setEnabled(m_sidebarBlurSupported && enabled);
+            sidebarOpacity->setEnabled(
+                m_sidebarTransparencySupported && enabled);
+        });
+        auto* infoBarTransparency = new QCheckBox(
+            QStringLiteral("Transparent playback info bar"), content);
+        infoBarTransparency->setChecked(m_infoBarTransparencyEnabled);
+        infoBarTransparency->setEnabled(m_sidebarTransparencySupported);
+        infoBarTransparency->setToolTip(
+            QStringLiteral("Show the desktop backdrop through the playback information strip"));
+        appearanceForm->addRow(infoBarTransparency);
+        auto* infoBarBlur = new QCheckBox(
+            QStringLiteral("Blur behind playback info bar"), content);
+        infoBarBlur->setChecked(m_infoBarBlurEnabled);
+        infoBarBlur->setEnabled(
+            m_sidebarBlurSupported && m_infoBarTransparencyEnabled);
+        infoBarBlur->setToolTip(
+            m_sidebarBlurSupported
+                ? QStringLiteral("Use the desktop compositor blur behind the playback information strip")
+                : QStringLiteral("Backdrop blur requires Wayland and KWindowSystem support"));
+        appearanceForm->addRow(infoBarBlur);
+        auto* infoBarOpacity = new QSpinBox(content);
+        infoBarOpacity->setRange(35, 100);
+        infoBarOpacity->setSuffix(QStringLiteral("%"));
+        infoBarOpacity->setValue(m_infoBarOpacityPercent);
+        infoBarOpacity->setToolTip(
+            QStringLiteral("Playback information strip opacity, independent of the navigation sidebar"));
+        infoBarOpacity->setEnabled(
+            m_sidebarTransparencySupported && m_infoBarTransparencyEnabled);
+        appearanceForm->addRow(
+            QStringLiteral("Playback info bar opacity"), infoBarOpacity);
+        connect(infoBarTransparency, &QCheckBox::toggled, &dialog,
+                [this, infoBarBlur, infoBarOpacity](bool enabled) {
+            infoBarBlur->setEnabled(m_sidebarBlurSupported && enabled);
+            infoBarOpacity->setEnabled(
+                m_sidebarTransparencySupported && enabled);
+        });
+        auto* playbackControlsTransparency = new QCheckBox(
+            QStringLiteral("Transparent playback controls"), content);
+        playbackControlsTransparency->setChecked(
+            m_playbackControlsTransparencyEnabled);
+        playbackControlsTransparency->setEnabled(
+            m_sidebarTransparencySupported);
+        appearanceForm->addRow(playbackControlsTransparency);
+        auto* playbackControlsBlur = new QCheckBox(
+            QStringLiteral("Blur behind playback controls"), content);
+        playbackControlsBlur->setChecked(m_playbackControlsBlurEnabled);
+        playbackControlsBlur->setEnabled(
+            m_sidebarBlurSupported &&
+            m_playbackControlsTransparencyEnabled);
+        playbackControlsBlur->setToolTip(
+            m_sidebarBlurSupported
+                ? QStringLiteral("Blur the desktop behind the four playback buttons and volume track")
+                : QStringLiteral("Backdrop blur requires Wayland and KWindowSystem support"));
+        appearanceForm->addRow(playbackControlsBlur);
+        auto* playbackControlsOpacity = new QSpinBox(content);
+        playbackControlsOpacity->setRange(35, 100);
+        playbackControlsOpacity->setSuffix(QStringLiteral("%"));
+        playbackControlsOpacity->setValue(m_playbackControlsOpacityPercent);
+        playbackControlsOpacity->setEnabled(
+            m_sidebarTransparencySupported &&
+            m_playbackControlsTransparencyEnabled);
+        playbackControlsOpacity->setToolTip(
+            QStringLiteral("Opacity shared by playback button backgrounds and the volume track"));
+        appearanceForm->addRow(
+            QStringLiteral("Playback controls opacity"),
+            playbackControlsOpacity);
+        connect(playbackControlsTransparency, &QCheckBox::toggled, &dialog,
+                [this, playbackControlsBlur,
+                 playbackControlsOpacity](bool enabled) {
+            playbackControlsBlur->setEnabled(
+                m_sidebarBlurSupported && enabled);
+            playbackControlsOpacity->setEnabled(
+                m_sidebarTransparencySupported && enabled);
+        });
+        auto* progressBarTransparency = new QCheckBox(
+            QStringLiteral("Transparent playback progress bar"), content);
+        progressBarTransparency->setChecked(m_progressBarTransparencyEnabled);
+        progressBarTransparency->setEnabled(
+            m_sidebarTransparencySupported);
+        appearanceForm->addRow(progressBarTransparency);
+        auto* progressBarBlur = new QCheckBox(
+            QStringLiteral("Blur behind playback progress bar"), content);
+        progressBarBlur->setChecked(m_progressBarBlurEnabled);
+        progressBarBlur->setEnabled(
+            m_sidebarBlurSupported && m_progressBarTransparencyEnabled);
+        progressBarBlur->setToolTip(
+            m_sidebarBlurSupported
+                ? QStringLiteral("Blur the desktop behind the waveform progress bar")
+                : QStringLiteral("Backdrop blur requires Wayland and KWindowSystem support"));
+        appearanceForm->addRow(progressBarBlur);
+        auto* progressBarOpacity = new QSpinBox(content);
+        progressBarOpacity->setRange(35, 100);
+        progressBarOpacity->setSuffix(QStringLiteral("%"));
+        progressBarOpacity->setValue(m_progressBarOpacityPercent);
+        progressBarOpacity->setEnabled(
+            m_sidebarTransparencySupported &&
+            m_progressBarTransparencyEnabled);
+        progressBarOpacity->setToolTip(
+            QStringLiteral("Opacity of the waveform progress bar background"));
+        appearanceForm->addRow(
+            QStringLiteral("Progress bar opacity"), progressBarOpacity);
+        connect(progressBarTransparency, &QCheckBox::toggled, &dialog,
+                [this, progressBarBlur, progressBarOpacity](bool enabled) {
+            progressBarBlur->setEnabled(m_sidebarBlurSupported && enabled);
+            progressBarOpacity->setEnabled(
+                m_sidebarTransparencySupported && enabled);
+        });
         auto* playbackHeaderOrder = new QComboBox(content);
         playbackHeaderOrder->addItem(
             QStringLiteral("Buttons | Volume | Cover"), 0);
@@ -648,11 +852,72 @@ MainWindow::MainWindow(QWidget *parent)
 
         m_themeManager.setMode(static_cast<isac::ui::ThemeMode>(
             themeSelector->currentData().toInt()));
+        m_sidebarTransparencyEnabled = m_sidebarTransparencySupported &&
+            sidebarTransparency->isChecked();
+        m_sidebarBlurEnabled = m_sidebarBlurSupported &&
+            sidebarBlur->isChecked();
+        m_sidebarOpacityPercent = std::clamp(sidebarOpacity->value(), 35, 100);
+        m_infoBarTransparencyEnabled = m_sidebarTransparencySupported &&
+            infoBarTransparency->isChecked();
+        m_infoBarBlurEnabled = m_sidebarBlurSupported &&
+            infoBarBlur->isChecked();
+        m_infoBarOpacityPercent = std::clamp(infoBarOpacity->value(), 35, 100);
+        m_playbackControlsTransparencyEnabled =
+            m_sidebarTransparencySupported &&
+            playbackControlsTransparency->isChecked();
+        m_playbackControlsBlurEnabled = m_sidebarBlurSupported &&
+            playbackControlsBlur->isChecked();
+        m_playbackControlsOpacityPercent = std::clamp(
+            playbackControlsOpacity->value(), 35, 100);
+        m_progressBarTransparencyEnabled =
+            m_sidebarTransparencySupported &&
+            progressBarTransparency->isChecked();
+        m_progressBarBlurEnabled = m_sidebarBlurSupported &&
+            progressBarBlur->isChecked();
+        m_progressBarOpacityPercent = std::clamp(
+            progressBarOpacity->value(), 35, 100);
+        settings.setValue(QStringLiteral("display/sidebarTransparencyEnabled"),
+                          m_sidebarTransparencyEnabled);
+        settings.setValue(QStringLiteral("display/sidebarBlurEnabled"),
+                          m_sidebarBlurEnabled);
+        settings.setValue(QStringLiteral("display/sidebarOpacityPercent"),
+                          m_sidebarOpacityPercent);
+        settings.setValue(
+            QStringLiteral("display/infoBarTransparencyEnabled"),
+            m_infoBarTransparencyEnabled);
+        settings.setValue(QStringLiteral("display/infoBarBlurEnabled"),
+                          m_infoBarBlurEnabled);
+        settings.setValue(QStringLiteral("display/infoBarOpacityPercent"),
+                          m_infoBarOpacityPercent);
+        settings.setValue(
+            QStringLiteral("display/playbackControlsTransparencyEnabled"),
+            m_playbackControlsTransparencyEnabled);
+        settings.setValue(
+            QStringLiteral("display/playbackControlsBlurEnabled"),
+            m_playbackControlsBlurEnabled);
+        settings.setValue(
+            QStringLiteral("display/playbackControlsOpacityPercent"),
+            m_playbackControlsOpacityPercent);
+        settings.setValue(
+            QStringLiteral("display/progressBarTransparencyEnabled"),
+            m_progressBarTransparencyEnabled);
+        settings.setValue(QStringLiteral("display/progressBarBlurEnabled"),
+                          m_progressBarBlurEnabled);
+        settings.setValue(QStringLiteral("display/progressBarOpacityPercent"),
+                          m_progressBarOpacityPercent);
+        updateSidebarAppearance();
+        updateInfoBarAppearance();
+        updatePlaybackSurfacesAppearance();
+        updateBlurRegion();
+
         const int selectedNavigationWidth =
             normalizedNavigationWidth(navigationWidth->value());
         settings.setValue(QStringLiteral("display/navigationWidth"),
                           selectedNavigationWidth);
         sidebar->setFixedWidth(selectedNavigationWidth);
+        QTimer::singleShot(0, this, [this]() {
+            updateBlurRegion();
+        });
         const int selectedPlaybackHeaderOrder = std::clamp(
             playbackHeaderOrder->currentData().toInt(), 0, 5);
         settings.setValue(
@@ -809,6 +1074,10 @@ MainWindow::MainWindow(QWidget *parent)
 
     // ==================== 2. 中央多页面切换容器 (QStackedWidget) ====================
     m_stackedWidget = new QStackedWidget(this);
+    m_stackedWidget->setObjectName(QStringLiteral("mainPageStack"));
+    updateMainPageBackground();
+    connect(&m_themeManager, &isac::ui::ThemeManager::themeChanged,
+            this, &MainWindow::updateMainPageBackground);
 
     // 页面 0：ISACMusic 曲库界面
     m_libraryPage = new isac::ui::ISACMusicLibraryPage(&m_libraryRepository, this);
@@ -1184,6 +1453,20 @@ MainWindow::MainWindow(QWidget *parent)
 
     // ==================== 3. 顶部常驻播放工作区 ====================
     m_nowPlayingHeader = new isac::ui::NowPlayingHeader(this);
+    m_playbackInfoBar = m_nowPlayingHeader->findChild<QWidget*>(
+        QStringLiteral("trackInfoBar"));
+    m_playbackControlBlurRegion =
+        m_nowPlayingHeader->findChild<QWidget*>(
+            QStringLiteral("playbackControlGroup"));
+    m_playbackVolumeBlurRegion =
+        m_nowPlayingHeader->findChild<QWidget*>(
+            QStringLiteral("playbackVolumeSlider"));
+    m_progressBarBlurRegion = m_nowPlayingHeader->findChild<QWidget*>(
+        QStringLiteral("playbackProgressBar"));
+    updateInfoBarAppearance();
+    updatePlaybackSurfacesAppearance();
+    connect(&m_themeManager, &isac::ui::ThemeManager::themeChanged,
+            this, &MainWindow::updateInfoBarAppearance);
     m_nowPlayingHeader->setControlOrder(std::clamp(
         settings.value(QStringLiteral("display/playbackHeaderOrder"), 0)
             .toInt(),
@@ -2144,6 +2427,158 @@ void MainWindow::setRouterDockWidgetsVisible(bool visible)
     if (m_inspectorDock) {
         m_inspectorDock->setVisible(visible);
     }
+}
+
+void MainWindow::resizeEvent(QResizeEvent *event)
+{
+    QMainWindow::resizeEvent(event);
+    updateBlurRegion();
+}
+
+void MainWindow::showEvent(QShowEvent *event)
+{
+    QMainWindow::showEvent(event);
+    updateBlurRegion();
+}
+
+void MainWindow::updateBlurRegion()
+{
+#ifdef ISAC_HAS_KWINDOWSYSTEM
+    if (!m_sidebarBlurSupported || !windowHandle()) {
+        return;
+    }
+
+    if (!isVisible()) {
+        KWindowEffects::enableBlurBehind(windowHandle(), false);
+        return;
+    }
+
+    QRegion blurRegion;
+    if (m_navigationSidebar && m_sidebarTransparencyEnabled &&
+        m_sidebarBlurEnabled) {
+        const QPoint topLeft = m_navigationSidebar->mapTo(this, QPoint(0, 0));
+        blurRegion += QRegion(QRect(topLeft, m_navigationSidebar->size()));
+    }
+    if (m_playbackInfoBar && m_infoBarTransparencyEnabled &&
+        m_infoBarBlurEnabled) {
+        const QPoint topLeft = m_playbackInfoBar->mapTo(this, QPoint(0, 0));
+        blurRegion += QRegion(QRect(topLeft, m_playbackInfoBar->size()));
+    }
+    if (m_playbackControlsTransparencyEnabled &&
+        m_playbackControlsBlurEnabled) {
+        for (QWidget* widget : {m_playbackControlBlurRegion,
+                                m_playbackVolumeBlurRegion}) {
+            if (!widget) {
+                continue;
+            }
+            const QPoint topLeft = widget->mapTo(this, QPoint(0, 0));
+            blurRegion += QRegion(QRect(topLeft, widget->size()));
+        }
+    }
+    if (m_progressBarBlurRegion && m_progressBarTransparencyEnabled &&
+        m_progressBarBlurEnabled) {
+        const QPoint topLeft = m_progressBarBlurRegion->mapTo(this, QPoint(0, 0));
+        blurRegion += QRegion(
+            QRect(topLeft, m_progressBarBlurRegion->size()));
+    }
+    if (blurRegion.isEmpty()) {
+        KWindowEffects::enableBlurBehind(windowHandle(), false);
+        return;
+    }
+    KWindowEffects::enableBlurBehind(windowHandle(), true, blurRegion);
+#endif
+}
+
+void MainWindow::updateSidebarAppearance()
+{
+    if (!m_navigationSidebar) {
+        return;
+    }
+
+    const auto& colors = m_themeManager.colors();
+    const bool useTransparency =
+        m_sidebarTransparencySupported && m_sidebarTransparencyEnabled;
+    const int backgroundAlpha = useTransparency
+        ? qRound(m_sidebarOpacityPercent * 255.0 / 100.0)
+        : 255;
+    const int controlAlpha = std::min(255, backgroundAlpha + 12);
+    const int hoverAlpha = std::min(255, backgroundAlpha + 38);
+    const int pressedAlpha = std::min(255, backgroundAlpha + 48);
+
+    m_navigationSidebar->setStyleSheet(QStringLiteral(R"(
+        QWidget#sidebar {
+            background-color: %1;
+            border-right: 1px solid %2;
+        }
+        QPushButton {
+            text-align: center; padding: 0; margin: 0; border: none;
+            border-radius: 0; color: %3; font-size: 11px;
+            font-weight: 500; background: %4;
+        }
+        QPushButton:hover { background: %5; color: %6; }
+        QPushButton:pressed { background: %7; }
+        QPushButton:checked { background: %8; color: %6; font-weight: bold; }
+    )")
+        .arg(rgbaColor(colors.surface, backgroundAlpha),
+             rgbaColor(colors.border, backgroundAlpha),
+             colors.text.name(),
+             rgbaColor(colors.control, controlAlpha),
+             rgbaColor(colors.controlHover, hoverAlpha),
+             colors.textPrimary.name(),
+             rgbaColor(colors.controlPressed, pressedAlpha),
+             rgbaColor(colors.controlPressed, pressedAlpha)));
+}
+
+void MainWindow::updateInfoBarAppearance()
+{
+    if (!m_playbackInfoBar) {
+        return;
+    }
+
+    const auto& colors = m_themeManager.colors();
+    const bool useTransparency =
+        m_sidebarTransparencySupported && m_infoBarTransparencyEnabled;
+    const int backgroundAlpha = useTransparency
+        ? qRound(m_infoBarOpacityPercent * 255.0 / 100.0)
+        : 255;
+    m_playbackInfoBar->setStyleSheet(
+        QStringLiteral(R"(
+            QWidget#trackInfoBar {
+                background-color: %1;
+                border-bottom: 1px solid %2;
+            }
+        )")
+            .arg(rgbaColor(colors.surface, backgroundAlpha),
+                 rgbaColor(colors.border, backgroundAlpha)));
+}
+
+void MainWindow::updatePlaybackSurfacesAppearance()
+{
+    if (!m_nowPlayingHeader) {
+        return;
+    }
+
+    const int controlsOpacity = m_sidebarTransparencySupported &&
+            m_playbackControlsTransparencyEnabled
+        ? m_playbackControlsOpacityPercent
+        : 100;
+    const int progressOpacity = m_sidebarTransparencySupported &&
+            m_progressBarTransparencyEnabled
+        ? m_progressBarOpacityPercent
+        : 100;
+    m_nowPlayingHeader->setPlaybackSurfaceOpacity(
+        controlsOpacity, progressOpacity);
+}
+
+void MainWindow::updateMainPageBackground()
+{
+    if (!m_stackedWidget) {
+        return;
+    }
+
+    m_stackedWidget->setStyleSheet(
+        QStringLiteral("QStackedWidget#mainPageStack { background-color: %1; }")
+            .arg(m_themeManager.colors().window.name()));
 }
 
 void MainWindow::playTrackById(qint64 trackId) {

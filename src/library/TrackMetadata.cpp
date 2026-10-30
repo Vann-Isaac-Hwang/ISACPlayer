@@ -72,7 +72,7 @@ void MetadataReader::readAudioProperties(TrackInfo& track)
     }
 }
 
-static QPixmap loadScaledPixmap(const QByteArray& encodedData, int size) {
+static QImage loadScaledImage(const QByteArray& encodedData, int size) {
     if (encodedData.isEmpty() || size <= 0) {
         return {};
     }
@@ -86,21 +86,21 @@ static QPixmap loadScaledPixmap(const QByteArray& encodedData, int size) {
     QImageReader reader(&buffer);
     reader.setAutoTransform(true);
     reader.setScaledSize(QSize(size, size));
-    const QImage image = reader.read();
-    return image.isNull() ? QPixmap{} : QPixmap::fromImage(image);
+    return reader.read();
 }
 
-QPixmap MetadataReader::loadCoverArt(const TrackInfo& track, int size) {
-    QPixmap cover;
+QImage MetadataReader::loadCoverImage(const TrackInfo& track, int size) {
+    if (size <= 0) {
+        return {};
+    }
+
+    QImage cover;
     const QString& filePath = track.filePath;
     if (!track.coverPath.isEmpty()) {
         QImageReader reader(track.coverPath);
         reader.setAutoTransform(true);
         reader.setScaledSize(QSize(size, size));
-        const QImage image = reader.read();
-        if (!image.isNull()) {
-            cover = QPixmap::fromImage(image);
-        }
+        cover = reader.read();
     }
 
     const QString& playablePath = track.playbackPath.isEmpty()
@@ -115,7 +115,7 @@ QPixmap MetadataReader::loadCoverArt(const TrackInfo& track, int size) {
                 const auto* pic = picList.front();
                 const QByteArray data(
                     pic->data().data(), static_cast<int>(pic->data().size()));
-                cover = loadScaledPixmap(data, size);
+                cover = loadScaledImage(data, size);
             }
         }
     }
@@ -129,22 +129,30 @@ QPixmap MetadataReader::loadCoverArt(const TrackInfo& track, int size) {
                 const QByteArray data(
                     picFrame->picture().data(),
                     static_cast<int>(picFrame->picture().size()));
-                cover = loadScaledPixmap(data, size);
+                cover = loadScaledImage(data, size);
             }
         }
     }
 
     if (cover.isNull()) {
-        cover = generateDefaultCover(track.title, size);
+        cover = generateDefaultCoverImage(track.title, size);
     }
     return cover;
 }
 
-QPixmap MetadataReader::generateDefaultCover(const QString& title, int size) {
-    QPixmap pix(size, size);
-    pix.fill(Qt::transparent);
+QPixmap MetadataReader::loadCoverArt(const TrackInfo& track, int size) {
+    return QPixmap::fromImage(loadCoverImage(track, size));
+}
 
-    QPainter p(&pix);
+QImage MetadataReader::generateDefaultCoverImage(
+    const QString& title, int size) {
+    if (size <= 0) {
+        return {};
+    }
+    QImage image(size, size, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+
+    QPainter p(&image);
     p.setRenderHint(QPainter::Antialiasing);
 
     // 根据标题哈希生成独特的 ISACMusic 风格流体渐变色
@@ -166,7 +174,11 @@ QPixmap MetadataReader::generateDefaultCover(const QString& title, int size) {
     p.setFont(f);
     p.drawText(QRect(0, 0, size, size), Qt::AlignCenter, "♫");
 
-    return pix;
+    return image;
+}
+
+QPixmap MetadataReader::generateDefaultCover(const QString& title, int size) {
+    return QPixmap::fromImage(generateDefaultCoverImage(title, size));
 }
 
 } // namespace isac::library

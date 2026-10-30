@@ -81,13 +81,22 @@ void WaveformProgressWidget::setDuration(double seconds)
     update();
 }
 
+void WaveformProgressWidget::setBackgroundOpacityPercent(int percent)
+{
+    m_backgroundOpacityPercent = std::clamp(percent, 0, 100);
+    update();
+}
+
 void WaveformProgressWidget::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, false);
     const QRectF bounds = rect().adjusted(1, 1, -1, -1);
     const auto& colors = ThemeManager::paletteColors();
-    painter.fillRect(bounds, colors.visualizationBackground);
+    QColor background = colors.visualizationBackground;
+    background.setAlpha(qRound(
+        m_backgroundOpacityPercent * 255.0 / 100.0));
+    painter.fillRect(rect(), background);
 
     const qreal centerY = bounds.center().y();
     const qreal halfHeight = std::max<qreal>(2.0, bounds.height() * 0.43);

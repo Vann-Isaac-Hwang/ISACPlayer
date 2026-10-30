@@ -106,6 +106,19 @@ target_link_libraries(ISACPlayer PRIVATE
 )
 
 if(UNIX AND NOT APPLE)
+    if(QT_VERSION_MAJOR EQUAL 6)
+        pkg_check_modules(KWINDOWSYSTEM QUIET IMPORTED_TARGET KF6WindowSystem)
+    else()
+        pkg_check_modules(KWINDOWSYSTEM QUIET IMPORTED_TARGET KF5WindowSystem)
+    endif()
+
+    if(TARGET PkgConfig::KWINDOWSYSTEM)
+        target_link_libraries(ISACPlayer PRIVATE PkgConfig::KWINDOWSYSTEM)
+        target_compile_definitions(ISACPlayer PRIVATE ISAC_HAS_KWINDOWSYSTEM=1)
+    endif()
+endif()
+
+if(UNIX AND NOT APPLE)
     find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS DBus)
     target_sources(ISACPlayer PRIVATE
         src/platform/mpris/MprisController.h

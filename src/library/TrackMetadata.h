@@ -1,5 +1,6 @@
 #pragma once
 #include "LibraryTypes.h"
+#include <QImage>
 #include <QPixmap>
 
 namespace isac::library {
@@ -9,7 +10,10 @@ public:
     static TrackInfo readTrack(const QString& filePath);
     static void readAudioProperties(TrackInfo& track);
     // Cover art is decoded only when a track is shown.
+    static QImage loadCoverImage(const TrackInfo& track, int size = 256);
     static QPixmap loadCoverArt(const TrackInfo& track, int size = 256);
+    static QImage generateDefaultCoverImage(
+        const QString& title, int size = 256);
     static QPixmap generateDefaultCover(const QString& title, int size = 256);
 };
 

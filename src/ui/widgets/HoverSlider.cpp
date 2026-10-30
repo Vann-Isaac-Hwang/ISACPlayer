@@ -38,6 +38,12 @@ void HoverSlider::setHoverProgress(qreal progress)
     update();
 }
 
+void HoverSlider::setGrooveOpacityPercent(int percent)
+{
+    m_grooveOpacityPercent = std::clamp(percent, 0, 100);
+    update();
+}
+
 bool HoverSlider::event(QEvent* event)
 {
     if (event->type() == QEvent::Enter) {
@@ -158,7 +164,9 @@ void HoverSlider::paintEvent(QPaintEvent*)
 
     const int grooveWidth = std::min(24, width());
     const int grooveX = (width() - grooveWidth) / 2;
-    painter.setBrush(ThemeManager::paletteColors().sliderGroove);
+    QColor grooveColor = ThemeManager::paletteColors().sliderGroove;
+    grooveColor.setAlpha(qRound(m_grooveOpacityPercent * 255.0 / 100.0));
+    painter.setBrush(grooveColor);
     painter.drawRect(grooveX, 0, grooveWidth, height());
 
     const int handleHeight = handleLength();

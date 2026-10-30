@@ -750,7 +750,8 @@ std::vector<LibraryGroup> LibraryRepository::queryAlbums(
                                        : QStringLiteral("DESC");
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
-        "SELECT al.id, al.name, COUNT(DISTINCT tal.track_id) "
+        "WITH album_page AS ("
+        "SELECT al.id, al.name, COUNT(DISTINCT tal.track_id) AS track_count "
         "FROM albums AS al "
         "JOIN track_albums AS tal ON tal.album_id = al.id "
         "WHERE (? = '' OR al.name LIKE ? ESCAPE '\\' COLLATE NOCASE "
@@ -763,7 +764,31 @@ std::vector<LibraryGroup> LibraryRepository::queryAlbums(
         "AND search_a.name LIKE ? ESCAPE '\\' COLLATE NOCASE)) "
         "GROUP BY al.id, al.name "
         "ORDER BY al.name COLLATE NOCASE %1 "
-        "LIMIT ? OFFSET ?").arg(direction));
+        "LIMIT ? OFFSET ?) "
+        "SELECT page.id, page.name, page.track_count, "
+        "COALESCE(("
+        "SELECT group_concat(ordered_artists.name, ' / ') "
+        "FROM ("
+        "SELECT DISTINCT a.name AS name "
+        "FROM track_albums AS artist_tal "
+        "JOIN track_artists AS ta ON ta.track_id = artist_tal.track_id "
+        "JOIN artists AS a ON a.id = ta.artist_id "
+        "WHERE artist_tal.album_id = page.id "
+        "ORDER BY a.name COLLATE NOCASE"
+        ") AS ordered_artists"
+        "), ''), "
+        "cover_track.path, cover_track.playback_path, "
+        "cover_track.cover_path, cover_track.title "
+        "FROM album_page AS page "
+        "LEFT JOIN tracks AS cover_track ON cover_track.id = ("
+        "SELECT cover_tal.track_id "
+        "FROM track_albums AS cover_tal "
+        "JOIN tracks AS candidate ON candidate.id = cover_tal.track_id "
+        "WHERE cover_tal.album_id = page.id "
+        "ORDER BY CASE WHEN candidate.track_number > 0 THEN 0 ELSE 1 END, "
+        "candidate.track_number ASC, candidate.title COLLATE NOCASE ASC, "
+        "candidate.id ASC LIMIT 1) "
+        "ORDER BY page.name COLLATE NOCASE %1").arg(direction));
     const QString pattern = escapedSearchPattern(searchText);
     query.addBindValue(searchText);
     query.addBindValue(pattern);
@@ -775,27 +800,15 @@ std::vector<LibraryGroup> LibraryRepository::queryAlbums(
         return groups;
     }
     while (query.next()) {
-        QStringList artists;
-        QSqlQuery artistQuery(m_database);
-        artistQuery.prepare(QStringLiteral(
-            "SELECT DISTINCT a.name "
-            "FROM artists AS a "
-            "JOIN track_artists AS ta ON ta.artist_id = a.id "
-            "JOIN track_albums AS tal ON tal.track_id = ta.track_id "
-            "WHERE tal.album_id = ? "
-            "ORDER BY a.name COLLATE NOCASE"));
-        artistQuery.addBindValue(query.value(0).toLongLong());
-        if (!artistQuery.exec()) {
-            m_lastError = artistQuery.lastError().text();
-            return {};
-        }
-        while (artistQuery.next()) {
-            artists.push_back(artistQuery.value(0).toString());
-        }
-        groups.push_back({
-            query.value(1).toString(), artists.join(QStringLiteral(" / ")),
-            query.value(2).toLongLong()
-        });
+        LibraryGroup group;
+        group.name = query.value(1).toString();
+        group.artist = query.value(3).toString();
+        group.trackCount = query.value(2).toLongLong();
+        group.coverTrack.filePath = query.value(4).toString();
+        group.coverTrack.playbackPath = query.value(5).toString();
+        group.coverTrack.coverPath = query.value(6).toString();
+        group.coverTrack.title = query.value(7).toString();
+        groups.push_back(std::move(group));
     }
     return groups;
 }

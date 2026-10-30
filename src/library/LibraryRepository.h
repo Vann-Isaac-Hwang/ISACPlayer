@@ -28,6 +28,7 @@ struct LibraryGroup {
     QString name;
     QString artist;
     qint64 trackCount = 0;
+    TrackInfo coverTrack;
 };
 
 struct PersistedPlaybackQueue {

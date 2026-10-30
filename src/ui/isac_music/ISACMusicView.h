@@ -2,7 +2,9 @@
 #include <QWidget>
 #include <QAbstractTableModel>
 #include <QCache>
+#include <QImage>
 #include <QTableView>
+#include <QSet>
 #include <QLabel>
 #include <QListWidget>
 #include <QPushButton>
@@ -61,9 +63,14 @@ public:
 
 private:
     bool loadPage(int row) const;
+    void requestCover(int row, const library::TrackInfo& track);
+    void finishCover(int row, quint64 generation, quint64 requestKey,
+                     const QImage& image);
     library::LibraryRepository* m_repository = nullptr;
     QIcon m_defaultIcon;
     mutable QCache<int, QIcon> m_coverCache{96};
+    QSet<quint64> m_pendingCoverRequests;
+    quint64 m_coverGeneration = 0;
     mutable std::vector<library::TrackInfo> m_page;
     mutable int m_pageStart = -1;
     qint64 m_trackCount = 0;
@@ -99,14 +106,20 @@ public:
 
 private:
     bool loadPage(int row) const;
+    bool requestCover(int row, const library::LibraryGroup& group);
+    void finishCover(int row, quint64 generation, quint64 requestKey,
+                     const QImage& image);
     library::LibraryRepository* m_repository = nullptr;
     bool m_albums = false;
+    QIcon m_loadingIcon;
     QString m_searchText;
     bool m_ascending = true;
     qint64 m_groupCount = 0;
     mutable std::vector<library::LibraryGroup> m_page;
     mutable int m_pageStart = -1;
     mutable QCache<int, QIcon> m_coverCache{64};
+    QSet<quint64> m_pendingCoverRequests;
+    quint64 m_coverGeneration = 0;
     static constexpr int kPageSize = 256;
 };
 
@@ -219,6 +232,7 @@ public:
     void setPlaybackMode(int mode);
     void setVolumeMaximum(double maximum);
     void setVolume(double volume);
+    void setPlaybackSurfaceOpacity(int controlsPercent, int progressPercent);
     void setWaterfallFftSize(int fftSize);
     int waterfallFftSize() const noexcept;
     void setControlOrder(int order);
@@ -267,6 +281,8 @@ private:
     std::vector<double> m_waveformSamples;
     int m_playbackModeValue = 0;
     int m_controlOrder = 0;
+    int m_controlSurfaceOpacityPercent = 100;
+    int m_progressSurfaceOpacityPercent = 100;
     double m_volumeFactor = 1.0;
     double m_volumeMaximum = 2.0;
     double m_totalDuration = 0.0;

@@ -23,10 +23,16 @@
 #include <QStyle>
 #include <QPainter>
 #include <QPixmap>
+#include <QColor>
+#include <QMetaObject>
+#include <QPointer>
+#include <QRunnable>
+#include <QThreadPool>
 #include <QToolButton>
 #include <QRegularExpression>
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <utility>
 
 namespace {
@@ -34,6 +40,55 @@ namespace {
 constexpr int kPlaybackControlsSize = 140;
 constexpr int kPlaybackVolumeWidth = 24;
 constexpr int kPlaybackCoverSize = 140;
+constexpr int kMaxPendingCoverRequests = 32;
+
+QString rgbaColor(const QColor& color, int alpha)
+{
+    return QStringLiteral("rgba(%1, %2, %3, %4)")
+        .arg(color.red())
+        .arg(color.green())
+        .arg(color.blue())
+        .arg(alpha);
+}
+
+QThreadPool& coverArtThreadPool()
+{
+    static QThreadPool pool;
+    static const bool configured = []() {
+        pool.setMaxThreadCount(2);
+        pool.setExpiryTimeout(1000);
+        return true;
+    }();
+    Q_UNUSED(configured);
+    return pool;
+}
+
+void loadCoverImageAsync(
+    QObject* context,
+    isac::library::TrackInfo track,
+    int size,
+    std::function<void(QImage)> completion)
+{
+    QPointer<QObject> guardedContext(context);
+    coverArtThreadPool().start(QRunnable::create(
+        [guardedContext, track = std::move(track), size,
+         completion = std::move(completion)]() mutable {
+            QImage image =
+                isac::library::MetadataReader::loadCoverImage(track, size);
+            if (!guardedContext) {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                guardedContext.data(),
+                [guardedContext, completion = std::move(completion),
+                 image = std::move(image)]() mutable {
+                    if (guardedContext) {
+                        completion(std::move(image));
+                    }
+                },
+                Qt::QueuedConnection);
+        }));
+}
 
 class ResponsiveAlbumView final : public QListView {
 public:
@@ -253,10 +308,8 @@ QVariant TrackTableModel::data(const QModelIndex& index, int role) const {
             return *cached;
         }
 
-        const QPixmap cover = library::MetadataReader::loadCoverArt(track, 80);
-        const QIcon icon = cover.isNull() ? m_defaultIcon : QIcon(cover);
-        m_coverCache.insert(index.row(), new QIcon(icon));
-        return icon;
+        const_cast<TrackTableModel*>(this)->requestCover(index.row(), track);
+        return m_defaultIcon;
     }
     const int artistColumn = titleColumn + 1;
     const int albumColumn = titleColumn + 2;
@@ -388,6 +441,7 @@ Qt::DropActions TrackTableModel::supportedDropActions() const {
 
 void TrackTableModel::refresh() {
     beginResetModel();
+    ++m_coverGeneration;
     m_page.clear();
     m_pageStart = -1;
     m_coverCache.clear();
@@ -432,11 +486,48 @@ void TrackTableModel::setShowTrackNumber(bool visible) {
         return;
     }
     beginResetModel();
+    ++m_coverGeneration;
     m_showTrackNumber = visible;
     m_page.clear();
     m_pageStart = -1;
     m_coverCache.clear();
     endResetModel();
+}
+
+void TrackTableModel::requestCover(
+    int row, const library::TrackInfo& track)
+{
+    const quint64 requestKey =
+        (m_coverGeneration << 32) | static_cast<quint32>(row);
+    if (m_pendingCoverRequests.contains(requestKey) ||
+        m_pendingCoverRequests.size() >= kMaxPendingCoverRequests) {
+        return;
+    }
+
+    m_pendingCoverRequests.insert(requestKey);
+    const quint64 generation = m_coverGeneration;
+    loadCoverImageAsync(
+        this, track, 80,
+        [this, row, generation, requestKey](QImage image) {
+            finishCover(row, generation, requestKey, image);
+        });
+}
+
+void TrackTableModel::finishCover(
+    int row, quint64 generation, quint64 requestKey, const QImage& image)
+{
+    m_pendingCoverRequests.remove(requestKey);
+    if (generation != m_coverGeneration || row < 0 || row >= rowCount()) {
+        return;
+    }
+
+    const QIcon icon = image.isNull()
+        ? m_defaultIcon
+        : QIcon(QPixmap::fromImage(image));
+    m_coverCache.insert(row, new QIcon(icon));
+    const int titleColumn = m_showTrackNumber ? 1 : 0;
+    emit dataChanged(index(row, titleColumn), index(row, titleColumn),
+                     {Qt::DecorationRole});
 }
 
 void TrackTableModel::setPlaylistId(std::optional<qint64> playlistId) {
@@ -579,6 +670,8 @@ LibraryGroupTableModel::LibraryGroupTableModel(
     : QAbstractTableModel(parent)
     , m_repository(repository)
     , m_albums(albums)
+    , m_loadingIcon(library::MetadataReader::generateDefaultCover(
+          QStringLiteral("ISAC"), 180))
 {
     refresh();
 }
@@ -608,16 +701,9 @@ QVariant LibraryGroupTableModel::data(const QModelIndex& index, int role) const 
         if (const auto* cached = m_coverCache.object(index.row())) {
             return *cached;
         }
-        const auto tracks = m_repository->queryAlbumTracks(
-            group.name, {}, library::TrackSort::TrackNumber, true, 1, 0);
-        const QPixmap cover = tracks.empty()
-            ? library::MetadataReader::generateDefaultCover(group.name, 180)
-            : library::MetadataReader::loadCoverArt(tracks.front(), 180);
-        const QIcon icon(cover.isNull()
-            ? library::MetadataReader::generateDefaultCover(group.name, 180)
-            : cover);
-        m_coverCache.insert(index.row(), new QIcon(icon));
-        return icon;
+        const_cast<LibraryGroupTableModel*>(this)->requestCover(
+            index.row(), group);
+        return m_loadingIcon;
     }
     if (m_albums && index.column() == 0 && role == Qt::UserRole) {
         return group.artist;
@@ -662,6 +748,7 @@ QVariant LibraryGroupTableModel::headerData(
 
 void LibraryGroupTableModel::refresh() {
     beginResetModel();
+    ++m_coverGeneration;
     m_page.clear();
     m_pageStart = -1;
     m_coverCache.clear();
@@ -669,6 +756,50 @@ void LibraryGroupTableModel::refresh() {
         : m_albums ? m_repository->albumCount(m_searchText)
                    : m_repository->artistCount(m_searchText);
     endResetModel();
+}
+
+bool LibraryGroupTableModel::requestCover(
+    int row, const library::LibraryGroup& group)
+{
+    const quint64 requestKey =
+        (m_coverGeneration << 32) | static_cast<quint32>(row);
+    if (m_pendingCoverRequests.contains(requestKey)) {
+        return true;
+    }
+    if (m_pendingCoverRequests.size() >= kMaxPendingCoverRequests) {
+        return false;
+    }
+
+    if (group.coverTrack.filePath.isEmpty()) {
+        const QIcon fallback(
+            library::MetadataReader::generateDefaultCover(group.name, 180));
+        m_coverCache.insert(row, new QIcon(fallback));
+        return true;
+    }
+
+    m_pendingCoverRequests.insert(requestKey);
+    const quint64 generation = m_coverGeneration;
+    loadCoverImageAsync(
+        this, group.coverTrack, 180,
+        [this, row, generation, requestKey](QImage image) {
+            finishCover(row, generation, requestKey, image);
+        });
+    return true;
+}
+
+void LibraryGroupTableModel::finishCover(
+    int row, quint64 generation, quint64 requestKey, const QImage& image)
+{
+    m_pendingCoverRequests.remove(requestKey);
+    if (generation != m_coverGeneration || row < 0 || row >= rowCount()) {
+        return;
+    }
+
+    const QIcon icon = image.isNull()
+        ? m_loadingIcon
+        : QIcon(QPixmap::fromImage(image));
+    m_coverCache.insert(row, new QIcon(icon));
+    emit dataChanged(index(row, 0), index(row, 0), {Qt::DecorationRole});
 }
 
 void LibraryGroupTableModel::setSearchText(const QString& text) {
@@ -1867,7 +1998,10 @@ NowPlayingHeader::NowPlayingHeader(QWidget* parent) : QWidget(parent) {
     setMinimumHeight(160);
     setMaximumHeight(180);
     setStyleSheet(R"(
-        QWidget#nowPlayingHeader { background: #181A20; }
+        QWidget#nowPlayingHeader { background: transparent; }
+        QWidget#nowPlayingContent { background: transparent; }
+        QSlider#playbackVolumeSlider { background: transparent; }
+        QWidget#playbackProgressBar { background: transparent; }
         QLabel { color: #EAEAEA; background: transparent; }
         QPushButton {
             color: #E6E8ED; background: #292C34; border: none;
@@ -1887,14 +2021,16 @@ NowPlayingHeader::NowPlayingHeader(QWidget* parent) : QWidget(parent) {
     root->setSpacing(0);
 
     auto* contentWidget = new QWidget(this);
+    contentWidget->setObjectName(QStringLiteral("nowPlayingContent"));
     contentWidget->setFixedHeight(140);
     m_contentLayout = new QHBoxLayout(contentWidget);
     m_contentLayout->setContentsMargins(0, 0, 0, 0);
     m_contentLayout->setSpacing(0);
     m_controlGroup = new QWidget(this);
+    m_controlGroup->setObjectName(QStringLiteral("playbackControlGroup"));
     m_controlGroup->setFixedSize(
         kPlaybackControlsSize, kPlaybackControlsSize);
-    m_controlGroup->setStyleSheet(QStringLiteral("background: #292C34;"));
+    m_controlGroup->setStyleSheet(QStringLiteral("background: transparent;"));
     auto* controlGrid = new QGridLayout(m_controlGroup);
     controlGrid->setContentsMargins(0, 0, 0, 0);
     controlGrid->setHorizontalSpacing(0);
@@ -1932,6 +2068,7 @@ NowPlayingHeader::NowPlayingHeader(QWidget* parent) : QWidget(parent) {
     controlGrid->addWidget(m_btnPrev, 1, 0);
     controlGrid->addWidget(m_btnNext, 1, 1);
     m_volumeSlider = new HoverSlider(Qt::Vertical, this);
+    m_volumeSlider->setObjectName(QStringLiteral("playbackVolumeSlider"));
     m_volumeSlider->setRange(0, qRound(m_volumeMaximum * 100.0));
     m_volumeSlider->setValue(100);
     m_volumeSlider->setFixedSize(
@@ -1939,6 +2076,7 @@ NowPlayingHeader::NowPlayingHeader(QWidget* parent) : QWidget(parent) {
     m_volumeSlider->setToolTip(QStringLiteral("Volume"));
 
     m_coverThumb = new QLabel(this);
+    m_coverThumb->setStyleSheet(QStringLiteral("background: #181A20;"));
     m_coverThumb->setFixedSize(kPlaybackCoverSize, kPlaybackCoverSize);
     m_coverThumb->setScaledContents(true);
     m_coverThumb->setPixmap(library::MetadataReader::generateDefaultCover("ISAC", 280));
@@ -1952,6 +2090,7 @@ NowPlayingHeader::NowPlayingHeader(QWidget* parent) : QWidget(parent) {
     visualColumn->setContentsMargins(0, 0, 0, 0);
     visualColumn->setSpacing(0);
     m_waveform = new WaveformProgressWidget(this);
+    m_waveform->setObjectName(QStringLiteral("playbackProgressBar"));
     m_waveform->setMinimumHeight(36);
     auto* spectrumRow = new QHBoxLayout();
     spectrumRow->setContentsMargins(0, 0, 0, 0);
@@ -2048,9 +2187,57 @@ NowPlayingHeader::NowPlayingHeader(QWidget* parent) : QWidget(parent) {
         emit volumeChanged(static_cast<float>(m_volumeFactor));
     });
     updateControlIcons();
+    setPlaybackSurfaceOpacity(100, 100);
     if (auto* themeManager = ThemeManager::instance()) {
         connect(themeManager, &ThemeManager::themeChanged, this,
                 &NowPlayingHeader::updateControlIcons);
+        connect(themeManager, &ThemeManager::themeChanged, this, [this]() {
+            setPlaybackSurfaceOpacity(
+                m_controlSurfaceOpacityPercent,
+                m_progressSurfaceOpacityPercent);
+        });
+    }
+}
+
+void NowPlayingHeader::setPlaybackSurfaceOpacity(
+    int controlsPercent, int progressPercent)
+{
+    m_controlSurfaceOpacityPercent = std::clamp(controlsPercent, 35, 100);
+    m_progressSurfaceOpacityPercent = std::clamp(progressPercent, 35, 100);
+
+    const auto& colors = ThemeManager::paletteColors();
+    const int controlAlpha = qRound(
+        m_controlSurfaceOpacityPercent * 255.0 / 100.0);
+    const int hoverAlpha = std::min(255, controlAlpha + 32);
+    const int pressedAlpha = std::min(255, controlAlpha + 44);
+    const QString buttonStyle = QStringLiteral(R"(
+        QPushButton {
+            color: %1; background: %2; border: none;
+            border-radius: 0; margin: 0; padding: 0; font-size: 16px;
+        }
+        QPushButton:hover { background: %3; }
+        QPushButton:pressed { background: %4; }
+    )")
+        .arg(colors.textPrimary.name(),
+             rgbaColor(colors.control, controlAlpha),
+             rgbaColor(colors.controlHover, hoverAlpha),
+             rgbaColor(colors.controlPressed, pressedAlpha));
+    for (auto* button : {m_btnPrev, m_btnPlayPause, m_btnNext,
+                         m_playbackModeButton}) {
+        button->setStyleSheet(buttonStyle);
+    }
+
+    if (auto* volumeSlider = qobject_cast<HoverSlider*>(m_volumeSlider)) {
+        volumeSlider->setGrooveOpacityPercent(m_controlSurfaceOpacityPercent);
+    }
+    if (m_waveform) {
+        m_waveform->setBackgroundOpacityPercent(
+            m_progressSurfaceOpacityPercent);
+    }
+    if (m_coverThumb) {
+        m_coverThumb->setStyleSheet(
+            QStringLiteral("background-color: %1;")
+                .arg(rgbaColor(colors.visualizationBackground, 255)));
     }
 }
 

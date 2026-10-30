@@ -16,6 +16,7 @@ public:
 
     qreal hoverProgress() const noexcept { return m_hoverProgress; }
     void setHoverProgress(qreal progress);
+    void setGrooveOpacityPercent(int percent);
 
 protected:
     bool event(QEvent* event) override;
@@ -31,6 +32,7 @@ private:
     void setSliderPositionFromPoint(const QPoint& point);
 
     qreal m_hoverProgress = 0.0;
+    int m_grooveOpacityPercent = 100;
     int m_normalHandleHeight = 12;
     int m_hoverHandleHeight = 20;
     bool m_dragging = false;
