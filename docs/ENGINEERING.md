@@ -42,6 +42,7 @@ the complete system path is bit-perfect.
 | `plugins/<module>/` | In-tree DSP plugin targets, each with its own `CMakeLists.txt`. |
 | `format_sdk/` | Public audio-format plugin interface. |
 | `format_plugins/<format>/` | In-tree format plugin targets; currently includes NCM support. |
+| `packaging/arch/` | Local-checkout Arch Linux `PKGBUILD` and package instructions. |
 | `config/` | Qt resources, desktop metadata, and built-in DSP preset JSON files. |
 | `tests/` | Engine, plugin loader, patchbay, scrolling, and library tests. |
 | `third_party/miniaudio/` | Vendored miniaudio backend header. |
@@ -80,13 +81,15 @@ the source tree:
   does not already exist, so user-edited files are not overwritten.
 - **Format cache:** under `QStandardPaths::AppLocalDataLocation/format-cache/`,
   separated into playback and cover-art data.
-- **DSP modules:** `<application directory>/plugins/`.
-- **Format modules:** `<application directory>/format_plugins/`.
+- **Build-tree DSP modules:** `<application directory>/plugins/`.
+- **Build-tree format modules:** `<application directory>/format_plugins/`.
+- **Arch system-package modules:** `/usr/lib/isacplayer/plugins/` and
+  `/usr/lib/isacplayer/format_plugins/`; `PluginPaths` checks these after the
+  executable-adjacent build paths.
 
 The CMake build emits in-tree DSP modules to `build/plugins/` and format
-modules to `build/format_plugins/`. Installed module targets are placed in
-matching directories beside the installed executable. A deployment must
-include both directories and their Qt/runtime dependencies.
+modules to `build/format_plugins/`. A deployment must include both module
+directories and their Qt/runtime dependencies.
 
 Format playback cache keys incorporate the absolute source path, file size,
 source modification time, and plugin ID. Updating a source file therefore

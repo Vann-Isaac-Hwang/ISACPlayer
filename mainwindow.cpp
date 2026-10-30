@@ -3,6 +3,7 @@
 #include "ui/inspector/NodeInspectorWidget.h"
 #include "ui/patchbay/DspPresetCatalog.h"
 #include "ui/widgets/SmoothScrollFilter.h"
+#include "platform/PluginPaths.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -100,13 +101,10 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , m_themeManager(this)
     , ui(new Ui::MainWindow)
-    , m_pluginManager(QCoreApplication::applicationDirPath() + "/plugins")
-    , m_formatPluginManager(
-          QDir(QCoreApplication::applicationDirPath())
-              .filePath(QStringLiteral("format_plugins")))
+    , m_pluginManager(isac::platform::dspPluginDirectory())
+    , m_formatPluginManager(isac::platform::formatPluginDirectory())
     , m_formatPlaybackPrefetcher(
-          QDir(QCoreApplication::applicationDirPath())
-              .filePath(QStringLiteral("format_plugins")))
+          isac::platform::formatPluginDirectory())
     , m_libraryRepository(libraryDatabasePath())
     , m_audioEngine()
 {
@@ -133,6 +131,9 @@ MainWindow::MainWindow(QWidget *parent)
         settings.value(QStringLiteral("display/sidebarOpacityPercent"), 78)
             .toInt(),
         35, 100);
+    m_sidebarFontSize = std::clamp(
+        settings.value(QStringLiteral("display/sidebarFontSize"), 13).toInt(),
+        10, 20);
     m_infoBarTransparencyEnabled = m_sidebarTransparencySupported &&
         settings.value(QStringLiteral("display/infoBarTransparencyEnabled"),
                        m_sidebarTransparencySupported).toBool();
@@ -326,6 +327,14 @@ MainWindow::MainWindow(QWidget *parent)
             QStringLiteral("Width of the main left navigation bar"));
         appearanceForm->addRow(
             QStringLiteral("Navigation bar width"), navigationWidth);
+        auto* sidebarFontSize = new QSpinBox(&dialog);
+        sidebarFontSize->setRange(10, 20);
+        sidebarFontSize->setSuffix(QStringLiteral(" px"));
+        sidebarFontSize->setValue(m_sidebarFontSize);
+        sidebarFontSize->setToolTip(
+            QStringLiteral("Font size for the main navigation buttons"));
+        appearanceForm->addRow(
+            QStringLiteral("Navigation font size"), sidebarFontSize);
         auto* sidebarTransparency = new QCheckBox(
             QStringLiteral("Transparent navigation sidebar"), content);
         sidebarTransparency->setChecked(m_sidebarTransparencyEnabled);
@@ -882,6 +891,9 @@ MainWindow::MainWindow(QWidget *parent)
                           m_sidebarBlurEnabled);
         settings.setValue(QStringLiteral("display/sidebarOpacityPercent"),
                           m_sidebarOpacityPercent);
+        m_sidebarFontSize = std::clamp(sidebarFontSize->value(), 10, 20);
+        settings.setValue(QStringLiteral("display/sidebarFontSize"),
+                          m_sidebarFontSize);
         settings.setValue(
             QStringLiteral("display/infoBarTransparencyEnabled"),
             m_infoBarTransparencyEnabled);
@@ -1084,8 +1096,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_libraryPage->refreshTracks();
     m_libraryScanner = new isac::library::LibraryScanner(
         libraryDatabasePath(),
-        QDir(QCoreApplication::applicationDirPath())
-            .filePath(QStringLiteral("format_plugins")),
+        isac::platform::formatPluginDirectory(),
         this);
     connect(m_libraryScanner, &isac::library::LibraryScanner::batchCommitted,
             this, [this](int) { m_libraryPage->refreshTracks(); });
@@ -2512,7 +2523,7 @@ void MainWindow::updateSidebarAppearance()
         }
         QPushButton {
             text-align: center; padding: 0; margin: 0; border: none;
-            border-radius: 0; color: %3; font-size: 11px;
+            border-radius: 0; color: %3; font-size: %9px;
             font-weight: 500; background: %4;
         }
         QPushButton:hover { background: %5; color: %6; }
@@ -2526,7 +2537,8 @@ void MainWindow::updateSidebarAppearance()
              rgbaColor(colors.controlHover, hoverAlpha),
              colors.textPrimary.name(),
              rgbaColor(colors.controlPressed, pressedAlpha),
-             rgbaColor(colors.controlPressed, pressedAlpha)));
+             rgbaColor(colors.controlPressed, pressedAlpha))
+        .arg(m_sidebarFontSize));
 }
 
 void MainWindow::updateInfoBarAppearance()

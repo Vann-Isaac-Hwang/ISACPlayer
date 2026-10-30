@@ -52,13 +52,24 @@ cmake --build build -j2
 
 The application is written to `build/ISACPlayer`. DSP modules are emitted to `build/plugins/`; audio-format modules are emitted to `build/format_plugins/`.
 
+## Arch Linux Package
+
+Build and install a pacman-managed package from a full local checkout:
+
+```sh
+cd packaging/arch
+makepkg -si
+```
+
+Remove it with `sudo pacman -Rns isacplayer`. See [packaging/arch/README.md](packaging/arch/README.md) for the local-package scope and AUR follow-up.
+
 ## Run
 
 ```sh
 ./build/ISACPlayer
 ```
 
-Both plugin directories must be beside the executable at runtime. The application discovers dynamic libraries there; copying only the executable is not a complete deployment.
+In a build tree, the plugin directories are beside the executable. The Arch package installs them under `/usr/lib/isacplayer/{plugins,format_plugins}` and the application checks that system location as well. A deployment must include both plugin directories; copying only the executable is incomplete.
 
 ## Usage
 

@@ -2210,6 +2210,17 @@ void NowPlayingHeader::setPlaybackSurfaceOpacity(
         m_controlSurfaceOpacityPercent * 255.0 / 100.0);
     const int hoverAlpha = std::min(255, controlAlpha + 32);
     const int pressedAlpha = std::min(255, controlAlpha + 44);
+    const auto* themeManager = ThemeManager::instance();
+    const int lightThemeBackingAlpha =
+        themeManager && !themeManager->isDark()
+            ? qRound(controlAlpha * 0.5)
+            : 0;
+    m_controlGroup->setStyleSheet(
+        lightThemeBackingAlpha > 0
+            ? QStringLiteral("background-color: %1;")
+                  .arg(rgbaColor(colors.surface, lightThemeBackingAlpha))
+            : QStringLiteral("background: transparent;"));
+
     const QString buttonStyle = QStringLiteral(R"(
         QPushButton {
             color: %1; background: %2; border: none;

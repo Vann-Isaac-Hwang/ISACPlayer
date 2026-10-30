@@ -24,7 +24,7 @@ set_target_properties(isac_format_ncm PROPERTIES
 
 include(GNUInstallDirs)
 install(TARGETS isac_format_ncm
-    LIBRARY DESTINATION ${CMAKE_INSTALL_BINDIR}/format_plugins
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}/format_plugins
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/isacplayer/format_plugins
+    RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR}/isacplayer/format_plugins
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )

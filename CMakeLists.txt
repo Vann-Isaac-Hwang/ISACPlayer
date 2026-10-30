@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 
 project(ISACPlayer VERSION 0.1 LANGUAGES CXX)
 
+include(GNUInstallDirs)
+
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -60,6 +62,8 @@ set(PROJECT_SOURCES
     src/media/formats/FormatPluginManager.cpp
     src/media/formats/FormatPlaybackPrefetcher.h
     src/media/formats/FormatPlaybackPrefetcher.cpp
+    src/platform/PluginPaths.h
+    src/platform/PluginPaths.cpp
     src/engine/plugin/IAudioPlugin.h
     src/ui/isac_music/ISACMusicView.h
     src/ui/isac_music/ISACMusicView.cpp
@@ -94,6 +98,9 @@ qt_add_executable(ISACPlayer
 
 target_include_directories(ISACPlayer PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_compile_definitions(ISACPlayer PRIVATE
+    ISACPLAYER_INSTALL_LIBDIR=\"${CMAKE_INSTALL_LIBDIR}\"
 )
 
 target_link_libraries(ISACPlayer PRIVATE
@@ -140,16 +147,32 @@ add_subdirectory(plugins/adder)
 add_subdirectory(plugins/biquad)
 add_subdirectory(format_plugins/ncm)
 
+set(ISAC_DSP_PLUGIN_TARGETS
+    isac_replaygain
+    isac_gain
+    isac_mono_gain
+    isac_mono_delay
+    isac_mono_feedback_delay
+    isac_stereo_width
+    isac_mono_modulated_delay
+    isac_stereo_balance
+    isac_adder
+    isac_biquad
+)
+
 set_target_properties(ISACPlayer PROPERTIES
     MACOSX_BUNDLE TRUE
     WIN32_EXECUTABLE TRUE
 )
 
-include(GNUInstallDirs)
 install(TARGETS ISACPlayer
     BUNDLE DESTINATION .
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+install(TARGETS ${ISAC_DSP_PLUGIN_TARGETS}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/isacplayer/plugins
+    RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR}/isacplayer/plugins
 )
 if(UNIX AND NOT APPLE)
     install(FILES config/isacplayer.desktop
@@ -159,8 +182,16 @@ if(UNIX AND NOT APPLE)
         DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps
     )
 endif()
-install(DIRECTORY DESTINATION ${CMAKE_INSTALL_BINDIR}/plugins)
-install(DIRECTORY DESTINATION ${CMAKE_INSTALL_BINDIR}/format_plugins)
+install(FILES LICENSE
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/isacplayer
+)
+install(FILES format_plugins/ncm/THIRD_PARTY_LICENSE.txt
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/isacplayer
+    RENAME ncm-aes-MIT.txt
+)
+install(FILES third_party/miniaudio/LICENSE.txt
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/isacplayer
+)
 install(DIRECTORY plugin_sdk/include/
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/isacplayer
 )
@@ -250,6 +281,19 @@ if(BUILD_TESTING)
             $<TARGET_FILE:isac_adder>
             $<TARGET_FILE:isac_biquad>
     )
+
+    add_executable(isac_plugin_paths_tests
+        tests/PluginPathsTest.cpp
+        src/platform/PluginPaths.h
+        src/platform/PluginPaths.cpp
+    )
+    target_include_directories(isac_plugin_paths_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(isac_plugin_paths_tests PRIVATE
+        Qt${QT_VERSION_MAJOR}::Core
+    )
+    add_test(NAME isac_plugin_paths_tests COMMAND isac_plugin_paths_tests)
 
     add_executable(isac_library_tests
         tests/LibraryRepositoryTest.cpp

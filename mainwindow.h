@@ -78,6 +78,7 @@ private:
     bool m_sidebarTransparencyEnabled = false;
     bool m_sidebarBlurEnabled = false;
     int m_sidebarOpacityPercent = 78;
+    int m_sidebarFontSize = 13;
     bool m_infoBarTransparencyEnabled = false;
     bool m_infoBarBlurEnabled = false;
     int m_infoBarOpacityPercent = 78;

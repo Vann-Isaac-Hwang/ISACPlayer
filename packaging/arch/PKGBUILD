@@ -1,0 +1,31 @@
+# Local-checkout package recipe. For AUR publication, switch to a tagged source
+# archive and pin its checksum instead of reading the surrounding worktree.
+pkgname=isacplayer
+pkgver=0.1
+pkgrel=1
+pkgdesc='Qt music player with a real-time DSP router'
+arch=('x86_64')
+url='https://github.com/Vann-Isaac-Hwang/ISACPlayer'
+license=('GPL-3.0-only')
+depends=('alsa-lib' 'fftw' 'kwindowsystem' 'qt6-base' 'taglib')
+makedepends=('cmake' 'pkgconf')
+
+_project_root="$(realpath "$startdir/../..")"
+
+build() {
+    cmake -S "$_project_root" -B "$srcdir/build" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DCMAKE_INSTALL_LIBDIR=lib \
+        -DBUILD_TESTING=ON
+    cmake --build "$srcdir/build" \
+        --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
+}
+
+check() {
+    ctest --test-dir "$srcdir/build" --output-on-failure
+}
+
+package() {
+    DESTDIR="$pkgdir" cmake --install "$srcdir/build"
+}
