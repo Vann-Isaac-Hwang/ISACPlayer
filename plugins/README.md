@@ -10,7 +10,8 @@ plugins/
 
 The in-tree plugins include Stereo Gain, Mono Gain, Mono Delay,
 Mono Feedback Delay, Mono Modulated Delay, Stereo Width, Stereo Balance,
-Adder, ReplayGain, and Biquad Equalizer. Stereo Width performs a stateless
+Adder, ReplayGain, Biquad Equalizer, and the optional Stereo HRTF
+Spatializer. Stereo Width performs a stateless
 Mid/Side width transformation: 0 x produces mono, 1 x preserves the original
 stereo image, and 2 x doubles the side component. Mono Gain is a single-input,
 single-output
@@ -24,7 +25,13 @@ Mono Feedback Delay emits a delayed wet signal and feeds a bounded portion of
 that signal back into its preallocated delay line. Mono Modulated Delay uses a
 sine-table LFO to vary a fractional delay; its phase parameter can offset
 paired instances. The Biquad Equalizer also provides an All-Pass filter mode
-for phase rotation without an intended magnitude response change.
+for phase rotation without an intended magnitude response change. Stereo HRTF
+Spatializer uses a measured SOFA HRTF through libmysofa: stereo input is
+treated as two virtual loudspeakers and rendered to left/right ears. It
+supports scene azimuth, elevation, speaker angle, and wet mix. SOFA loading and
+interpolation happen on the control thread; the real-time path only performs
+bounded, preallocated FIR convolution. If libmysofa is unavailable, the
+optional plugin is omitted from the build.
 
 The plugin SDK is located at `plugin_sdk/include/isac/plugin/`. DSP plugins
 only need to depend on `isac/plugin/IAudioPlugin.h`. The Qt discovery boundary

@@ -18,6 +18,8 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Sql)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(TAGLIB REQUIRED IMPORTED_TARGET taglib)
 pkg_check_modules(FFTW3 REQUIRED IMPORTED_TARGET fftw3)
+find_path(ISAC_MYSOFA_INCLUDE_DIR mysofa.h)
+find_library(ISAC_MYSOFA_LIBRARY NAMES mysofa)
 
 # Public headers consumed by external DSP plugins. This subproject intentionally
 # carries no Qt or engine implementation dependency.
@@ -146,6 +148,11 @@ add_subdirectory(plugins/stereo_balance)
 add_subdirectory(plugins/adder)
 add_subdirectory(plugins/biquad)
 add_subdirectory(format_plugins/ncm)
+if(ISAC_MYSOFA_INCLUDE_DIR AND ISAC_MYSOFA_LIBRARY)
+    add_subdirectory(plugins/hrtf_spatializer)
+else()
+    message(STATUS "libmysofa not found: Stereo HRTF Spatializer plugin disabled")
+endif()
 
 set(ISAC_DSP_PLUGIN_TARGETS
     isac_replaygain
@@ -159,6 +166,9 @@ set(ISAC_DSP_PLUGIN_TARGETS
     isac_adder
     isac_biquad
 )
+if(TARGET isac_hrtf_spatializer)
+    list(APPEND ISAC_DSP_PLUGIN_TARGETS isac_hrtf_spatializer)
+endif()
 
 set_target_properties(ISACPlayer PROPERTIES
     MACOSX_BUNDLE TRUE
@@ -268,18 +278,40 @@ if(BUILD_TESTING)
     target_link_libraries(isac_plugin_loader_tests PRIVATE
         Qt${QT_VERSION_MAJOR}::Core
     )
+    set(ISAC_PLUGIN_TEST_TARGETS
+        $<TARGET_FILE:isac_replaygain>
+        $<TARGET_FILE:isac_gain>
+        $<TARGET_FILE:isac_mono_gain>
+        $<TARGET_FILE:isac_mono_delay>
+        $<TARGET_FILE:isac_mono_feedback_delay>
+        $<TARGET_FILE:isac_stereo_width>
+        $<TARGET_FILE:isac_mono_modulated_delay>
+        $<TARGET_FILE:isac_stereo_balance>
+        $<TARGET_FILE:isac_adder>
+        $<TARGET_FILE:isac_biquad>
+    )
+    if(TARGET isac_hrtf_spatializer)
+        target_include_directories(isac_plugin_loader_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/plugins/hrtf_spatializer
+            ${ISAC_MYSOFA_INCLUDE_DIR}
+        )
+        target_link_libraries(isac_plugin_loader_tests PRIVATE
+            ${ISAC_MYSOFA_LIBRARY}
+        )
+        target_compile_definitions(isac_plugin_loader_tests PRIVATE
+            ISAC_HAS_MYSOFA=1
+        )
+        if(EXISTS "/usr/share/libmysofa/default.sofa")
+            target_compile_definitions(isac_plugin_loader_tests PRIVATE
+                ISAC_TEST_SOFA_PATH="/usr/share/libmysofa/default.sofa"
+            )
+        endif()
+        list(APPEND ISAC_PLUGIN_TEST_TARGETS
+            $<TARGET_FILE:isac_hrtf_spatializer>)
+    endif()
     add_test(NAME isac_plugin_loader_tests
         COMMAND isac_plugin_loader_tests
-            $<TARGET_FILE:isac_replaygain>
-            $<TARGET_FILE:isac_gain>
-            $<TARGET_FILE:isac_mono_gain>
-            $<TARGET_FILE:isac_mono_delay>
-            $<TARGET_FILE:isac_mono_feedback_delay>
-            $<TARGET_FILE:isac_stereo_width>
-            $<TARGET_FILE:isac_mono_modulated_delay>
-            $<TARGET_FILE:isac_stereo_balance>
-            $<TARGET_FILE:isac_adder>
-            $<TARGET_FILE:isac_biquad>
+            ${ISAC_PLUGIN_TEST_TARGETS}
     )
 
     add_executable(isac_plugin_paths_tests

@@ -85,6 +85,12 @@ std::shared_ptr<ExecutionPlan> GraphCompiler::compile(
     }
 
     plan->prepareBuffers(defaultBlockSize, sampleRate);
+    for (auto& step : plan->steps) {
+        if (auto* preparation =
+                dynamic_cast<IAudioNodePreparation*>(step.node.get())) {
+            preparation->prepare(sampleRate);
+        }
+    }
     return plan;
 }
 

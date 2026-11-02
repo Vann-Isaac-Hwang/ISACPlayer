@@ -22,6 +22,15 @@ struct Connection {
     }
 };
 
+class IAudioNodePreparation {
+public:
+    virtual ~IAudioNodePreparation() = default;
+
+    // Called on the control thread when a graph execution plan is compiled.
+    // This method must never be called from process().
+    virtual void prepare(std::uint32_t sampleRate) = 0;
+};
+
 class IAudioNode {
 public:
     virtual ~IAudioNode() = default;

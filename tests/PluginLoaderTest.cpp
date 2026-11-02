@@ -1,6 +1,9 @@
 #include <isac/plugin/QtAudioPlugin.h>
 #include "BiquadNode.h"
 #include "ReplayGainNode.h"
+#if defined(ISAC_HAS_MYSOFA)
+#include "HrtfSpatializerNode.h"
+#endif
 
 #include <QCoreApplication>
 #include <QPluginLoader>
@@ -114,6 +117,37 @@ int main(int argc, char** argv) {
                 assert(std::abs(output.channel(0)[frame] - 1.5) < 1.0e-12);
             }
         }
+
+#if defined(ISAC_HAS_MYSOFA)
+        if (QString::fromLatin1(plugin->pluginId()) ==
+            QStringLiteral("isac.hrtf_spatializer")) {
+            auto* hrtf =
+                dynamic_cast<isac::plugins::HrtfSpatializerNode*>(node.get());
+            assert(hrtf);
+            static_cast<isac::IAudioNodePreparation*>(hrtf)->prepare(48000);
+#if defined(ISAC_TEST_SOFA_PATH)
+            assert(hrtf->setSofaPath(ISAC_TEST_SOFA_PATH));
+            isac::AudioBuffer impulseInput(2, 1024, 48000);
+            isac::AudioBuffer impulseOutput(2, 1024, 48000);
+            impulseInput.channel(0)[0] = 1.0;
+            impulseInput.channel(1)[0] = 1.0;
+            hrtf->process(
+                impulseInput, impulseOutput, impulseInput.numFrames());
+            bool hasFiniteResponse = false;
+            for (int channel = 0; channel < 2; ++channel) {
+                for (int frame = 0; frame < impulseOutput.numFrames();
+                     ++frame) {
+                    assert(std::isfinite(impulseOutput.channel(channel)[frame]));
+                    hasFiniteResponse =
+                        hasFiniteResponse ||
+                        std::abs(impulseOutput.channel(channel)[frame]) >
+                            1.0e-12;
+                }
+            }
+            assert(hasFiniteResponse);
+#endif
+        }
+#endif
 
         if (QString::fromLatin1(plugin->pluginId()) ==
             QStringLiteral("isac.mono_gain")) {
