@@ -4,7 +4,13 @@
 #include <QEvent>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QStyleHints>
 #include <QWidget>
+
+#if defined(Q_OS_WIN)
+#  include <windows.h>
+#  include <dwmapi.h>
+#endif
 
 #include <algorithm>
 
@@ -12,7 +18,50 @@ namespace isac::ui {
 namespace {
 
 constexpr auto kThemeSetting = "appearance/theme";
+// Authored stylesheet text. It stays the single source of truth for a widget
+// and is remapped for every theme change.
 constexpr auto kBaseStyleSheetProperty = "isacBaseStyleSheet";
+// Stylesheet that already contains theme colors; applied verbatim.
+constexpr auto kFinalStyleSheetProperty = "isacFinalStyleSheet";
+// Last text this manager wrote, used to tell its own writes apart from
+// stylesheet changes made by application code.
+constexpr auto kAppliedStyleSheetProperty = "isacAppliedStyleSheet";
+
+#if defined(Q_OS_WIN)
+// Documented value on Windows 10 20H1 and later; older builds used 19.
+constexpr DWORD kImmersiveDarkModeAttribute = 20;
+constexpr DWORD kImmersiveDarkModeAttributeLegacy = 19;
+
+// Paints the native caption of a top-level window for the active theme. Qt
+// leaves the frame alone when the application palette changes, so without this
+// the title bar keeps its previous color until the window is resized.
+void applyNativeWindowFrame(QWidget* widget, bool dark)
+{
+    if (!widget || !widget->isWindow() || !widget->windowHandle()) {
+        return;
+    }
+    const HWND handle = reinterpret_cast<HWND>(widget->winId());
+    if (!handle) {
+        return;
+    }
+
+    const BOOL enabled = dark ? TRUE : FALSE;
+    if (FAILED(DwmSetWindowAttribute(handle, kImmersiveDarkModeAttribute,
+                                     &enabled, sizeof(enabled)))) {
+        DwmSetWindowAttribute(handle, kImmersiveDarkModeAttributeLegacy,
+                              &enabled, sizeof(enabled));
+    }
+
+    // The non-client area only repaints when the frame is refreshed.
+    SetWindowPos(handle, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+}
+#else
+void applyNativeWindowFrame(QWidget*, bool)
+{
+}
+#endif
 
 QString colorName(const QColor& color)
 {
@@ -25,6 +74,7 @@ ThemeManager* ThemeManager::s_instance = nullptr;
 
 ThemeManager::ThemeManager(QObject* parent)
     : QObject(parent)
+    , m_colors(darkColors())
 {
     Q_ASSERT(!s_instance);
     s_instance = this;
@@ -41,6 +91,12 @@ ThemeManager::ThemeManager(QObject* parent)
             .toString());
 
     application->installEventFilter(this);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    connect(application->styleHints(), &QStyleHints::colorSchemeChanged,
+            this, [this](Qt::ColorScheme) {
+                handleSystemColorSchemeChanged();
+            });
+#endif
     apply();
 }
 
@@ -102,8 +158,7 @@ void ThemeManager::setMode(ThemeMode mode)
 void ThemeManager::apply()
 {
     const bool dark = m_mode == ThemeMode::Dark ||
-                      (m_mode == ThemeMode::System &&
-                       detectDarkPalette(m_systemPalette));
+                      (m_mode == ThemeMode::System && systemPrefersDark());
     m_isDark = dark;
     m_colors = dark ? darkColors() : lightColors();
 
@@ -116,8 +171,23 @@ void ThemeManager::apply()
     m_applying = true;
     application->setPalette(buildPalette(m_colors));
     application->setStyleSheet(globalStyleSheet(m_colors));
+    m_appliedPalette = application->palette();
     m_applying = false;
     applyToExistingWidgets();
+    applyWindowFrames();
+}
+
+void ThemeManager::applyWindowFrames()
+{
+    auto* application = qobject_cast<QApplication*>(
+        QCoreApplication::instance());
+    if (!application) {
+        return;
+    }
+
+    for (QWidget* widget : application->topLevelWidgets()) {
+        applyNativeWindowFrame(widget, m_isDark);
+    }
 }
 
 void ThemeManager::applyToExistingWidgets()
@@ -140,9 +210,22 @@ bool ThemeManager::eventFilter(QObject* watched, QEvent* event)
                 QCoreApplication::instance())) {
             handleSystemPaletteChanged(application->palette());
         }
-    } else if (event->type() == QEvent::Show) {
+    } else if (event->type() == QEvent::StyleChange && !m_applying) {
+        // A first stylesheet assignment replaces the widget style and arrives
+        // as a style change. Adopt it as the authored source right away so a
+        // freshly created widget (menu, dialog, plugin UI) never appears with
+        // the unresolved dark colors.
         if (auto* widget = qobject_cast<QWidget*>(watched)) {
             applyWidgetStyleSheet(widget);
+        }
+    } else if (event->type() == QEvent::Show && !m_applying) {
+        // Later stylesheet rewrites do not send a style change, so widgets are
+        // also re-synchronised when they become visible. Top-level windows
+        // additionally get their native caption repainted here, because they
+        // are only guaranteed to have a window handle at that point.
+        if (auto* widget = qobject_cast<QWidget*>(watched)) {
+            applyWidgetStyleSheet(widget);
+            applyNativeWindowFrame(widget, m_isDark);
         }
     }
     return QObject::eventFilter(watched, event);
@@ -154,28 +237,78 @@ void ThemeManager::applyWidgetStyleSheet(QWidget* widget)
         return;
     }
 
-    const QVariant storedBase =
-        widget->property(kBaseStyleSheetProperty);
-    QString baseStyleSheet;
-    if (storedBase.isValid()) {
-        baseStyleSheet = storedBase.toString();
-    } else {
-        baseStyleSheet = widget->styleSheet();
-        if (baseStyleSheet.isEmpty()) {
+    const QString current = widget->styleSheet();
+    const QVariant applied = widget->property(kAppliedStyleSheetProperty);
+    if (applied.isValid() && applied.toString() == current) {
+        // The current text is this manager's output. A final stylesheet
+        // already contains theme colors and is rewritten by its owner, so it
+        // must not be remapped here; an authored one is remapped below.
+        if (widget->property(kFinalStyleSheetProperty).isValid()) {
             return;
         }
-        widget->setProperty(kBaseStyleSheetProperty, baseStyleSheet);
+    } else {
+        // Application code replaced the stylesheet since the last write. The
+        // text on the widget - not the previously cached base - is the source
+        // that has to follow the theme from now on.
+        widget->setProperty(kFinalStyleSheetProperty, QVariant());
+        if (current.isEmpty()) {
+            widget->setProperty(kBaseStyleSheetProperty, QVariant());
+            widget->setProperty(kAppliedStyleSheetProperty, QString());
+            return;
+        }
+        widget->setProperty(kBaseStyleSheetProperty, current);
     }
 
-    const QString themed = themedStyleSheet(baseStyleSheet, m_colors);
-    if (widget->styleSheet() != themed) {
-        widget->setStyleSheet(themed);
+    const QVariant base = widget->property(kBaseStyleSheetProperty);
+    if (!base.isValid()) {
+        if (current.isEmpty()) {
+            return;
+        }
+        widget->setProperty(kBaseStyleSheetProperty, current);
     }
+
+    writeWidgetStyleSheet(
+        widget,
+        themedStyleSheet(
+            widget->property(kBaseStyleSheetProperty).toString(), m_colors));
+}
+
+void ThemeManager::writeWidgetStyleSheet(QWidget* widget,
+                                         const QString& styleSheet)
+{
+    if (!widget) {
+        return;
+    }
+
+    // Record the text before writing it so the resulting StyleChange event is
+    // recognisable as this manager's own output; that comparison is what stops
+    // the nested event from being treated as an application write.
+    widget->setProperty(kAppliedStyleSheetProperty, styleSheet);
+    if (widget->styleSheet() != styleSheet) {
+        widget->setStyleSheet(styleSheet);
+    }
+}
+
+void ThemeManager::applyFinalStyleSheet(QWidget* widget,
+                                        const QString& styleSheet)
+{
+    if (!widget) {
+        return;
+    }
+
+    widget->setProperty(kBaseStyleSheetProperty, QVariant());
+    widget->setProperty(kFinalStyleSheetProperty, styleSheet);
+    writeWidgetStyleSheet(widget, styleSheet);
 }
 
 void ThemeManager::handleSystemPaletteChanged(const QPalette& palette)
 {
-    if (m_applying || palette == m_systemPalette) {
+    // The application palette is replaced by this manager, so a palette change
+    // carrying our own palette is not a desktop theme change. Treating it as
+    // one re-applied the theme on unrelated events such as restoring a
+    // minimised window.
+    if (m_applying || palette == m_appliedPalette ||
+        palette == m_systemPalette) {
         return;
     }
 
@@ -184,6 +317,36 @@ void ThemeManager::handleSystemPaletteChanged(const QPalette& palette)
         apply();
         emit themeChanged();
     }
+}
+
+bool ThemeManager::systemPrefersDark() const
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    // "Follow System" has to ask the platform, not inspect the palette:
+    // Windows reports the dark app mode only through the style hints and keeps
+    // handing out the classic light palette, so palette detection alone picked
+    // the light theme on a dark desktop.
+    const Qt::ColorScheme scheme =
+        QGuiApplication::styleHints()->colorScheme();
+    if (scheme != Qt::ColorScheme::Unknown) {
+        return scheme == Qt::ColorScheme::Dark;
+    }
+#endif
+    return detectDarkPalette(m_systemPalette);
+}
+
+void ThemeManager::handleSystemColorSchemeChanged()
+{
+    if (m_applying || m_mode != ThemeMode::System) {
+        return;
+    }
+    // Some desktops report the colour scheme and the palette in the same
+    // update; skip the second pass when the resolved theme did not change.
+    if (m_isDark == systemPrefersDark()) {
+        return;
+    }
+    apply();
+    emit themeChanged();
 }
 
 bool ThemeManager::detectDarkPalette(const QPalette& palette)

@@ -54,6 +54,13 @@ The application UI is English. Keep all new visible strings in English.
     target and is emitted into the build `plugins/` directory.
 - `config/`
   - Qt resources, desktop integration metadata, and built-in DSP presets.
+- `packaging/windows/`
+  - Windows build, deploy, and icon helper scripts plus their README.
+- `resources/windows/`
+  - Windows icon and the resource template that embeds the executable icon
+    and version information.
+- `cmake/IsacDependencies.cmake`
+  - Cross-platform discovery of TagLib, FFTW3, and the optional libmysofa.
 - `tests/`
   - Engine, patchbay, plugin-loader, and library/repository tests.
 - `third_party/miniaudio/`
@@ -67,8 +74,10 @@ The root `CMakeLists.txt` uses:
 - A C++20 compiler.
 - Qt 5 or Qt 6 with Widgets and SQL.
 - Qt DBus on Linux/Unix builds.
-- TagLib development files discoverable through `pkg-config`.
-- FFTW3 development files discoverable through `pkg-config`.
+- TagLib and FFTW3 development files. Unix-like builds resolve them through
+  `pkg-config`; Windows builds use the CMake packages provided by vcpkg.
+- Optional libmysofa for the HRTF spatializer plugin.
+- Windows only: MSVC, Qt built for MSVC, vcpkg, and Ninja.
 
 The main targets are:
 
@@ -77,7 +86,7 @@ The main targets are:
 - `isac_plugin_sdk`: header-only CMake interface target.
 - `isac_gain`, `isac_adder`, `isac_replaygain`, `isac_biquad`,
   `isac_mono_gain`, `isac_mono_delay`, `isac_stereo_width`: module plugins.
-- `isac_engine_tests`, `isac_patchbay_tests`,
+- `isac_engine_tests`, `isac_patchbay_tests`, `isac_theme_tests`,
   `isac_plugin_loader_tests`, `isac_library_tests`: CTest targets.
 
 Configure and build from the repository root:
@@ -96,6 +105,18 @@ ctest --test-dir build --output-on-failure
 For a headless environment, patchbay tests already configure
 `QT_QPA_PLATFORM=offscreen` through CTest. The application itself requires a
 working Qt desktop session for normal UI/audio testing.
+
+On Windows the same configure/build/test sequence is wrapped by scripts that
+load the MSVC environment and the vcpkg toolchain:
+
+```powershell
+.\packaging\windows\build.ps1 -QtDir <qt-dir> -VcpkgRoot <vcpkg-root> -RunTests
+.\packaging\windows\deploy.ps1 -BuildDir <build-dir> -VcpkgRoot <vcpkg-root>
+```
+
+Keep platform-specific files ASCII and guard them with `Q_OS_*`/`_WIN32`/
+`CMAKE` platform checks. A new file open that takes a narrow path is a Windows
+bug; use the wide entry points or a Qt path API instead.
 
 ## Audio Engine Rules
 
@@ -194,6 +215,14 @@ Settings are persisted through `QSettings`. Use stable, namespaced keys such
 as `playback/...`, `display/...`, `visualization/...`, or `audio/...`, provide
 bounded defaults, and apply accepted settings immediately when the existing
 UI supports it.
+
+Theme stylesheets follow one of two paths: authored dark-palette literals that
+`ThemeManager` remaps for the active theme, or stylesheets built from
+`ThemeManager::colors()` that must go through
+`ThemeManager::applyFinalStyleSheet()` and be re-applied from a `themeChanged`
+handler. Never store an already themed stylesheet as if it were authored, and
+never cache a stylesheet base at construction only: runtime assignments have to
+become the new source or parts of the UI keep the previous theme.
 
 ## Code Style
 

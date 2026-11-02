@@ -5,8 +5,40 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <string>
+
+#if defined(_WIN32)
+#  include <windows.h>
+#endif
 
 namespace isac {
+namespace {
+
+// File names travel through the engine as UTF-8 because the UI and the
+// library database store them that way. Win32 and MSVC CRT file APIs still
+// interpret narrow strings with the ANSI code page, so a UTF-8 path only opens
+// correctly through the wide API. Everywhere else the UTF-8 string is passed
+// through unchanged.
+#if defined(_WIN32)
+std::wstring widePath(const std::string& utf8Path)
+{
+    if (utf8Path.empty()) {
+        return {};
+    }
+    const int length = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, utf8Path.c_str(),
+        static_cast<int>(utf8Path.size()), nullptr, 0);
+    if (length <= 0) {
+        return std::wstring(utf8Path.begin(), utf8Path.end());
+    }
+    std::wstring result(static_cast<std::size_t>(length), L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8Path.c_str(),
+                        static_cast<int>(utf8Path.size()), result.data(), length);
+    return result;
+}
+#endif
+
+} // namespace
 
 AudioEngine::AudioEngine(std::shared_ptr<IAudioNode> gainPluginNode,
                          std::shared_ptr<IAudioNode> addPluginNode,
@@ -945,8 +977,14 @@ bool AudioEngine::initializeLane(DecoderLane& lane,
 {
     ma_decoder_config decoderConfig =
         ma_decoder_config_init(ma_format_f32, 2, requestedSampleRate);
+#if defined(_WIN32)
+    const std::wstring wideFilePath = widePath(filePath);
+    const ma_result decoderResult = ma_decoder_init_file_w(
+        wideFilePath.c_str(), &decoderConfig, &lane.decoder);
+#else
     const ma_result decoderResult =
         ma_decoder_init_file(filePath.c_str(), &decoderConfig, &lane.decoder);
+#endif
     if (decoderResult != MA_SUCCESS) {
         if (error) {
             *error = "Unable to decode audio file (miniaudio error " +

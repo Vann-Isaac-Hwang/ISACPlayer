@@ -2215,11 +2215,27 @@ void NowPlayingHeader::setPlaybackSurfaceOpacity(
         themeManager && !themeManager->isDark()
             ? qRound(controlAlpha * 0.5)
             : 0;
-    m_controlGroup->setStyleSheet(
+    // These stylesheets are built from the live theme colors, so they must not
+    // be passed through the authored-dark-hex remapping.
+    const auto applyThemeStyle = [](QWidget* widget, const QString& styleSheet) {
+        if (auto* themeManager = ThemeManager::instance()) {
+            themeManager->applyFinalStyleSheet(widget, styleSheet);
+        } else if (widget) {
+            widget->setStyleSheet(styleSheet);
+        }
+    };
+
+    applyThemeStyle(
+        m_controlGroup,
         lightThemeBackingAlpha > 0
             ? QStringLiteral("background-color: %1;")
                   .arg(rgbaColor(colors.surface, lightThemeBackingAlpha))
-            : QStringLiteral("background: transparent;"));
+            : (controlAlpha >= 255
+                   // Fully opaque: paint the surface so a compositor or the
+                   // Windows backdrop has nothing to show through here.
+                   ? QStringLiteral("background-color: %1;")
+                         .arg(colors.window.name())
+                   : QStringLiteral("background: transparent;")));
 
     const QString buttonStyle = QStringLiteral(R"(
         QPushButton {
@@ -2235,7 +2251,7 @@ void NowPlayingHeader::setPlaybackSurfaceOpacity(
              rgbaColor(colors.controlPressed, pressedAlpha));
     for (auto* button : {m_btnPrev, m_btnPlayPause, m_btnNext,
                          m_playbackModeButton}) {
-        button->setStyleSheet(buttonStyle);
+        applyThemeStyle(button, buttonStyle);
     }
 
     if (auto* volumeSlider = qobject_cast<HoverSlider*>(m_volumeSlider)) {
@@ -2246,7 +2262,8 @@ void NowPlayingHeader::setPlaybackSurfaceOpacity(
             m_progressSurfaceOpacityPercent);
     }
     if (m_coverThumb) {
-        m_coverThumb->setStyleSheet(
+        applyThemeStyle(
+            m_coverThumb,
             QStringLiteral("background-color: %1;")
                 .arg(rgbaColor(colors.visualizationBackground, 255)));
     }

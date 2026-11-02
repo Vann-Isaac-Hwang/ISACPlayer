@@ -23,8 +23,16 @@ set_target_properties(isac_format_ncm PROPERTIES
 )
 
 include(GNUInstallDirs)
-install(TARGETS isac_format_ncm
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/isacplayer/format_plugins
-    RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR}/isacplayer/format_plugins
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)
+if(WIN32)
+    # On Windows the format modules live beside the executable.
+    install(TARGETS isac_format_ncm
+        RUNTIME DESTINATION format_plugins
+        LIBRARY DESTINATION format_plugins
+    )
+else()
+    install(TARGETS isac_format_ncm
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/isacplayer/format_plugins
+        RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR}/isacplayer/format_plugins
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    )
+endif()

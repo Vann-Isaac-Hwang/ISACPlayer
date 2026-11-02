@@ -5,8 +5,10 @@
 #include <QPainter>
 #include <QLinearGradient>
 #include <algorithm>
+#include <string>
 
 #include <taglib/fileref.h>
+#include <taglib/tiostream.h>
 #include <taglib/tag.h>
 #include <taglib/flacfile.h>
 #include <taglib/flacpicture.h>
@@ -17,6 +19,41 @@
 #include <taglib/wavproperties.h>
 
 namespace isac::library {
+namespace {
+
+// TagLib converts a narrow file name with the ANSI code page on Windows, so a
+// UTF-8 path would be mangled there. QString already stores UTF-16, which the
+// wide FileName overload accepts. Elsewhere the UTF-8 path is correct.
+class TagLibPath
+{
+public:
+    explicit TagLibPath(const QString& path)
+#if defined(_WIN32)
+        : m_wide(path.toStdWString())
+#else
+        : m_narrow(path.toUtf8().toStdString())
+#endif
+    {
+    }
+
+    TagLib::FileName fileName() const
+    {
+#if defined(_WIN32)
+        return TagLib::FileName(m_wide.c_str());
+#else
+        return m_narrow.c_str();
+#endif
+    }
+
+private:
+#if defined(_WIN32)
+    std::wstring m_wide;
+#else
+    std::string m_narrow;
+#endif
+};
+
+} // namespace
 
 TrackInfo MetadataReader::readTrack(const QString& filePath) {
     TrackInfo info;
@@ -28,7 +65,8 @@ TrackInfo MetadataReader::readTrack(const QString& filePath) {
     info.fileSize = fi.size();
     info.modifiedAt = fi.lastModified();
 
-    TagLib::FileRef ref(filePath.toUtf8().constData());
+    const TagLibPath tagLibPath(filePath);
+    TagLib::FileRef ref(tagLibPath.fileName());
     if (!ref.isNull() && ref.tag()) {
         TagLib::Tag* tag = ref.tag();
         if (!tag->title().isEmpty())  info.title  = QString::fromStdString(tag->title().to8Bit(true));
@@ -53,7 +91,8 @@ void MetadataReader::readAudioProperties(TrackInfo& track)
     track.channels = 0;
     track.bitrateKbps = 0;
 
-    TagLib::FileRef ref(playablePath.toUtf8().constData());
+    const TagLibPath tagLibPath(playablePath);
+    TagLib::FileRef ref(tagLibPath.fileName());
     if (ref.isNull() || !ref.audioProperties()) {
         return;
     }
@@ -108,7 +147,8 @@ QImage MetadataReader::loadCoverImage(const TrackInfo& track, int size) {
         : track.playbackPath;
     if (cover.isNull() &&
         playablePath.endsWith(".flac", Qt::CaseInsensitive)) {
-        TagLib::FLAC::File flacFile(playablePath.toUtf8().constData());
+        const TagLibPath tagLibPath(playablePath);
+        TagLib::FLAC::File flacFile(tagLibPath.fileName());
         if (flacFile.isValid()) {
             const auto& picList = flacFile.pictureList();
             if (!picList.isEmpty()) {
@@ -121,7 +161,8 @@ QImage MetadataReader::loadCoverImage(const TrackInfo& track, int size) {
     }
     else if (cover.isNull() &&
              playablePath.endsWith(".mp3", Qt::CaseInsensitive)) {
-        TagLib::MPEG::File mp3File(playablePath.toUtf8().constData());
+        const TagLibPath tagLibPath(playablePath);
+        TagLib::MPEG::File mp3File(tagLibPath.fileName());
         if (mp3File.isValid() && mp3File.ID3v2Tag()) {
             auto frameList = mp3File.ID3v2Tag()->frameListMap()["APIC"];
             if (!frameList.isEmpty()) {

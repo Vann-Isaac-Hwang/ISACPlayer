@@ -32,13 +32,22 @@ The current playback path is stereo. The engine supports graph rates up to 768 k
 - A C++20 compiler
 - Qt 5 or Qt 6 with Widgets and SQL
 - Qt DBus on Unix-like non-Apple builds
-- TagLib and FFTW3 development packages discoverable through `pkg-config`
+- TagLib and FFTW3 development packages
 - Optional: KDE Window System development package for supported KDE compositor effects
+- Optional: libmysofa for the Stereo HRTF Spatializer DSP plugin
 
-Check that the core `pkg-config` dependencies are visible:
+Linux builds resolve TagLib and FFTW3 through `pkg-config`; Windows builds use
+CMake package configs, which vcpkg provides. Check the Linux dependencies with:
 
 ```sh
 pkg-config --modversion taglib fftw3
+```
+
+Windows requires Visual Studio 2022 (or the C++ Build Tools), Qt for MSVC, and
+vcpkg:
+
+```powershell
+vcpkg install taglib fftw3 libmysofa --triplet x64-windows
 ```
 
 ## Build
@@ -51,6 +60,18 @@ cmake --build build -j2
 ```
 
 The application is written to `build/ISACPlayer`. DSP modules are emitted to `build/plugins/`; audio-format modules are emitted to `build/format_plugins/`.
+
+On Windows, use the wrapper script, which loads the MSVC environment and points
+CMake at Qt and vcpkg:
+
+```powershell
+.\packaging\windows\build.ps1 -QtDir C:\Qt\6.12.0\msvc2022_64 `
+    -VcpkgRoot C:\vcpkg -Configuration Release -RunTests
+```
+
+See [packaging/windows/README.md](packaging/windows/README.md) for the manual
+CMake invocation, deployment, and the portable package layout.
+
 
 ## Arch Linux Package
 

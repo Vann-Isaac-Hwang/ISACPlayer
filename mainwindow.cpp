@@ -44,17 +44,108 @@
 #include <QRegularExpression>
 #include <QResizeEvent>
 #include <QShowEvent>
-#ifdef ISAC_HAS_KWINDOWSYSTEM
 #include <QRegion>
+#include <QIcon>
+#include <QPainter>
+#include <QPixmap>
+#include <QToolButton>
+#include <QWindow>
+#ifdef ISAC_HAS_KWINDOWSYSTEM
 #include <kwindoweffects.h>
 #endif
 #ifdef ISAC_HAS_MPRIS
 #include <QDBusConnection>
 #include <QDBusConnectionInterface>
 #endif
+#if defined(Q_OS_WIN)
+#include <windows.h>
+#include <windowsx.h>
+#include <dwmapi.h>
+#endif
 #include <algorithm>
 
 namespace {
+
+#if defined(Q_OS_WIN)
+
+// SetWindowCompositionAttribute is not in the public SDK headers, but the
+// backdrop it provides is the Windows 10 equivalent of the desktop blur the
+// Linux build asks the compositor for.
+enum IsacAccentState {
+    kIsacAccentDisabled = 0,
+    kIsacAccentBlurBehind = 3,
+    kIsacAccentAcrylicBlurBehind = 4
+};
+
+struct IsacAccentPolicy {
+    int accentState;
+    int accentFlags;
+    int gradientColor;
+    int animationId;
+};
+
+struct IsacWindowCompositionAttribData {
+    int attribute;
+    void* data;
+    std::size_t size;
+};
+
+using IsacSetWindowCompositionAttribute =
+    BOOL(WINAPI*)(HWND, IsacWindowCompositionAttribData*);
+
+IsacSetWindowCompositionAttribute windowCompositionAttribute()
+{
+    static const auto function =
+        reinterpret_cast<IsacSetWindowCompositionAttribute>(
+            GetProcAddress(GetModuleHandleW(L"user32.dll"),
+                           "SetWindowCompositionAttribute"));
+    return function;
+}
+
+// Enables or disables the acrylic backdrop of a top-level window. DWM blurs
+// whatever is behind the window; the application only sees it where it leaves
+// the surface unpainted or paints with alpha.
+void applyWindowsBackdrop(WId windowId, bool enabled, const QColor& tint,
+                          int tintPercent)
+{
+    const HWND handle = reinterpret_cast<HWND>(windowId);
+    if (!handle) {
+        return;
+    }
+
+    // Extend the DWM frame over the client area so the backdrop reaches it.
+    MARGINS margins = enabled ? MARGINS{-1, -1, -1, -1}
+                              : MARGINS{0, 0, 0, 0};
+    DwmExtendFrameIntoClientArea(handle, &margins);
+
+    if (const auto setWindowComposition = windowCompositionAttribute()) {
+        IsacAccentPolicy policy{};
+        // Acrylic (4) is the material Windows 10 Settings uses, but on a
+        // regular Win32 window it renders as a flat tint instead of a stronger
+        // blur, so the older blur-behind is used.
+        policy.accentState = enabled ? kIsacAccentBlurBehind
+                                     : kIsacAccentDisabled;
+        if (enabled) {
+            // The tint is 0xAABBGGRR; alpha controls how much of the blurred
+            // desktop remains visible through the surface.
+            const int alpha = std::clamp(tintPercent, 0, 100) * 255 / 100;
+            policy.gradientColor = (alpha << 24) |
+                                   (tint.blue() << 16) |
+                                   (tint.green() << 8) |
+                                   tint.red();
+        }
+        IsacWindowCompositionAttribData data{
+            19 /* WCA_ACCENT_POLICY */, &policy, sizeof(policy)};
+        setWindowComposition(handle, &data);
+    }
+
+    // The client area only picks the change up once the frame is refreshed.
+    SetWindowPos(handle, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+}
+
+#endif // Q_OS_WIN
 
 QString libraryDatabasePath()
 {
@@ -108,7 +199,13 @@ MainWindow::MainWindow(QWidget *parent)
     , m_libraryRepository(libraryDatabasePath())
     , m_audioEngine()
 {
-#if defined(Q_OS_LINUX)
+#if defined(Q_OS_WIN)
+    // Windows can show a blurred desktop behind the window through the DWM
+    // acrylic backdrop. The surfaces that should be translucent simply keep
+    // painting their own alpha colors.
+    m_sidebarTransparencySupported = true;
+    m_sidebarBlurSupported = true;
+#elif defined(Q_OS_LINUX)
     m_sidebarTransparencySupported =
         QGuiApplication::platformName().startsWith(
             QStringLiteral("wayland"), Qt::CaseInsensitive);
@@ -120,13 +217,19 @@ MainWindow::MainWindow(QWidget *parent)
     m_sidebarBlurSupported = m_sidebarTransparencySupported;
 #endif
     ui->setupUi(this);
+#if defined(Q_OS_WIN)
+    createWindowChrome();
+#endif
     QSettings settings;
+    // Match the Linux behaviour: the translucent surfaces are on by default
+    // wherever the platform can show the desktop behind them.
+    const bool transparentByDefault = m_sidebarTransparencySupported;
     m_sidebarTransparencyEnabled = m_sidebarTransparencySupported &&
         settings.value(QStringLiteral("display/sidebarTransparencyEnabled"),
-                       m_sidebarTransparencySupported).toBool();
+                       transparentByDefault).toBool();
     m_sidebarBlurEnabled = m_sidebarBlurSupported &&
         settings.value(QStringLiteral("display/sidebarBlurEnabled"),
-                       m_sidebarBlurSupported).toBool();
+                       transparentByDefault).toBool();
     m_sidebarOpacityPercent = std::clamp(
         settings.value(QStringLiteral("display/sidebarOpacityPercent"), 78)
             .toInt(),
@@ -136,10 +239,10 @@ MainWindow::MainWindow(QWidget *parent)
         10, 20);
     m_infoBarTransparencyEnabled = m_sidebarTransparencySupported &&
         settings.value(QStringLiteral("display/infoBarTransparencyEnabled"),
-                       m_sidebarTransparencySupported).toBool();
+                       transparentByDefault).toBool();
     m_infoBarBlurEnabled = m_sidebarBlurSupported &&
         settings.value(QStringLiteral("display/infoBarBlurEnabled"),
-                       m_sidebarBlurSupported).toBool();
+                       transparentByDefault).toBool();
     m_infoBarOpacityPercent = std::clamp(
         settings.value(QStringLiteral("display/infoBarOpacityPercent"), 78)
             .toInt(),
@@ -147,11 +250,11 @@ MainWindow::MainWindow(QWidget *parent)
     m_playbackControlsTransparencyEnabled = m_sidebarTransparencySupported &&
         settings.value(
             QStringLiteral("display/playbackControlsTransparencyEnabled"),
-            m_sidebarTransparencySupported).toBool();
+            transparentByDefault).toBool();
     m_playbackControlsBlurEnabled = m_sidebarBlurSupported &&
         settings.value(
             QStringLiteral("display/playbackControlsBlurEnabled"),
-            m_sidebarBlurSupported).toBool();
+            transparentByDefault).toBool();
     m_playbackControlsOpacityPercent = std::clamp(
         settings.value(
             QStringLiteral("display/playbackControlsOpacityPercent"), 78)
@@ -159,10 +262,10 @@ MainWindow::MainWindow(QWidget *parent)
         35, 100);
     m_progressBarTransparencyEnabled = m_sidebarTransparencySupported &&
         settings.value(QStringLiteral("display/progressBarTransparencyEnabled"),
-                       m_sidebarTransparencySupported).toBool();
+                       transparentByDefault).toBool();
     m_progressBarBlurEnabled = m_sidebarBlurSupported &&
         settings.value(QStringLiteral("display/progressBarBlurEnabled"),
-                       m_sidebarBlurSupported).toBool();
+                       transparentByDefault).toBool();
     m_progressBarOpacityPercent = std::clamp(
         settings.value(QStringLiteral("display/progressBarOpacityPercent"), 78)
             .toInt(),
@@ -351,7 +454,7 @@ MainWindow::MainWindow(QWidget *parent)
             m_sidebarBlurSupported && m_sidebarTransparencyEnabled);
         sidebarBlur->setToolTip(
             m_sidebarBlurSupported
-                ? QStringLiteral("Use the KDE compositor blur effect behind the sidebar")
+                ? QStringLiteral("Blur the desktop behind the sidebar")
                 : QStringLiteral("KWindowSystem blur support is unavailable in this build/session"));
         appearanceForm->addRow(sidebarBlur);
         auto* sidebarOpacity = new QSpinBox(content);
@@ -2449,18 +2552,201 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 void MainWindow::showEvent(QShowEvent *event)
 {
     QMainWindow::showEvent(event);
+#if defined(Q_OS_WIN)
+    applyNativeWindowStyle();
+    updateMaximizeButton();
+#endif
     updateBlurRegion();
+}
+
+void MainWindow::changeEvent(QEvent *event)
+{
+    if (event->type() == QEvent::WindowStateChange) {
+#if defined(Q_OS_WIN)
+        updateMaximizeButton();
+#endif
+        updateBlurRegion();
+    }
+    QMainWindow::changeEvent(event);
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+#if defined(Q_OS_WIN)
+    const bool pressEvent = event->type() == QEvent::MouseButtonPress;
+    const bool doubleClickEvent = event->type() == QEvent::MouseButtonDblClick;
+    if (m_windowChrome && (pressEvent || doubleClickEvent)) {
+        auto* widget = qobject_cast<QWidget*>(watched);
+        const bool insideChrome =
+            watched == m_windowChrome ||
+            (widget && m_windowChrome->isAncestorOf(widget));
+        auto* mouse = static_cast<QMouseEvent*>(event);
+        if (insideChrome && mouse->button() == Qt::LeftButton) {
+            const QPoint local = mapFromGlobal(mouse->globalPosition().toPoint());
+
+            const QRect buttonsRect(
+                m_windowButtons ? m_windowButtons->mapTo(this, QPoint(0, 0))
+                                : QPoint(),
+                m_windowButtons ? m_windowButtons->size() : QSize());
+            const bool overButtons = m_windowButtons && buttonsRect.contains(local);
+
+            bool overMenuItem = false;
+            if (ui->menubar && ui->menubar->isVisible()) {
+                const QPoint menubarOrigin =
+                    ui->menubar->mapTo(this, QPoint(0, 0));
+                const QRect menubarRect(menubarOrigin, ui->menubar->size());
+                overMenuItem =
+                    menubarRect.contains(local) &&
+                    ui->menubar->actionAt(local - menubarOrigin) != nullptr;
+            }
+
+            if (!overButtons && !overMenuItem) {
+                if (doubleClickEvent) {
+                    if (isMaximized()) {
+                        showNormal();
+                    } else {
+                        showMaximized();
+                    }
+                } else if (auto* handle = windowHandle()) {
+                    raise();
+                    activateWindow();
+                    handle->startSystemMove();
+                }
+                return true;
+            }
+        }
+    }
+#endif
+    return QMainWindow::eventFilter(watched, event);
+}
+
+bool MainWindow::nativeEvent(const QByteArray &eventType, void *message,
+                             qintptr *result)
+{
+#if defined(Q_OS_WIN)
+    if (eventType == "windows_generic_MSG") {
+        auto* msg = static_cast<MSG*>(message);
+        switch (msg->message) {
+        case WM_NCCALCSIZE:
+            if (msg->wParam == TRUE) {
+                // The whole window is client area: our own chrome replaces the
+                // native caption, and no non-client pixels remain for the
+                // backdrop to show through.
+                *result = 0;
+                return true;
+            }
+            break;
+        case WM_GETMINMAXINFO: {
+            auto* info = reinterpret_cast<MINMAXINFO*>(msg->lParam);            const HMONITOR monitor =
+                MonitorFromWindow(msg->hwnd, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO monitorInfo{};
+            monitorInfo.cbSize = sizeof(monitorInfo);
+            if (GetMonitorInfoW(monitor, &monitorInfo)) {
+                info->ptMaxPosition.x =
+                    monitorInfo.rcWork.left - monitorInfo.rcMonitor.left;
+                info->ptMaxPosition.y =
+                    monitorInfo.rcWork.top - monitorInfo.rcMonitor.top;
+                info->ptMaxSize.x =
+                    monitorInfo.rcWork.right - monitorInfo.rcWork.left;
+                info->ptMaxSize.y =
+                    monitorInfo.rcWork.bottom - monitorInfo.rcWork.top;
+                *result = 0;
+                return true;
+            }
+            break;
+        }
+        case WM_NCHITTEST: {
+            // WM_NCHITTEST reports physical screen pixels while Qt widget
+            // geometry is in logical pixels. Converting through the window's
+            // device pixel ratio keeps both sides in the same space; mixing
+            // them made the resize edges appear far inside the window after it
+            // moved to a monitor with a different scale.
+            RECT windowRect{};
+            if (!GetWindowRect(msg->hwnd, &windowRect)) {
+                break;
+            }
+            const qreal ratio = devicePixelRatioF() > 0.0
+                ? devicePixelRatioF()
+                : 1.0;
+            const QPoint local(
+                qRound((GET_X_LPARAM(msg->lParam) - windowRect.left) / ratio),
+                qRound((GET_Y_LPARAM(msg->lParam) - windowRect.top) / ratio));
+            const QSize windowSize(
+                qRound((windowRect.right - windowRect.left) / ratio),
+                qRound((windowRect.bottom - windowRect.top) / ratio));
+
+            if (!isMaximized()) {
+                constexpr int border = 6;
+                const bool left = local.x() < border;
+                const bool right = local.x() >= windowSize.width() - border;
+                const bool top = local.y() < border;
+                const bool bottom = local.y() >= windowSize.height() - border;
+                if (left || right || top || bottom) {
+                    int hit = 0;
+                    if (left && top) hit = HTTOPLEFT;
+                    else if (right && top) hit = HTTOPRIGHT;
+                    else if (left && bottom) hit = HTBOTTOMLEFT;
+                    else if (right && bottom) hit = HTBOTTOMRIGHT;
+                    else if (left) hit = HTLEFT;
+                    else if (right) hit = HTRIGHT;
+                    else if (top) hit = HTTOP;
+                    else hit = HTBOTTOM;
+                    *result = hit;
+                    return true;
+                }
+            }
+
+            if (m_windowChrome) {
+                const QRect chromeRect(m_windowChrome->mapTo(this, QPoint(0, 0)),
+                                       m_windowChrome->size());
+                if (chromeRect.contains(local)) {
+                    if (m_windowButtons && m_windowButtons->isVisible()) {
+                        const QRect buttonsRect(
+                            m_windowButtons->mapTo(this, QPoint(0, 0)),
+                            m_windowButtons->size());
+                        if (buttonsRect.contains(local)) {
+                            break;  // the window buttons stay normal widgets
+                        }
+                    }
+                    if (ui->menubar && ui->menubar->isVisible()) {
+                        const QPoint menubarOrigin =
+                            ui->menubar->mapTo(this, QPoint(0, 0));
+                        const QRect menubarRect(menubarOrigin,
+                                                ui->menubar->size());
+                        if (menubarRect.contains(local) &&
+                            ui->menubar->actionAt(local - menubarOrigin)) {
+                            break;  // menu items stay clickable
+                        }
+                    }
+                    // Everything else in the chrome row drags the window with
+                    // the native move loop, so Aero Snap and double-click
+                    // maximize keep working.
+                    *result = HTCAPTION;
+                    return true;
+                }
+            }
+            break;
+        }
+        default:
+            break;
+        }
+    }
+#endif
+    return QMainWindow::nativeEvent(eventType, message, result);
 }
 
 void MainWindow::updateBlurRegion()
 {
-#ifdef ISAC_HAS_KWINDOWSYSTEM
     if (!m_sidebarBlurSupported || !windowHandle()) {
         return;
     }
 
     if (!isVisible()) {
+#if defined(ISAC_HAS_KWINDOWSYSTEM)
         KWindowEffects::enableBlurBehind(windowHandle(), false);
+#elif defined(Q_OS_WIN)
+        setWindowsBackdropEnabled(false);
+#endif
         return;
     }
 
@@ -2492,13 +2778,276 @@ void MainWindow::updateBlurRegion()
         blurRegion += QRegion(
             QRect(topLeft, m_progressBarBlurRegion->size()));
     }
+
+#if defined(ISAC_HAS_KWINDOWSYSTEM)
     if (blurRegion.isEmpty()) {
         KWindowEffects::enableBlurBehind(windowHandle(), false);
         return;
     }
     KWindowEffects::enableBlurBehind(windowHandle(), true, blurRegion);
+#elif defined(Q_OS_WIN)
+    setWindowsBackdropEnabled(!blurRegion.isEmpty());
+#else
+    Q_UNUSED(blurRegion);
 #endif
 }
+
+void MainWindow::setWindowsBackdropEnabled(bool enabled)
+{
+#if defined(Q_OS_WIN)
+    // The acrylic backdrop covers the whole window; the surfaces that should
+    // not show it paint an opaque background of their own. The window surface
+    // itself therefore has to stay unpainted while the backdrop is active.
+    if (enabled != m_windowsBackdropEnabled) {
+        m_windowsBackdropEnabled = enabled;
+        setStyleSheet(
+            enabled
+                ? QStringLiteral("QMainWindow { background: transparent; }")
+                : QString());
+    }
+
+    applyWindowsBackdrop(winId(), enabled, m_themeManager.colors().window,
+                         m_sidebarOpacityPercent);
+
+#else
+    Q_UNUSED(enabled);
+#endif
+}
+
+#if defined(Q_OS_WIN)
+
+namespace {
+
+enum class WindowGlyph { Minimize, Maximize, Restore, Close };
+
+// Window buttons are drawn here instead of using text glyphs: a crisp vector
+// shape can be sized independently of the font and stays sharp on high-DPI
+// displays.
+QIcon windowGlyphIcon(WindowGlyph glyph, const QColor& color)
+{
+    constexpr int kLogicalSize = 16;
+    constexpr qreal kRatio = 2.0;
+
+    QPixmap pixmap(QSize(kLogicalSize, kLogicalSize) * kRatio);
+    pixmap.setDevicePixelRatio(kRatio);
+    pixmap.fill(Qt::transparent);
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(color);
+    pen.setWidthF(1.1);
+    pen.setCapStyle(Qt::FlatCap);
+    painter.setPen(pen);
+
+    const QPointF centre(kLogicalSize / 2.0, kLogicalSize / 2.0);
+    const qreal half = 6.0;
+    const QRectF box(centre.x() - half, centre.y() - half, half * 2, half * 2);
+    switch (glyph) {
+    case WindowGlyph::Minimize:
+        painter.drawLine(QPointF(box.left(), centre.y()),
+                         QPointF(box.right(), centre.y()));
+        break;
+    case WindowGlyph::Maximize:
+        painter.drawRect(box);
+        break;
+    case WindowGlyph::Restore: {
+        const qreal offset = 2.0;
+        const QRectF front(box.left(), box.top() + offset,
+                           box.width() - offset, box.height() - offset);
+        painter.drawRect(front);
+        painter.drawLine(QPointF(front.left() + offset, box.top()),
+                         QPointF(box.right(), box.top()));
+        painter.drawLine(QPointF(box.right(), box.top()),
+                         QPointF(box.right(), front.bottom()));
+        break;
+    }
+    case WindowGlyph::Close:
+        painter.drawLine(box.topLeft(), box.bottomRight());
+        painter.drawLine(box.topRight(), box.bottomLeft());
+        break;
+    }
+    return QIcon(pixmap);
+}
+
+} // namespace
+
+void MainWindow::createWindowChrome()
+{
+    // The DWM backdrop cannot be limited to the client area, so a native
+    // caption and the resize borders would always show it. Replacing the
+    // caption with our own chrome keeps those surfaces solid.
+    setWindowFlag(Qt::FramelessWindowHint, true);
+
+    auto* chrome = new QWidget(this);
+    m_windowChrome = chrome;
+    chrome->setObjectName(QStringLiteral("windowChrome"));
+    chrome->setFixedHeight(34);
+
+    auto* chromeLayout = new QHBoxLayout(chrome);
+    chromeLayout->setContentsMargins(0, 0, 0, 0);
+    chromeLayout->setSpacing(0);
+
+    auto* identity = new QWidget(chrome);
+    auto* identityLayout = new QHBoxLayout(identity);
+    identityLayout->setContentsMargins(10, 0, 12, 0);
+    identityLayout->setSpacing(8);
+    auto* icon = new QLabel(identity);
+    icon->setPixmap(
+        QIcon(QStringLiteral(":/icons/isacplayer.png")).pixmap(16, 16));
+    icon->setFixedSize(16, 16);
+    auto* title = new QLabel(QStringLiteral("ISACPlayer"), identity);
+    title->setObjectName(QStringLiteral("windowTitleLabel"));
+    identityLayout->addWidget(icon);
+    identityLayout->addWidget(title);
+    chromeLayout->addWidget(identity, 0, Qt::AlignVCenter);
+
+    // The menu bar keeps its own height and is centred in the chrome row, so
+    // the menu items line up with the title and the window buttons.
+    ui->menubar->setParent(chrome);
+    ui->menubar->setStyleSheet(QStringLiteral(
+        "QMenuBar { background: transparent; border: none; }"
+        "QMenuBar::item { background: transparent; padding: 4px 10px; "
+        "border-radius: 4px; }"
+        "QMenuBar::item:selected { background: #343740; }"
+        "QMenuBar::item:pressed { background: #42454E; }"));
+    chromeLayout->addWidget(ui->menubar, 0, Qt::AlignVCenter);
+    chromeLayout->addStretch(1);
+
+    m_windowButtons = new QWidget(chrome);
+    auto* buttonsLayout = new QHBoxLayout(m_windowButtons);
+    buttonsLayout->setContentsMargins(0, 0, 0, 0);
+    buttonsLayout->setSpacing(0);
+
+    const auto makeButton = [this](const QString& objectName) {
+        auto* button = new QToolButton(m_windowButtons);
+        button->setObjectName(objectName);
+        button->setAutoRaise(true);
+        button->setFixedSize(46, 34);
+        button->setIconSize(QSize(16, 16));
+        button->setFocusPolicy(Qt::NoFocus);
+        return button;
+    };
+    m_minimizeButton = makeButton(QStringLiteral("windowMinimizeButton"));
+    m_maximizeButton = makeButton(QStringLiteral("windowMaximizeButton"));
+    m_closeButton = makeButton(QStringLiteral("windowCloseButton"));
+    buttonsLayout->addWidget(m_minimizeButton);
+    buttonsLayout->addWidget(m_maximizeButton);
+    buttonsLayout->addWidget(m_closeButton);
+    chromeLayout->addWidget(m_windowButtons, 0, Qt::AlignVCenter);
+
+    setMenuWidget(chrome);
+    ui->menubar->show();
+
+    // Dragging normally comes from WM_NCHITTEST returning HTCAPTION, but the
+    // chrome also starts a system move itself: if the native hit test ever
+    // falls back to HTCLIENT (for example after the window styles were
+    // refreshed by a theme change), the row would otherwise stop dragging.
+    chrome->installEventFilter(this);
+    for (QWidget* widget : chrome->findChildren<QWidget*>()) {
+        if (widget == m_windowButtons || widget == ui->menubar) {
+            continue;
+        }
+        if (m_windowButtons && m_windowButtons->isAncestorOf(widget)) {
+            continue;
+        }
+        widget->installEventFilter(this);
+    }
+    ui->menubar->installEventFilter(this);
+
+    connect(m_minimizeButton, &QToolButton::clicked, this,
+            &QWidget::showMinimized);
+    connect(m_maximizeButton, &QToolButton::clicked, this, [this]() {
+        if (isMaximized()) {
+            showNormal();
+        } else {
+            showMaximized();
+        }
+    });
+    connect(m_closeButton, &QToolButton::clicked, this, &QWidget::close);
+    connect(&m_themeManager, &isac::ui::ThemeManager::themeChanged, this,
+            [this]() { updateWindowChrome(); });
+
+    updateWindowChrome();
+}
+
+void MainWindow::updateWindowChrome()
+{
+    if (!m_windowChrome) {
+        return;
+    }
+    const auto& colors = m_themeManager.colors();
+
+    m_themeManager.applyFinalStyleSheet(
+        m_windowChrome,
+        // The chrome uses the window colour, which is also what the global
+        // "QWidget { background }" rule gives the row's containers, so the
+        // title, the menu bar, and the window buttons share one background.
+        QStringLiteral("QWidget#windowChrome { background-color: %1; "
+                       "border-bottom: 1px solid %2; }"
+                       "QWidget#windowChrome QLabel { background: transparent; }")
+            .arg(colors.window.name(), colors.border.name()));
+
+    const QString buttonStyle = QStringLiteral(
+        "QToolButton { background: transparent; border: none; }"
+        "QToolButton:hover { background: %1; }"
+        "QToolButton:pressed { background: %2; }");
+    m_themeManager.applyFinalStyleSheet(
+        m_minimizeButton,
+        buttonStyle.arg(colors.controlHover.name(),
+                        colors.controlPressed.name()));
+    m_themeManager.applyFinalStyleSheet(
+        m_maximizeButton,
+        buttonStyle.arg(colors.controlHover.name(),
+                        colors.controlPressed.name()));
+    m_themeManager.applyFinalStyleSheet(
+        m_closeButton,
+        QStringLiteral("QToolButton { background: transparent; border: none; }"
+                       "QToolButton:hover { background: %1; }"
+                       "QToolButton:pressed { background: %2; }")
+            .arg(colors.accent.name(), colors.accentHover.name()));
+
+    const QColor glyph = colors.text;
+    m_minimizeButton->setIcon(windowGlyphIcon(WindowGlyph::Minimize, glyph));
+    m_closeButton->setIcon(windowGlyphIcon(WindowGlyph::Close, glyph));
+    updateMaximizeButton();
+}
+
+void MainWindow::applyNativeWindowStyle()
+{
+    if (m_nativeWindowStyled) {
+        return;
+    }
+    const HWND handle = reinterpret_cast<HWND>(winId());
+    if (!handle) {
+        return;
+    }
+    m_nativeWindowStyled = true;
+
+    // Qt's frameless flag creates a popup window, and DWM only animates
+    // minimise/restore for overlapped windows. Restore an overlapped frame and
+    // hide the caption through WM_NCCALCSIZE instead, so the window keeps the
+    // system animation, the system menu (Alt+Space) and Aero Snap.
+    const LONG style = GetWindowLong(handle, GWL_STYLE);
+    SetWindowLong(handle, GWL_STYLE,
+                  (style & ~WS_POPUP) | WS_OVERLAPPED | WS_CAPTION |
+                      WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX |
+                      WS_MAXIMIZEBOX | WS_CLIPCHILDREN | WS_CLIPSIBLINGS);
+    SetWindowPos(handle, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                     SWP_FRAMECHANGED);
+}
+
+void MainWindow::updateMaximizeButton()
+{
+    if (!m_maximizeButton) {
+        return;
+    }
+    m_maximizeButton->setIcon(windowGlyphIcon(
+        isMaximized() ? WindowGlyph::Restore : WindowGlyph::Maximize,
+        m_themeManager.colors().text));
+}
+
+#endif // Q_OS_WIN
 
 void MainWindow::updateSidebarAppearance()
 {
@@ -2516,7 +3065,9 @@ void MainWindow::updateSidebarAppearance()
     const int hoverAlpha = std::min(255, backgroundAlpha + 38);
     const int pressedAlpha = std::min(255, backgroundAlpha + 48);
 
-    m_navigationSidebar->setStyleSheet(QStringLiteral(R"(
+    m_themeManager.applyFinalStyleSheet(
+        m_navigationSidebar,
+        QStringLiteral(R"(
         QWidget#sidebar {
             background-color: %1;
             border-right: 1px solid %2;
@@ -2553,7 +3104,8 @@ void MainWindow::updateInfoBarAppearance()
     const int backgroundAlpha = useTransparency
         ? qRound(m_infoBarOpacityPercent * 255.0 / 100.0)
         : 255;
-    m_playbackInfoBar->setStyleSheet(
+    m_themeManager.applyFinalStyleSheet(
+        m_playbackInfoBar,
         QStringLiteral(R"(
             QWidget#trackInfoBar {
                 background-color: %1;
@@ -2588,7 +3140,8 @@ void MainWindow::updateMainPageBackground()
         return;
     }
 
-    m_stackedWidget->setStyleSheet(
+    m_themeManager.applyFinalStyleSheet(
+        m_stackedWidget,
         QStringLiteral("QStackedWidget#mainPageStack { background-color: %1; }")
             .arg(m_themeManager.colors().window.name()));
 }

@@ -4,6 +4,7 @@
 #include <QMainWindow>
 #include <QStackedWidget>
 #include <QTimer>
+#include <QToolButton>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -42,9 +43,20 @@ public:
 protected:
     void resizeEvent(QResizeEvent *event) override;
     void showEvent(QShowEvent *event) override;
+    void changeEvent(QEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
+    bool nativeEvent(const QByteArray &eventType, void *message,
+                     qintptr *result) override;
 
 private:
     void updateBlurRegion();
+    void setWindowsBackdropEnabled(bool enabled);
+#if defined(Q_OS_WIN)
+    void createWindowChrome();
+    void updateWindowChrome();
+    void applyNativeWindowStyle();
+    void updateMaximizeButton();
+#endif
     void updateSidebarAppearance();
     void updateInfoBarAppearance();
     void updatePlaybackSurfacesAppearance();
@@ -75,6 +87,18 @@ private:
     QWidget* m_navigationSidebar = nullptr;
     bool m_sidebarTransparencySupported = false;
     bool m_sidebarBlurSupported = false;
+    bool m_windowsBackdropEnabled = false;
+#if defined(Q_OS_WIN)
+    // Custom window chrome replaces the native caption on Windows, because the
+    // DWM backdrop would otherwise paint over the caption and the resize
+    // borders.
+    QWidget* m_windowChrome = nullptr;
+    QWidget* m_windowButtons = nullptr;
+    QToolButton* m_minimizeButton = nullptr;
+    QToolButton* m_maximizeButton = nullptr;
+    QToolButton* m_closeButton = nullptr;
+    bool m_nativeWindowStyled = false;
+#endif
     bool m_sidebarTransparencyEnabled = false;
     bool m_sidebarBlurEnabled = false;
     int m_sidebarOpacityPercent = 78;

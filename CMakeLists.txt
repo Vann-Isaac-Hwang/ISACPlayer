@@ -15,11 +15,31 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Sql)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Sql)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(TAGLIB REQUIRED IMPORTED_TARGET taglib)
-pkg_check_modules(FFTW3 REQUIRED IMPORTED_TARGET fftw3)
-find_path(ISAC_MYSOFA_INCLUDE_DIR mysofa.h)
-find_library(ISAC_MYSOFA_LIBRARY NAMES mysofa)
+
+# TagLib, FFTW3, and the optional libmysofa are resolved by pkg-config on
+# Unix-like systems and by CMake package configs (vcpkg) on Windows.
+include(cmake/IsacDependencies.cmake)
+
+if(WIN32)
+    # The executable is a GUI application with a Windows resource block.
+    enable_language(RC)
+    # Keep windows.h from defining the min/max macros, which conflict with
+    # std::min/std::max, and from pulling in the rarely used Win32 surface.
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+
+if(MSVC)
+    # Source files contain UTF-8 (comments and the note glyph in the default
+    # cover art). Without /utf-8 MSVC reads them with the system code page.
+    add_compile_options(/utf-8)
+endif()
+
+# Platform libraries used by the theme manager's native window integration.
+add_library(isac_theme_platform INTERFACE)
+if(WIN32)
+    # Dark title bars are a DWM attribute on Windows.
+    target_link_libraries(isac_theme_platform INTERFACE dwmapi)
+endif()
 
 # Public headers consumed by external DSP plugins. This subproject intentionally
 # carries no Qt or engine implementation dependency.
@@ -108,11 +128,31 @@ target_compile_definitions(ISACPlayer PRIVATE
 target_link_libraries(ISACPlayer PRIVATE
     Qt${QT_VERSION_MAJOR}::Widgets
     Qt${QT_VERSION_MAJOR}::Sql
-    PkgConfig::TAGLIB
-    PkgConfig::FFTW3
+    isac_taglib
+    isac_fftw3
     isac_engine
     isac_format_sdk
+    isac_theme_platform
 )
+
+if(WIN32)
+    # Compile the application icon and version block into the executable. The
+    # resource file is generated so it can reference an absolute icon path.
+    set(ISAC_APP_ICON_PATH
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/isacplayer.ico")
+    set(ISAC_VERSION_MAJOR "${PROJECT_VERSION_MAJOR}")
+    set(ISAC_VERSION_MINOR "${PROJECT_VERSION_MINOR}")
+    set(ISAC_VERSION_PATCH "${PROJECT_VERSION_PATCH}")
+    if(ISAC_VERSION_PATCH STREQUAL "")
+        set(ISAC_VERSION_PATCH "0")
+    endif()
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/isacplayer.rc.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/isacplayer.rc"
+        @ONLY)
+    target_sources(ISACPlayer PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}/isacplayer.rc")
+endif()
 
 if(UNIX AND NOT APPLE)
     if(QT_VERSION_MAJOR EQUAL 6)
@@ -148,10 +188,8 @@ add_subdirectory(plugins/stereo_balance)
 add_subdirectory(plugins/adder)
 add_subdirectory(plugins/biquad)
 add_subdirectory(format_plugins/ncm)
-if(ISAC_MYSOFA_INCLUDE_DIR AND ISAC_MYSOFA_LIBRARY)
+if(TARGET isac_mysofa)
     add_subdirectory(plugins/hrtf_spatializer)
-else()
-    message(STATUS "libmysofa not found: Stereo HRTF Spatializer plugin disabled")
 endif()
 
 set(ISAC_DSP_PLUGIN_TARGETS
@@ -170,20 +208,63 @@ if(TARGET isac_hrtf_spatializer)
     list(APPEND ISAC_DSP_PLUGIN_TARGETS isac_hrtf_spatializer)
 endif()
 
+# Plugin modules are discovered from the directory beside the executable, so
+# their output location must not depend on the generator or the configuration.
+# Multi-configuration generators would otherwise emit plugins/Debug/*.dll while
+# the executable looks in plugins/.
+function(isac_pin_module_output_directory target directory)
+    set_target_properties(${target} PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY "${directory}"
+        RUNTIME_OUTPUT_DIRECTORY "${directory}"
+        # Import libraries produced by Windows module targets are build-only
+        # artifacts and must not be mistaken for loadable modules.
+        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+    )
+    foreach(configuration IN LISTS CMAKE_CONFIGURATION_TYPES)
+        string(TOUPPER "${configuration}" upper)
+        set_target_properties(${target} PROPERTIES
+            LIBRARY_OUTPUT_DIRECTORY_${upper} "${directory}"
+            RUNTIME_OUTPUT_DIRECTORY_${upper} "${directory}"
+            ARCHIVE_OUTPUT_DIRECTORY_${upper} "${CMAKE_BINARY_DIR}/lib"
+        )
+    endforeach()
+endfunction()
+
+foreach(plugin_target IN LISTS ISAC_DSP_PLUGIN_TARGETS)
+    isac_pin_module_output_directory(
+        ${plugin_target} "${CMAKE_BINARY_DIR}/plugins")
+endforeach()
+isac_pin_module_output_directory(
+    isac_format_ncm "${CMAKE_BINARY_DIR}/format_plugins")
+
 set_target_properties(ISACPlayer PROPERTIES
     MACOSX_BUNDLE TRUE
     WIN32_EXECUTABLE TRUE
 )
 
-install(TARGETS ISACPlayer
-    BUNDLE DESTINATION .
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
-install(TARGETS ${ISAC_DSP_PLUGIN_TARGETS}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/isacplayer/plugins
-    RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR}/isacplayer/plugins
-)
+if(WIN32)
+    # Windows deployment is a flat directory: ISACPlayer.exe, its Qt runtime,
+    # and the plugin module directories beside it.
+    set(ISAC_INSTALL_DOCDIR "licenses")
+    install(TARGETS ISACPlayer
+        RUNTIME DESTINATION .
+    )
+    install(TARGETS ${ISAC_DSP_PLUGIN_TARGETS}
+        RUNTIME DESTINATION plugins
+        LIBRARY DESTINATION plugins
+    )
+else()
+    set(ISAC_INSTALL_DOCDIR "${CMAKE_INSTALL_DATADIR}/licenses/isacplayer")
+    install(TARGETS ISACPlayer
+        BUNDLE DESTINATION .
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+    install(TARGETS ${ISAC_DSP_PLUGIN_TARGETS}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/isacplayer/plugins
+        RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR}/isacplayer/plugins
+    )
+endif()
 if(UNIX AND NOT APPLE)
     install(FILES config/isacplayer.desktop
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
@@ -193,14 +274,14 @@ if(UNIX AND NOT APPLE)
     )
 endif()
 install(FILES LICENSE
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/isacplayer
+    DESTINATION ${ISAC_INSTALL_DOCDIR}
 )
 install(FILES format_plugins/ncm/THIRD_PARTY_LICENSE.txt
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/isacplayer
+    DESTINATION ${ISAC_INSTALL_DOCDIR}
     RENAME ncm-aes-MIT.txt
 )
 install(FILES third_party/miniaudio/LICENSE.txt
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/isacplayer
+    DESTINATION ${ISAC_INSTALL_DOCDIR}
 )
 install(DIRECTORY plugin_sdk/include/
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/isacplayer
@@ -208,6 +289,22 @@ install(DIRECTORY plugin_sdk/include/
 install(DIRECTORY format_sdk/include/
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/isacplayer
 )
+
+if(WIN32)
+    # Lets `cmake --install` copy the Qt runtime next to the executable. The
+    # deployment layout is flat, so the Qt deploy script must be told to use
+    # the install root instead of CMAKE_INSTALL_BINDIR. The variables are set
+    # in the generated install script because Qt bakes its defaults into the
+    # deploy support module at configure time.
+    qt_generate_deploy_app_script(
+        TARGET ISACPlayer
+        OUTPUT_SCRIPT ISAC_DEPLOY_SCRIPT
+        NO_UNSUPPORTED_PLATFORM_ERROR
+    )
+    install(CODE "set(QT_DEPLOY_BIN_DIR \".\")")
+    install(CODE "set(QT_DEPLOY_PLUGIN_DIR \"plugins\")")
+    install(SCRIPT ${ISAC_DEPLOY_SCRIPT})
+endif()
 
 qt_finalize_executable(ISACPlayer)
 
@@ -244,9 +341,27 @@ if(BUILD_TESTING)
     target_link_libraries(isac_patchbay_tests PRIVATE
         Qt${QT_VERSION_MAJOR}::Widgets
         isac_engine
+        isac_theme_platform
     )
     add_test(NAME isac_patchbay_tests COMMAND isac_patchbay_tests)
     set_tests_properties(isac_patchbay_tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+
+    add_executable(isac_theme_tests
+        tests/ThemeTest.cpp
+        src/ui/theme/ThemeManager.h
+        src/ui/theme/ThemeManager.cpp
+    )
+    target_include_directories(isac_theme_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(isac_theme_tests PRIVATE
+        Qt${QT_VERSION_MAJOR}::Widgets
+        isac_theme_platform
+    )
+    add_test(NAME isac_theme_tests COMMAND isac_theme_tests)
+    set_tests_properties(isac_theme_tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
 
@@ -305,6 +420,15 @@ if(BUILD_TESTING)
             target_compile_definitions(isac_plugin_loader_tests PRIVATE
                 ISAC_TEST_SOFA_PATH="/usr/share/libmysofa/default.sofa"
             )
+        else()
+            find_file(ISAC_TEST_SOFA_PATH_FILE NAMES default.sofa
+                PATHS "${ISAC_MYSOFA_INCLUDE_DIR}/../share/libmysofa"
+                      "${ISAC_MYSOFA_INCLUDE_DIR}/../share/mysofa")
+            if(ISAC_TEST_SOFA_PATH_FILE)
+                target_compile_definitions(isac_plugin_loader_tests PRIVATE
+                    ISAC_TEST_SOFA_PATH="${ISAC_TEST_SOFA_PATH_FILE}"
+                )
+            endif()
         endif()
         list(APPEND ISAC_PLUGIN_TEST_TARGETS
             $<TARGET_FILE:isac_hrtf_spatializer>)
@@ -347,7 +471,7 @@ if(BUILD_TESTING)
         Qt${QT_VERSION_MAJOR}::Widgets
         Qt${QT_VERSION_MAJOR}::Core
         Qt${QT_VERSION_MAJOR}::Sql
-        PkgConfig::TAGLIB
+        isac_taglib
         isac_format_sdk
     )
     add_test(NAME isac_library_tests COMMAND isac_library_tests)

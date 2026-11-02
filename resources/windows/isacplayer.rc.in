@@ -1,0 +1,39 @@
+// Windows resource block compiled into ISACPlayer.exe.
+//
+// It supplies the multi-resolution application icon and the version strings
+// that Explorer, the taskbar, and the file properties dialog display. CMake
+// generates this file from isacplayer.rc.in so the icon path can be absolute
+// and the version numbers follow the CMake project version.
+
+#include <winver.h>
+
+IDI_ICON1 ICON "@ISAC_APP_ICON_PATH@"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION @ISAC_VERSION_MAJOR@,@ISAC_VERSION_MINOR@,@ISAC_VERSION_PATCH@,0
+ PRODUCTVERSION @ISAC_VERSION_MAJOR@,@ISAC_VERSION_MINOR@,@ISAC_VERSION_PATCH@,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "ISACPlayer"
+            VALUE "FileDescription", "ISACPlayer"
+            VALUE "FileVersion", "@PROJECT_VERSION@"
+            VALUE "InternalName", "ISACPlayer"
+            VALUE "LegalCopyright", "See LICENSE"
+            VALUE "OriginalFilename", "ISACPlayer.exe"
+            VALUE "ProductName", "ISACPlayer"
+            VALUE "ProductVersion", "@PROJECT_VERSION@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

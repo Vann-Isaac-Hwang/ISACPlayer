@@ -91,6 +91,19 @@ The CMake build emits in-tree DSP modules to `build/plugins/` and format
 modules to `build/format_plugins/`. A deployment must include both module
 directories and their Qt/runtime dependencies.
 
+On Windows the same Qt paths resolve under the user profile
+(`%APPDATA%\ISACPlayer\ISACPlayer` for the database, `%LOCALAPPDATA%\...` for
+the format cache), settings live in the `HKEY_CURRENT_USER\Software\ISACPlayer`
+registry key, and both module directories are installed beside the executable.
+`PluginPaths` uses the same executable-adjacent lookup there, and the installed
+`lib/isacplayer` fallback simply does not exist.
+
+File names are stored and passed around as UTF-8 `std::string`/`QString`. On
+Windows the platform APIs that open files need UTF-16, so the decoder
+(`ma_decoder_init_file_w`) and TagLib (`TagLib::FileName` wide overload) are
+given wide paths. New code that opens a path with a narrow CRT/Win32 call is a
+bug on Windows, and non-ASCII library paths are the quickest way to notice.
+
 Format playback cache keys incorporate the absolute source path, file size,
 source modification time, and plugin ID. Updating a source file therefore
 produces a distinct cache path rather than silently reusing the previous
@@ -242,6 +255,12 @@ The device boundary converts processed `double` samples to interleaved
 and the desktop sound server; a high internal graph rate alone does not ensure
 native DAC playback at that rate.
 
+miniaudio selects a backend per platform: ALSA/PulseAudio/PipeWire through the
+desktop stack on Linux and WASAPI shared mode on Windows. Device enumeration,
+selection, and the real-time callback are engine-level code and are not
+platform-conditional. The `System Default` entry follows the current operating
+system default output device.
+
 ## 7. DSP Plugin System
 
 ### SDK and Discovery
@@ -330,17 +349,131 @@ instead of introducing competing global styles. Display, playback,
 visualization, audio-device, and appearance settings are persisted through
 stable namespaced keys.
 
+`Follow System` resolves the desktop preference through
+`QStyleHints::colorScheme()` when the platform reports it and falls back to the
+application palette otherwise. Windows keeps handing out its classic light
+palette even when the application colour mode is dark, so palette detection
+alone picked the light theme on a dark desktop. `QStyleHints::colorSchemeChanged`
+re-applies the theme when the desktop preference changes while the mode is
+`Follow System`.
+
+The native caption of a Windows top-level window is a DWM attribute, not part
+of the Qt palette, and it does not repaint just because the application palette
+changed. `ThemeManager` sets that attribute for every top-level window and
+refreshes the frame, so the title bar follows the in-app theme both at startup
+and right after a switch. A light in-app theme on a dark desktop therefore gets
+a light title bar, which is the intended behaviour.
+
+### Transparency and Blur
+
+The sidebar, the playback information bar, and the playback surfaces carry
+alpha colors in their stylesheets; how much of the desktop shows through is the
+per-surface opacity setting. Platform support for the blur behind them differs:
+
+- **Wayland/KDE:** the application reports the translucent region through
+  KWindowSystem and the compositor blurs it.
+- **Windows:** there is no per-region blur. The window receives the DWM
+  backdrop (`SetWindowCompositionAttribute` with the blur-behind accent plus
+  `DwmExtendFrameIntoClientArea`), and the surfaces that must stay opaque hide
+  it by painting their own background. The acrylic accent state (4) is not used
+  because Windows 10 only renders it for layered windows, which a regular
+  framed window is not.
+
+Two consequences are expected rather than bugs:
+
+- the backdrop covers the whole window, so any surface that stays unpainted
+  shows the blurred desktop - a new always-transparent widget will appear as
+  glass;
+- the backdrop always includes the native caption and the resize borders,
+  which is why Windows builds use the custom window chrome described below.
+
+Because the backdrop covers the whole window, the translucent surfaces are the
+ones that paint alpha: the navigation sidebar, the playback information bar,
+the playback control group together with its four buttons, and the waveform
+progress bar. Each has its own transparency, blur, and opacity setting under
+`display/`, and they default to on wherever the platform can show the desktop
+behind them (Wayland and Windows).
+
+### Windows Window Chrome
+
+A native caption would be glassified together with the client area, and its
+text would sit on the blurred desktop. Windows builds therefore replace the
+native caption with application-drawn chrome (`MainWindow::createWindowChrome`):
+
+- `Qt::FramelessWindowHint` for Qt, then the handle gets an **overlapped**
+  window style back (`WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX |
+  WS_MAXIMIZEBOX`, `WS_POPUP` cleared). DWM only animates minimise/restore for
+  overlapped windows, and a `WS_POPUP` window minimises instantly. The caption
+  itself is never drawn because `WM_NCCALCSIZE` reports an empty non-client
+  area, so the style is only what makes the window a "real" window to the
+  window manager.
+- `WM_NCCALCSIZE` returns an empty client inset, so the window has no
+  non-client pixels at all and the backdrop cannot leak into a border.
+- `WM_NCHITTEST` reports the eight resize edges, `HTCAPTION` for the empty part
+  of the top row (native drag, double-click maximize, snap), and leaves menu
+  items and the window buttons to Qt. The message carries physical screen
+  pixels while Qt geometry is logical, so the point is divided by
+  `devicePixelRatioF()` before it is compared with widget rectangles; mixing
+  the two units moved the resize edges far inside the window on a scaled
+  monitor.
+- `WM_GETMINMAXINFO` clamps a maximized window to the monitor work area.
+- The top row is a chrome widget that holds the application identity, the menu
+  bar, and the window buttons, all vertically centred in one 34 px row. Its
+  background is the window colour - the same colour the global
+  `QWidget { background }` rule gives the row's containers - so the title, the
+  menu bar and the buttons share one surface. The window buttons draw their
+  glyphs with `QPainter` (16 px icon, 12 px shape) and recolour from
+  `ThemeManager::colors()` on `themeChanged`, so they stay sharp on high-DPI
+  displays and follow the active theme.
+
+Linux keeps the desktop's native decorations and the compositor blur path.
+
+### Widget Stylesheet Contract
+Most per-widget stylesheets in the UI are authored with the dark palette colors
+(`#14161C`, `#FFFFFF`, ...). `ThemeManager` remaps those literals through
+`themedStyleSheet()` for the active theme and remembers the authored text on
+the widget, so a light/dark switch rewrites the same source instead of a
+previously themed result.
+
+Two rules keep that mechanism predictable:
+
+1. Write per-widget color styles as authored palette literals and let the theme
+   map them. Do not bake `ThemeManager::colors()` values into a stylesheet
+   that is then stored as if it were authored.
+2. If a stylesheet is built from `ThemeManager::colors()`, pass it through
+   `ThemeManager::applyFinalStyleSheet()` and re-apply it from the widget's
+   `themeChanged` handler. Those stylesheets are applied verbatim and are never
+   remapped.
+
+`ThemeManager` re-themes in three situations: a theme change (all widgets,
+after adopting any stylesheet that application code replaced), a widget show,
+and the first stylesheet assignment of a widget. It deliberately keeps the
+authored text on the widget rather than caching it once at construction:
+widget styles set at runtime must become the new source, otherwise parts of the
+UI keep the previous theme. The `isac_theme_tests` suite pins these invariants
+down.
+
 MPRIS is compiled on Unix-like non-Apple builds when Qt DBus is available;
 the current CMake configuration requires Qt DBus on that platform. KDE
 Window System support is detected optionally for compositor effects. Such
 effects also depend on the active desktop/compositor session. Do not treat
 them as portable Qt behavior.
 
+Windows builds compile neither, so MPRIS media keys and the global menu are
+absent there. The sidebar, info-bar, playback-control, and progress-bar
+transparency/blur settings are gated by the same capability flags and stay
+disabled, because Qt has no portable compositor blur API and no Windows
+implementation exists yet. The menu bar is rendered inside the window, and the
+system light/dark palette drives the `system` theme choice.
+
 ## 10. Build and Test
 
 The root CMake project requires CMake 3.16+, C++20, Qt Widgets/SQL, TagLib,
-FFTW3, and `pkg-config`. Unix-like non-Apple builds also require Qt DBus.
-KDE Window System support is optional.
+FFTW3, and an optional libmysofa. `cmake/IsacDependencies.cmake` normalises
+those libraries into the `isac_taglib`, `isac_fftw3`, and `isac_mysofa`
+interface targets: Unix-like systems are resolved through pkg-config, Windows
+through the CMake package configs that vcpkg installs. Unix-like non-Apple
+builds also require Qt DBus. KDE Window System support is optional.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
@@ -349,11 +482,29 @@ ctest --test-dir build --output-on-failure
 git diff --check
 ```
 
+Windows uses MSVC and the vcpkg toolchain instead. The helper scripts load the
+Visual Studio environment, configure, build, and deploy:
+
+```powershell
+.\packaging\windows\build.ps1 -QtDir C:\Qt\6.12.0\msvc2022_64 `
+    -VcpkgRoot C:\vcpkg -Configuration Release -RunTests
+.\packaging\windows\deploy.ps1 -BuildDir build\windows-release -VcpkgRoot C:\vcpkg
+```
+
+MSVC compiles with `/utf-8` because the sources contain UTF-8 text, and Windows
+targets define `NOMINMAX`/`WIN32_LEAN_AND_MEAN`. Plugin modules are emitted to
+the same `plugins/` and `format_plugins/` directories under the build tree; the
+install layout for Windows is flat (`ISACPlayer.exe` plus both module
+directories and the Qt runtime in one folder). See
+[packaging/windows/README.md](../packaging/windows/README.md).
+
 Current CTest targets are:
 
 - `isac_engine_tests`: graph buffers, node/DSP behavior, playback envelopes,
   ring/tap buffers, rates, and engine diagnostics.
 - `isac_patchbay_tests`: patchbay interactions and preset handling.
+- `isac_theme_tests`: theme switching, authored and theme-built stylesheets,
+  and stylesheet stability across repeated switches and widget shows.
 - `isac_smooth_scroll_tests`: smooth-scroll behavior.
 - `isac_plugin_loader_tests`: runtime loading and API compatibility for the
   in-tree DSP modules.

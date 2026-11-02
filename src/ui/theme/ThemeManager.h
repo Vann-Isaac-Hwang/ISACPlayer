@@ -69,6 +69,12 @@ public:
     void setMode(ThemeMode mode);
     void applyToExistingWidgets();
 
+    // Applies a stylesheet that already contains the current theme colors
+    // (for example one built from colors()) and remembers it verbatim, so the
+    // authored-hex remapping never rewrites it. The owner is expected to
+    // re-apply it from its themeChanged handler.
+    void applyFinalStyleSheet(QWidget* widget, const QString& styleSheet);
+
     static QString modeKey(ThemeMode mode);
     static ThemeMode modeFromKey(const QString& key);
 
@@ -87,13 +93,18 @@ private:
     static QString themedStyleSheet(const QString& base,
                                     const ThemeColors& colors);
 
+    bool systemPrefersDark() const;
     void apply();
+    void applyWindowFrames();
     void applyWidgetStyleSheet(QWidget* widget);
+    void writeWidgetStyleSheet(QWidget* widget, const QString& styleSheet);
     void handleSystemPaletteChanged(const QPalette& palette);
+    void handleSystemColorSchemeChanged();
 
     static ThemeManager* s_instance;
 
     QPalette m_systemPalette;
+    QPalette m_appliedPalette;
     ThemeColors m_colors;
     ThemeMode m_mode = ThemeMode::System;
     bool m_isDark = true;
