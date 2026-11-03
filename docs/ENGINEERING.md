@@ -134,8 +134,8 @@ The repository creates and initializes its SQLite schema in
   timestamps.
 - `artists` and `track_artists`: normalized artist entities and
   many-to-many track relationships.
-- `albums` and `track_albums`: album entities keyed by album name and their
-  track relationships.
+- `albums` and `track_albums`: album entities keyed by source album ID when
+  available, otherwise by normalized album name, and their track relationships.
 - `library_directories`: configured scan roots and scan timestamps.
 - `playlists` and `playlist_tracks`: user playlists with explicit row
   positions.
@@ -145,7 +145,8 @@ The repository creates and initializes its SQLite schema in
 
 Track rows preserve display strings while relation tables support browsing
 individual artists and albums. Album artists are aggregated from their tracks
-for presentation. Audio format, sample rate, bit depth, channel count, and
+for presentation. Multi-disc album queries sort by disc number and then track
+number. Audio format, sample rate, bit depth, channel count, and
 bitrate are exposed through `TrackInfo` by metadata reading; they are not
 columns in the current `tracks` schema. Schema compatibility adjustments and
 relation normalization are performed during repository initialization;

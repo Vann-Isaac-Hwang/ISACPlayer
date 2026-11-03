@@ -15,6 +15,7 @@ struct TrackInfo {
     QString title;
     QString artist;
     QString album;
+    QString albumExternalId;
     QString audioFormat;
     int durationSeconds = 0;
     int sampleRateHz = 0;
@@ -23,6 +24,8 @@ struct TrackInfo {
     int bitrateKbps = 0;
     int trackNumber = 0;
     int discNumber = 0;
+    bool albumHasMultipleDiscs = false;
+    int formatMetadataRevision = 0;
     int year = 0;
     qint64 fileSize = 0;
     QDateTime modifiedAt;

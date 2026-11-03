@@ -327,9 +327,17 @@ QVariant TrackTableModel::data(const QModelIndex& index, int role) const {
 
     switch (index.column()) {
     case 0:
-        return m_showTrackNumber && track.trackNumber > 0
-            ? QString::number(track.trackNumber)
-            : m_showTrackNumber ? QString{} : track.title;
+        if (!m_showTrackNumber) {
+            return track.title;
+        }
+        if (track.trackNumber <= 0) {
+            return {};
+        }
+        return track.albumHasMultipleDiscs && track.discNumber > 0
+            ? QStringLiteral("%1-%2")
+                  .arg(track.discNumber)
+                  .arg(track.trackNumber, 2, 10, QLatin1Char('0'))
+            : QString::number(track.trackNumber);
     case 1:
         return m_showTrackNumber ? track.title : track.artist;
     case 2:
@@ -453,9 +461,9 @@ void TrackTableModel::refresh() {
     } else if (m_playlistContext) {
         m_trackCount = std::max<qint64>(
             0, m_repository->playlistTrackCount(*m_playlistId, m_searchText));
-    } else if (!m_albumFilter.isEmpty()) {
+    } else if (m_albumFilterId > 0) {
         m_trackCount = m_repository->albumTrackCount(
-            m_albumFilter, m_searchText);
+            m_albumFilterId, m_searchText);
     } else if (!m_artistFilter.isEmpty()) {
         m_trackCount = m_repository->artistTrackCount(
             m_artistFilter, m_searchText);
@@ -536,20 +544,20 @@ void TrackTableModel::setPlaylistId(std::optional<qint64> playlistId) {
         m_historyContext = false;
         m_playlistId = playlistId;
         m_artistFilter.clear();
-        m_albumFilter.clear();
+        m_albumFilterId = 0;
         refresh();
     }
 }
 
 void TrackTableModel::setCategoryFilter(const QString& artist,
-                                        const QString& album) {
-    if (m_artistFilter != artist || m_albumFilter != album ||
+                                        qint64 albumId) {
+    if (m_artistFilter != artist || m_albumFilterId != albumId ||
         m_playlistContext || m_historyContext) {
         m_playlistContext = false;
         m_historyContext = false;
         m_playlistId.reset();
         m_artistFilter = artist;
-        m_albumFilter = album;
+        m_albumFilterId = albumId;
         refresh();
     }
 }
@@ -560,7 +568,7 @@ void TrackTableModel::setHistoryMode(bool enabled) {
         m_playlistContext = false;
         m_playlistId.reset();
         m_artistFilter.clear();
-        m_albumFilter.clear();
+        m_albumFilterId = 0;
         refresh();
     }
 }
@@ -581,9 +589,9 @@ bool TrackTableModel::loadPage(int row) const {
             ? m_repository->queryPlaylistTracks(
                   *m_playlistId, m_searchText, kPageSize, pageStart)
             : std::vector<library::TrackInfo>{};
-    } else if (!m_albumFilter.isEmpty()) {
+    } else if (m_albumFilterId > 0) {
         m_page = m_repository->queryAlbumTracks(
-            m_albumFilter, m_searchText, m_sort, m_ascending,
+            m_albumFilterId, m_searchText, m_sort, m_ascending,
             kPageSize, pageStart);
     } else if (!m_artistFilter.isEmpty()) {
         m_page = m_repository->queryArtistTracks(
@@ -606,7 +614,7 @@ std::optional<library::TrackInfo> TrackTableModel::trackAtRow(int row) const {
 
 int TrackTableModel::rowForTrackId(qint64 id) const {
     if (!m_repository || id <= 0 || m_historyContext ||
-        !m_artistFilter.isEmpty() || !m_albumFilter.isEmpty()) {
+        !m_artistFilter.isEmpty() || m_albumFilterId > 0) {
         return -1;
     }
     const qint64 row = m_repository->rowForTrackId(
@@ -636,9 +644,9 @@ std::vector<qint64> TrackTableModel::trackIds() const {
             }
             page = m_repository->playlistTrackIds(
                 *m_playlistId, m_searchText, pageSize, static_cast<int>(offset));
-        } else if (!m_albumFilter.isEmpty()) {
+        } else if (m_albumFilterId > 0) {
             page = m_repository->queryAlbumTrackIds(
-                m_albumFilter, m_searchText, m_sort, m_ascending,
+                m_albumFilterId, m_searchText, m_sort, m_ascending,
                 pageSize, static_cast<int>(offset));
         } else if (!m_artistFilter.isEmpty()) {
             page = m_repository->queryArtistTrackIds(
@@ -694,9 +702,14 @@ QVariant LibraryGroupTableModel::data(const QModelIndex& index, int role) const 
     if (m_albums && index.column() == 0 &&
         (role == Qt::DecorationRole || role == Qt::ToolTipRole)) {
         if (role == Qt::ToolTipRole) {
-            return QStringLiteral("%1\n%2 tracks")
+            QString tooltip = QStringLiteral("%1\n%2 tracks")
                 .arg(group.artist)
                 .arg(group.trackCount);
+            if (!group.externalId.isEmpty()) {
+                tooltip += QStringLiteral("\nAlbum ID: %1")
+                    .arg(group.externalId);
+            }
+            return tooltip;
         }
         if (const auto* cached = m_coverCache.object(index.row())) {
             return *cached;
@@ -1080,13 +1093,13 @@ ISACMusicLibraryPage::ISACMusicLibraryPage(library::LibraryRepository* repositor
             for (const auto& playlist : playlists) {
                 QAction* action = addMenu->addAction(playlist.name);
                 connect(action, &QAction::triggered, this,
-                        [this, albumName = album->name,
+                        [this, albumId = album->id,
                          playlistId = playlist.id]() {
                     constexpr int pageSize = 10000;
                     std::vector<qint64> trackIds;
                     for (int offset = 0;; offset += pageSize) {
                         const auto page = m_repository->queryAlbumTrackIds(
-                            albumName, {}, library::TrackSort::TrackNumber, true,
+                            albumId, {}, library::TrackSort::TrackNumber, true,
                             pageSize, offset);
                         if (page.empty()) {
                             break;
@@ -1240,7 +1253,7 @@ ISACMusicLibraryPage::ISACMusicLibraryPage(library::LibraryRepository* repositor
             this, [this](int index) { showLibraryView(index); });
     connect(m_groupBackButton, &QToolButton::clicked, this, [this]() {
         m_showingGroupTracks = false;
-        m_tableModel->setCategoryFilter({}, {});
+        m_tableModel->setCategoryFilter({}, 0);
         showLibraryView(m_libraryView);
     });
     updateResultCount();
@@ -1382,15 +1395,22 @@ ISACMusicLibraryPage::ISACMusicLibraryPage(library::LibraryRepository* repositor
                 });
             }
             const QString albumName = selectedTrack->album.trimmed().isEmpty()
-                ? QStringLiteral("Unknown Album")
-                : selectedTrack->album;
+                ? QStringLiteral("Unknown Album") : selectedTrack->album;
+            const auto albumId = m_repository->albumIdForTrack(
+                selectedTrack->id);
             QAction* albumAction = menu.addAction(
                 QStringLiteral("View Album: %1").arg(
                     albumName));
+            albumAction->setEnabled(albumId.has_value());
             connect(albumAction, &QAction::triggered, this,
-                    [this, albumName]() {
+                    [this, albumName, albumId]() {
                 m_libraryTabs->setCurrentIndex(2);
-                showGroupTracks({albumName, {}, 0});
+                if (albumId) {
+                    library::LibraryGroup group;
+                    group.id = *albumId;
+                    group.name = albumName;
+                    showGroupTracks(group);
+                }
             });
         }
         menu.exec(m_table->viewport()->mapToGlobal(position));
@@ -1425,9 +1445,17 @@ void ISACMusicLibraryPage::showArtist(const QString& artist) {
     showGroupTracks({artist, {}, 0});
 }
 
-void ISACMusicLibraryPage::showAlbum(const QString& album) {
+void ISACMusicLibraryPage::showAlbumForTrack(qint64 trackId) {
+    const auto track = m_repository->trackById(trackId);
+    const auto albumId = m_repository->albumIdForTrack(trackId);
+    if (!track || !albumId) {
+        return;
+    }
+    library::LibraryGroup group;
+    group.id = *albumId;
+    group.name = track->album;
     m_libraryTabs->setCurrentIndex(2);
-    showGroupTracks({album, {}, 0});
+    showGroupTracks(group);
 }
 
 std::optional<library::TrackInfo> ISACMusicLibraryPage::trackAtRow(int row) const {
@@ -1458,7 +1486,7 @@ void ISACMusicLibraryPage::showLibraryView(int view) {
     m_groupBackButton->hide();
     m_tableModel->setHistoryMode(m_libraryView == 3);
     if (m_libraryView == 0) {
-        m_tableModel->setCategoryFilter({}, {});
+        m_tableModel->setCategoryFilter({}, 0);
         m_table->setModel(m_tableModel);
         static_cast<BalancedTrackHeader*>(m_table->horizontalHeader())
             ->applyAutomaticWidths();
@@ -1467,7 +1495,7 @@ void ISACMusicLibraryPage::showLibraryView(int view) {
         m_table->setModel(m_tableModel);
         m_libraryContent->setCurrentWidget(m_table);
     } else {
-        m_tableModel->setCategoryFilter({}, {});
+        m_tableModel->setCategoryFilter({}, 0);
         m_table->setModel(m_libraryView == 1 ? m_artistModel : m_albumModel);
         m_libraryContent->setCurrentWidget(
             m_libraryView == 2 && m_albumCoverButton->isChecked()
@@ -1504,8 +1532,8 @@ void ISACMusicLibraryPage::showGroupTracks(const library::LibraryGroup& group) {
         m_trackSortAscending = true;
     }
     const QString artist = m_libraryView == 1 ? group.name : QString{};
-    const QString album = m_libraryView == 2 ? group.name : QString{};
-    m_tableModel->setCategoryFilter(artist, album);
+    const qint64 albumId = m_libraryView == 2 ? group.id : 0;
+    m_tableModel->setCategoryFilter(artist, albumId);
     m_tableModel->setSort(m_trackSort, m_trackSortAscending);
     m_table->setModel(m_tableModel);
     static_cast<BalancedTrackHeader*>(m_table->horizontalHeader())

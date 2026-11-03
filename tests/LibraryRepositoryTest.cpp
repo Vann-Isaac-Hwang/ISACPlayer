@@ -61,7 +61,12 @@ void testTrackPersistenceAndQueries(const QString& databasePath)
                                "Album Z", 1200);
         auto second = makeTrack("/music/two.mp3", "Second Song", "Artist A",
                                 "Album A", 2400);
-        expect(repository.upsertTrack(first), "single track insert must succeed");
+        const bool firstInserted = repository.upsertTrack(first);
+        if (!firstInserted) {
+            std::cerr << "SQLite error: "
+                      << repository.lastError().toStdString() << '\n';
+        }
+        expect(firstInserted, "single track insert must succeed");
         expect(first.id > 0, "insert must return a stable database ID");
         firstId = first.id;
         originalAddedAt = first.addedAt;
@@ -435,31 +440,36 @@ void testArtistAndAlbumQueries(const QString& databasePath)
                albums[1].name == "Shared Album" &&
                albums[1].artist == "Artist A / Artist B / Guest A / Guest B",
            "albums must merge by title and expose the union of artists");
-    expect(repository.albumTrackCount("Shared Album") == 3,
+    const auto sharedAlbum = std::find_if(
+        albums.begin(), albums.end(), [](const LibraryGroup& group) {
+            return group.name == "Shared Album";
+        });
+    expect(sharedAlbum != albums.end() &&
+               repository.albumTrackCount(sharedAlbum->id) == 3,
            "album track count must use album identity only");
     const auto albumTracks = repository.queryAlbumTracks(
-        "Shared Album", {}, TrackSort::Title, true, 10, 0);
+        sharedAlbum->id, {}, TrackSort::Title, true, 10, 0);
     expect(albumTracks.size() == 3 &&
                albumTracks[0].title == "A One" &&
                albumTracks[1].title == "A Two" &&
                albumTracks[2].title == "B One",
            "album track queries must return every track in the album");
     const auto albumIds = repository.queryAlbumTrackIds(
-        "Shared Album", {}, TrackSort::Title, true, 10, 0);
+        sharedAlbum->id, {}, TrackSort::Title, true, 10, 0);
     expect(albumIds.size() == 3 &&
                albumIds[0] == tracks[0].id &&
                albumIds[1] == tracks[1].id &&
                albumIds[2] == tracks[3].id,
            "album ID queries must use album identity only");
     const auto albumTracksByNumber = repository.queryAlbumTracks(
-        "Shared Album", {}, TrackSort::TrackNumber, true, 10, 0);
+        sharedAlbum->id, {}, TrackSort::TrackNumber, true, 10, 0);
     expect(albumTracksByNumber.size() == 3 &&
                albumTracksByNumber[0].id == tracks[1].id &&
                albumTracksByNumber[1].id == tracks[0].id &&
                albumTracksByNumber[2].id == tracks[3].id,
            "album track queries must support numeric track-number ordering");
     const auto albumIdsByNumber = repository.queryAlbumTrackIds(
-        "Shared Album", {}, TrackSort::TrackNumber, false, 2, 0);
+        sharedAlbum->id, {}, TrackSort::TrackNumber, false, 2, 0);
     expect(albumIdsByNumber.size() == 2 &&
                albumIdsByNumber[0] == tracks[3].id &&
                albumIdsByNumber[1] == tracks[0].id,
@@ -479,25 +489,130 @@ void testArtistAndAlbumQueries(const QString& databasePath)
         ncmWithoutNumbers, ncmWithoutNumbersTwo};
     expect(repository.upsertTracks(ncmTracks),
            "NCM tracks without positions must persist");
+    const auto currentAlbums = repository.queryAlbums({}, true, 100, 0);
+    const auto ncmAlbumEntry = std::find_if(
+        currentAlbums.begin(), currentAlbums.end(),
+        [](const LibraryGroup& group) { return group.name == "NCM Album"; });
+    expect(ncmAlbumEntry != currentAlbums.end(),
+           "NCM album identity must be available for album queries");
     const auto ncmAlbumTracks = repository.queryAlbumTracks(
-        "NCM Album", {}, TrackSort::TrackNumber, true, 10, 0);
+        ncmAlbumEntry->id, {}, TrackSort::TrackNumber, true, 10, 0);
     expect(ncmAlbumTracks.size() == 2 &&
                ncmAlbumTracks[0].trackNumber == 1 &&
                ncmAlbumTracks[1].trackNumber == 2 &&
                ncmAlbumTracks[0].title == "Another Track",
            "album queries must provide stable fallback positions for unknown NCM tracks");
     const auto ncmAlbumIds = repository.queryAlbumTrackIds(
-        "NCM Album", {}, TrackSort::TrackNumber, true, 10, 0);
+        ncmAlbumEntry->id, {}, TrackSort::TrackNumber, true, 10, 0);
     expect(ncmAlbumIds.size() == 2 &&
                ncmAlbumIds[0] == ncmTracks[1].id &&
                ncmAlbumIds[1] == ncmTracks[0].id,
            "album IDs must use the same fallback order as album rows");
+
+    auto discOneTrackOne = makeTrack(
+        "/multi-disc/disc-one-track-one.ncm", "Disc One Track One",
+        "Artist D", "Multi Disc Set", 100);
+    auto discOneTrackTwo = makeTrack(
+        "/multi-disc/disc-one-track-two.ncm", "Disc One Track Two",
+        "Artist D", "Multi Disc Set", 100);
+    auto discTwoTrackOne = makeTrack(
+        "/multi-disc/disc-two-track-one.ncm", "Disc Two Track One",
+        "Artist D", "Multi Disc Set", 100);
+    auto discTwoTrackTwo = makeTrack(
+        "/multi-disc/disc-two-track-two.ncm", "Disc Two Track Two",
+        "Artist D", "Multi Disc Set", 100);
+    for (auto* track : {&discOneTrackOne, &discOneTrackTwo,
+                        &discTwoTrackOne, &discTwoTrackTwo}) {
+        track->formatPlugin = QStringLiteral("isac.ncm");
+        track->albumExternalId = QStringLiteral("multi-disc-id");
+    }
+    discOneTrackOne.trackNumber = 1;
+    discOneTrackTwo.trackNumber = 2;
+    discTwoTrackOne.trackNumber = 1;
+    discTwoTrackTwo.trackNumber = 2;
+    discOneTrackOne.discNumber = 1;
+    discOneTrackTwo.discNumber = 1;
+    discTwoTrackOne.discNumber = 2;
+    discTwoTrackTwo.discNumber = 2;
+    std::vector<TrackInfo> multiDiscTracks{
+        discTwoTrackOne, discOneTrackTwo,
+        discTwoTrackTwo, discOneTrackOne};
+    expect(repository.upsertTracks(multiDiscTracks),
+           "multi-disc tracks must persist with album identity and positions");
+    const auto albumsAfterMultiDisc =
+        repository.queryAlbums({}, true, 100, 0);
+    const auto multiDiscAlbumEntry = std::find_if(
+        albumsAfterMultiDisc.begin(), albumsAfterMultiDisc.end(),
+        [](const LibraryGroup& group) {
+            return group.name == "Multi Disc Set";
+        });
+    expect(multiDiscAlbumEntry != albumsAfterMultiDisc.end() &&
+               repository.albumTrackCount(multiDiscAlbumEntry->id) == 4,
+           "one external album ID must group all tracks across its discs");
+    const auto orderedMultiDiscTracks = repository.queryAlbumTracks(
+        multiDiscAlbumEntry->id, {}, TrackSort::TrackNumber, true, 10, 0);
+    expect(orderedMultiDiscTracks.size() == 4 &&
+               std::all_of(orderedMultiDiscTracks.begin(),
+                           orderedMultiDiscTracks.end(),
+                           [](const TrackInfo& track) {
+                               return track.albumHasMultipleDiscs;
+                           }) &&
+               orderedMultiDiscTracks[0].discNumber == 1 &&
+               orderedMultiDiscTracks[0].trackNumber == 1 &&
+               orderedMultiDiscTracks[1].discNumber == 1 &&
+               orderedMultiDiscTracks[1].trackNumber == 2 &&
+               orderedMultiDiscTracks[2].discNumber == 2 &&
+               orderedMultiDiscTracks[2].trackNumber == 1 &&
+               orderedMultiDiscTracks[3].discNumber == 2 &&
+               orderedMultiDiscTracks[3].trackNumber == 2,
+           "album track ordering must use disc then track number");
+
+    const auto singleDiscTracks = repository.queryAlbumTracks(
+        sharedAlbum->id, {}, TrackSort::TrackNumber, true, 10, 0);
+    expect(!singleDiscTracks.empty() &&
+               std::none_of(singleDiscTracks.begin(), singleDiscTracks.end(),
+                            [](const TrackInfo& track) {
+                                return track.albumHasMultipleDiscs;
+                            }),
+           "single-disc albums must not be marked as multi-disc");
+
+    auto sameNameReleaseOne = makeTrack(
+        "/same-name/release-one.ncm", "Release One Track",
+        "Artist E", "Same Album Name", 100);
+    auto sameNameReleaseTwo = makeTrack(
+        "/same-name/release-two.ncm", "Release Two Track",
+        "Artist E", "Same Album Name", 100);
+    for (auto* track : {&sameNameReleaseOne, &sameNameReleaseTwo}) {
+        track->formatPlugin = QStringLiteral("isac.ncm");
+    }
+    sameNameReleaseOne.albumExternalId = QStringLiteral("release-id-1");
+    sameNameReleaseTwo.albumExternalId = QStringLiteral("release-id-2");
+    std::vector<TrackInfo> sameNameReleases{
+        sameNameReleaseOne, sameNameReleaseTwo};
+    expect(repository.upsertTracks(sameNameReleases),
+           "same-name NCM releases must persist independently");
+    const auto sameNameAlbums = repository.queryAlbums("Same Album Name");
+    expect(sameNameAlbums.size() == 2 &&
+               sameNameAlbums[0].id != sameNameAlbums[1].id &&
+               sameNameAlbums[0].name == sameNameAlbums[1].name &&
+               sameNameAlbums[0].externalId != sameNameAlbums[1].externalId &&
+               repository.albumTrackCount(sameNameAlbums[0].id) == 1 &&
+               repository.albumTrackCount(sameNameAlbums[1].id) == 1,
+           "different NCM album IDs must separate identically named albums");
 
     const auto artistIds = repository.queryArtistTrackIds(
         "Artist A", {}, TrackSort::Title, true, 10, 0);
     expect(artistIds.size() == 3 &&
                repository.artistTrackCount("Artist A") == 3,
            "artist playback IDs and count must cover the category tracks");
+    const auto artistTracks = repository.queryArtistTracks(
+        "Artist A", {}, TrackSort::Title, true, 10, 0);
+    expect(artistTracks.size() == 3 &&
+               std::all_of(artistTracks.begin(), artistTracks.end(),
+                           [](const TrackInfo& track) {
+                               return !track.albumHasMultipleDiscs;
+                           }),
+           "artist track query must work without album-only disc metadata");
 }
 
 void testLegacyCategoryMigration(const QString& databasePath)
@@ -570,6 +685,77 @@ void testLegacyCategoryMigration(const QString& databasePath)
                albums.back().artist == "Alpha / Beta / Gamma" &&
                albums.back().trackCount == 2,
            "batched legacy migration must preserve album relations and ordering");
+}
+
+void testAlbumIdentityMigration(const QString& databasePath)
+{
+    const QString connectionName = QStringLiteral("legacy-album-%1")
+        .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    {
+        QSqlDatabase database = QSqlDatabase::addDatabase(
+            QStringLiteral("QSQLITE"), connectionName);
+        database.setDatabaseName(databasePath);
+        expect(database.open(), "legacy album database must open");
+        QSqlQuery schema(database);
+        expect(schema.exec(
+                   "CREATE TABLE tracks ("
+                   "id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE, "
+                   "title TEXT NOT NULL, artist TEXT NOT NULL, album TEXT NOT NULL, "
+                   "duration_seconds INTEGER NOT NULL DEFAULT 0, "
+                   "track_number INTEGER NOT NULL DEFAULT 0, "
+                   "disc_number INTEGER NOT NULL DEFAULT 0, "
+                   "year INTEGER NOT NULL DEFAULT 0, "
+                   "file_size INTEGER NOT NULL DEFAULT 0, "
+                   "modified_at TEXT, added_at TEXT NOT NULL)"),
+               "legacy track table must be created");
+        expect(schema.exec(
+                   "CREATE TABLE albums ("
+                   "id INTEGER PRIMARY KEY, "
+                   "name TEXT NOT NULL COLLATE NOCASE UNIQUE)"),
+               "legacy unique-name album table must be created");
+        expect(schema.exec(
+                   "CREATE TABLE track_albums ("
+                   "track_id INTEGER PRIMARY KEY "
+                   "REFERENCES tracks(id) ON DELETE CASCADE, "
+                   "album_id INTEGER NOT NULL "
+                   "REFERENCES albums(id) ON DELETE CASCADE)"),
+               "legacy album relation table must be created");
+        expect(schema.exec(
+                   "CREATE TABLE library_schema_meta ("
+                   "key TEXT PRIMARY KEY, value TEXT NOT NULL)"),
+               "legacy schema metadata table must be created");
+        expect(schema.exec(
+                   "INSERT INTO tracks(id, path, title, artist, album, added_at) "
+                   "VALUES (5, '/legacy-album/track.flac', 'Track', 'Artist', "
+                   "'Legacy Album', '2024-01-01T00:00:00.000Z')"),
+               "legacy track row must be inserted");
+        expect(schema.exec(
+                   "INSERT INTO albums(id, name) VALUES (42, 'Legacy Album')"),
+               "legacy album row must be inserted");
+        expect(schema.exec(
+                   "INSERT INTO track_albums(track_id, album_id) VALUES (5, 42)"),
+               "legacy album relation must be inserted");
+        expect(schema.exec(
+                   "INSERT INTO library_schema_meta(key, value) "
+                   "VALUES ('normalized_artist_album_relations', '1')"),
+               "legacy relation migration marker must be inserted");
+        database.close();
+    }
+    QSqlDatabase::removeDatabase(connectionName);
+
+    isac::library::LibraryRepository repository(databasePath);
+    expect(repository.isOpen(),
+           "repository must migrate the legacy unique-name album table");
+    const auto albums = repository.queryAlbums();
+    expect(albums.size() == 1 && albums.front().id == 42 &&
+               albums.front().name == "Legacy Album",
+           "album table migration must preserve album identity and row ID");
+    const auto tracks = repository.queryAlbumTracks(
+        albums.front().id, {}, isac::library::TrackSort::TrackNumber,
+        true, 10, 0);
+    expect(tracks.size() == 1 && tracks.front().id == 5 &&
+               repository.albumIdForTrack(5) == albums.front().id,
+           "album migration must preserve track relations");
 }
 
 void testMetadataCategoryNormalization(const QString& databasePath)
@@ -811,6 +997,8 @@ int main(int argc, char** argv)
         QDir(temporaryDirectory.path()).filePath("categories.sqlite"));
     testLegacyCategoryMigration(
         QDir(temporaryDirectory.path()).filePath("legacy.sqlite"));
+    testAlbumIdentityMigration(
+        QDir(temporaryDirectory.path()).filePath("album-identity.sqlite"));
     testMetadataCategoryNormalization(
         QDir(temporaryDirectory.path()).filePath("normalization.sqlite"));
     testPersistedPlaybackQueue(

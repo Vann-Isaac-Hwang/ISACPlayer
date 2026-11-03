@@ -475,4 +475,21 @@ if(BUILD_TESTING)
         isac_format_sdk
     )
     add_test(NAME isac_library_tests COMMAND isac_library_tests)
+
+    add_executable(isac_ncm_reader_tests
+        tests/NcmReaderTest.cpp
+        format_plugins/ncm/NcmReader.h
+        format_plugins/ncm/NcmReader.cpp
+        format_plugins/ncm/third_party/aes.h
+        format_plugins/ncm/third_party/aes.cpp
+    )
+    target_include_directories(isac_ncm_reader_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/format_plugins/ncm
+        ${CMAKE_CURRENT_SOURCE_DIR}/format_plugins/ncm/third_party
+    )
+    target_link_libraries(isac_ncm_reader_tests PRIVATE
+        Qt${QT_VERSION_MAJOR}::Core
+        isac_format_sdk
+    )
+    add_test(NAME isac_ncm_reader_tests COMMAND isac_ncm_reader_tests)
 endif()

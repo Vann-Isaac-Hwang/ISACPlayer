@@ -7,17 +7,19 @@
 
 namespace isac::format {
 
-constexpr int FORMAT_PLUGIN_API_VERSION = 1;
-#define ISAC_FORMAT_PLUGIN_IID "org.isacplayer.FormatPlugin/1.0"
+constexpr int FORMAT_PLUGIN_API_VERSION = 2;
+#define ISAC_FORMAT_PLUGIN_IID "org.isacplayer.FormatPlugin/2.0"
 #define ISAC_FORMAT_PLUGIN_COMPATIBILITY_IID \
-    "org.isacplayer.FormatPluginCompatibility/1.0"
+    "org.isacplayer.FormatPluginCompatibility/2.0"
 
 struct FormatMetadata {
     bool valid = false;
     QString title;
     QString artist;
     QString album;
+    QString albumId;
     QString decodedFormat;
+    int metadataRevision = 0;
     int durationMilliseconds = 0;
     int bitrateKbps = 0;
     int trackNumber = 0;

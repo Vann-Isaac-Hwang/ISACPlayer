@@ -1814,11 +1814,9 @@ MainWindow::MainWindow(QWidget *parent)
 
         QAction* viewAlbum = menu.addAction(QStringLiteral("View Album"));
         connect(viewAlbum, &QAction::triggered, this,
-                [this, album = track->album]() {
+                [this, trackId = track->id]() {
             m_navLibraryButton->click();
-            m_libraryPage->showAlbum(
-                album.trimmed().isEmpty()
-                    ? QStringLiteral("Unknown Album") : album);
+            m_libraryPage->showAlbumForTrack(trackId);
         });
 
         QMenu* artistMenu = menu.addMenu(QStringLiteral("View Artist"));

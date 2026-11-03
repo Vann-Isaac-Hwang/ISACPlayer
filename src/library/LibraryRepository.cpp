@@ -70,10 +70,10 @@ QString albumOrderClause(TrackSort sort, bool ascending)
     const QString direction = ascending ? QStringLiteral("ASC")
                                         : QStringLiteral("DESC");
     if (sort == TrackSort::TrackNumber) {
-        // SQLite sorts zero before real numbers. Keep missing NCM positions
-        // after explicit positions and use a deterministic fallback order.
+        // Sort multi-disc releases by disc first and unknown positions last.
         return QStringLiteral(
             "CASE WHEN t.track_number > 0 THEN 0 ELSE 1 END ASC, "
+            "CASE WHEN t.disc_number > 0 THEN t.disc_number ELSE 1 END %1, "
             "t.track_number %1, t.title COLLATE NOCASE %1, t.id ASC")
             .arg(direction);
     }
@@ -139,6 +139,8 @@ bool LibraryRepository::initializeSchema()
             "playback_path TEXT NOT NULL DEFAULT '', "
             "format_plugin TEXT NOT NULL DEFAULT '', "
             "cover_path TEXT NOT NULL DEFAULT '', "
+            "album_external_id TEXT NOT NULL DEFAULT '', "
+            "format_metadata_revision INTEGER NOT NULL DEFAULT 0, "
             "title TEXT NOT NULL, artist TEXT NOT NULL, album TEXT NOT NULL, "
             "duration_seconds INTEGER NOT NULL DEFAULT 0, "
             "track_number INTEGER NOT NULL DEFAULT 0, "
@@ -162,7 +164,10 @@ bool LibraryRepository::initializeSchema()
         QStringLiteral(
             "CREATE TABLE IF NOT EXISTS albums ("
             "id INTEGER PRIMARY KEY, "
-            "name TEXT NOT NULL COLLATE NOCASE UNIQUE)"),
+            "name TEXT NOT NULL COLLATE NOCASE, "
+            "identity_key TEXT NOT NULL UNIQUE, "
+            "external_id TEXT NOT NULL DEFAULT '', "
+            "source_plugin TEXT NOT NULL DEFAULT '')"),
         QStringLiteral(
             "CREATE TABLE IF NOT EXISTS track_albums ("
             "track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE, "
@@ -220,7 +225,9 @@ bool LibraryRepository::initializeSchema()
     const QStringList migrationColumns{
         QStringLiteral("playback_path TEXT NOT NULL DEFAULT ''"),
         QStringLiteral("format_plugin TEXT NOT NULL DEFAULT ''"),
-        QStringLiteral("cover_path TEXT NOT NULL DEFAULT ''")
+        QStringLiteral("cover_path TEXT NOT NULL DEFAULT ''"),
+        QStringLiteral("album_external_id TEXT NOT NULL DEFAULT ''"),
+        QStringLiteral("format_metadata_revision INTEGER NOT NULL DEFAULT 0")
     };
     for (const QString& column : migrationColumns) {
         const QString columnName = column.section(QLatin1Char(' '), 0, 0);
@@ -242,6 +249,74 @@ bool LibraryRepository::initializeSchema()
         }
     }
 
+    QSqlQuery albumIdentityState(m_database);
+    albumIdentityState.prepare(QStringLiteral(
+        "SELECT value FROM library_schema_meta "
+        "WHERE key = 'album_identity_key_v1'"));
+    if (!albumIdentityState.exec()) {
+        m_lastError = albumIdentityState.lastError().text();
+        return false;
+    }
+    const bool hasAlbumIdentityMigration =
+        albumIdentityState.next() &&
+        albumIdentityState.value(0).toString() == QStringLiteral("1");
+    albumIdentityState.finish();
+    if (!hasAlbumIdentityMigration) {
+        QSqlQuery foreignKeysOff(m_database);
+        if (!foreignKeysOff.exec(QStringLiteral("PRAGMA foreign_keys = OFF"))) {
+            m_lastError = foreignKeysOff.lastError().text();
+            return false;
+        }
+        if (!m_database.transaction()) {
+            m_lastError = m_database.lastError().text();
+            QSqlQuery foreignKeysOn(m_database);
+            foreignKeysOn.exec(QStringLiteral("PRAGMA foreign_keys = ON"));
+            return false;
+        }
+
+        const QStringList migrationStatements{
+            QStringLiteral(
+                "CREATE TABLE albums_new ("
+                "id INTEGER PRIMARY KEY, "
+                "name TEXT NOT NULL COLLATE NOCASE, "
+                "identity_key TEXT NOT NULL UNIQUE, "
+                "external_id TEXT NOT NULL DEFAULT '', "
+                "source_plugin TEXT NOT NULL DEFAULT '')"),
+            QStringLiteral(
+                "INSERT INTO albums_new(id, name, identity_key) "
+                "SELECT id, name, 'name:' || lower(name) FROM albums"),
+            QStringLiteral("DROP TABLE albums"),
+            QStringLiteral("ALTER TABLE albums_new RENAME TO albums"),
+            QStringLiteral(
+                "INSERT INTO library_schema_meta(key, value) "
+                "VALUES ('album_identity_key_v1', '1') "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        };
+        bool migrationSucceeded = true;
+        for (const QString& statement : migrationStatements) {
+            QSqlQuery query(m_database);
+            if (!query.exec(statement)) {
+                m_lastError = query.lastError().text();
+                migrationSucceeded = false;
+                break;
+            }
+        }
+        if (!migrationSucceeded || !m_database.commit()) {
+            if (migrationSucceeded) {
+                m_lastError = m_database.lastError().text();
+            }
+            m_database.rollback();
+            QSqlQuery foreignKeysOn(m_database);
+            foreignKeysOn.exec(QStringLiteral("PRAGMA foreign_keys = ON"));
+            return false;
+        }
+        QSqlQuery foreignKeysOn(m_database);
+        if (!foreignKeysOn.exec(QStringLiteral("PRAGMA foreign_keys = ON"))) {
+            m_lastError = foreignKeysOn.lastError().text();
+            return false;
+        }
+    }
+
     QSqlQuery migrationState(m_database);
     migrationState.prepare(QStringLiteral(
         "SELECT value FROM library_schema_meta "
@@ -257,12 +332,14 @@ bool LibraryRepository::initializeSchema()
 
     qint64 lastTrackId = 0;
     while (true) {
-        std::vector<std::tuple<qint64, QString, QString>> relations;
+        std::vector<std::tuple<qint64, QString, QString, QString, QString>>
+            relations;
         relations.reserve(kRelationMigrationBatchSize);
 
         QSqlQuery existingTracks(m_database);
         existingTracks.prepare(QStringLiteral(
-            "SELECT id, artist, album FROM tracks "
+            "SELECT id, artist, album, format_plugin, album_external_id "
+            "FROM tracks "
             "WHERE id > ? ORDER BY id ASC LIMIT ?"));
         existingTracks.addBindValue(lastTrackId);
         existingTracks.addBindValue(kRelationMigrationBatchSize);
@@ -274,7 +351,9 @@ bool LibraryRepository::initializeSchema()
             relations.emplace_back(
                 existingTracks.value(0).toLongLong(),
                 existingTracks.value(1).toString(),
-                existingTracks.value(2).toString());
+                existingTracks.value(2).toString(),
+                existingTracks.value(3).toString(),
+                existingTracks.value(4).toString());
         }
         existingTracks.finish();
         if (relations.empty()) {
@@ -285,8 +364,10 @@ bool LibraryRepository::initializeSchema()
             m_lastError = m_database.lastError().text();
             return false;
         }
-        for (const auto& [trackId, artist, album] : relations) {
-            if (!syncTrackRelations(trackId, artist, album)) {
+        for (const auto& [trackId, artist, album, formatPlugin,
+                          albumExternalId] : relations) {
+            if (!syncTrackRelations(
+                    trackId, artist, album, formatPlugin, albumExternalId)) {
                 m_database.rollback();
                 return false;
             }
@@ -341,15 +422,18 @@ bool LibraryRepository::upsertTracks(std::vector<TrackInfo>& tracks)
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
         "INSERT INTO tracks "
-        "(path, playback_path, format_plugin, cover_path, title, artist, album, "
-        "duration_seconds, track_number, disc_number, "
+        "(path, playback_path, format_plugin, cover_path, album_external_id, "
+        "format_metadata_revision, title, artist, album, duration_seconds, "
+        "track_number, disc_number, "
         "year, file_size, modified_at, added_at) "
         "VALUES (?, COALESCE(?, ''), COALESCE(?, ''), COALESCE(?, ''), "
-        "?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "COALESCE(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(path) DO UPDATE SET "
         "playback_path=excluded.playback_path, "
         "format_plugin=excluded.format_plugin, "
         "cover_path=excluded.cover_path, "
+        "album_external_id=excluded.album_external_id, "
+        "format_metadata_revision=excluded.format_metadata_revision, "
         "title=excluded.title, artist=excluded.artist, album=excluded.album, "
         "duration_seconds=excluded.duration_seconds, track_number=excluded.track_number, "
         "disc_number=excluded.disc_number, year=excluded.year, "
@@ -362,20 +446,22 @@ bool LibraryRepository::upsertTracks(std::vector<TrackInfo>& tracks)
         query.bindValue(1, track.playbackPath);
         query.bindValue(2, track.formatPlugin);
         query.bindValue(3, track.coverPath);
-        query.bindValue(4, track.title);
-        query.bindValue(5, track.artist);
-        query.bindValue(6, track.album);
-        query.bindValue(7, std::max(0, track.durationSeconds));
-        query.bindValue(8, std::max(0, track.trackNumber));
-        query.bindValue(9, std::max(0, track.discNumber));
-        query.bindValue(10, std::max(0, track.year));
-        query.bindValue(11, std::max<qint64>(0, track.fileSize));
+        query.bindValue(4, track.albumExternalId);
+        query.bindValue(5, std::max(0, track.formatMetadataRevision));
+        query.bindValue(6, track.title);
+        query.bindValue(7, track.artist);
+        query.bindValue(8, track.album);
+        query.bindValue(9, std::max(0, track.durationSeconds));
+        query.bindValue(10, std::max(0, track.trackNumber));
+        query.bindValue(11, std::max(0, track.discNumber));
+        query.bindValue(12, std::max(0, track.year));
+        query.bindValue(13, std::max<qint64>(0, track.fileSize));
         query.bindValue(
-            12,
+            14,
             track.modifiedAt.isValid()
                 ? track.modifiedAt.toUTC().toString(Qt::ISODateWithMs)
                 : QString{});
-        query.bindValue(13, addedAt.toUTC().toString(Qt::ISODateWithMs));
+        query.bindValue(15, addedAt.toUTC().toString(Qt::ISODateWithMs));
         if (!query.exec()) {
             m_lastError = query.lastError().text();
             m_database.rollback();
@@ -393,7 +479,9 @@ bool LibraryRepository::upsertTracks(std::vector<TrackInfo>& tracks)
         track.id = idQuery.value(0).toLongLong();
         track.addedAt = QDateTime::fromString(idQuery.value(1).toString(),
                                               Qt::ISODateWithMs);
-        if (!syncTrackRelations(track.id, track.artist, track.album)) {
+        if (!syncTrackRelations(
+                track.id, track.artist, track.album, track.formatPlugin,
+                track.albumExternalId)) {
             m_database.rollback();
             return false;
         }
@@ -424,7 +512,9 @@ bool LibraryRepository::updateTrackPlaybackPath(qint64 trackId,
 
 bool LibraryRepository::syncTrackRelations(qint64 trackId,
                                            const QString& artist,
-                                           const QString& album)
+                                           const QString& album,
+                                           const QString& formatPlugin,
+                                           const QString& albumExternalId)
 {
     QSqlQuery clearArtists(m_database);
     clearArtists.prepare(QStringLiteral(
@@ -476,11 +566,26 @@ bool LibraryRepository::syncTrackRelations(qint64 trackId,
     }
 
     const QString albumName = normalizedAlbum(album);
+    const QString trimmedExternalId = albumExternalId.trimmed();
+    const QString externalId = trimmedExternalId.isEmpty()
+        ? QStringLiteral("") : trimmedExternalId;
+    const QString sourcePlugin = externalId.isEmpty()
+        ? QStringLiteral("") : formatPlugin;
+    const QString identityKey = externalId.isEmpty()
+        ? QStringLiteral("name:%1").arg(albumName.toCaseFolded())
+        : QStringLiteral("external:%1:%2")
+              .arg(sourcePlugin, externalId);
     QSqlQuery insertAlbum(m_database);
     insertAlbum.prepare(QStringLiteral(
-        "INSERT INTO albums(name) VALUES (?) "
-        "ON CONFLICT(name) DO NOTHING"));
+        "INSERT INTO albums(identity_key, name, external_id, source_plugin) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(identity_key) DO UPDATE SET "
+        "name=excluded.name, external_id=excluded.external_id, "
+        "source_plugin=excluded.source_plugin"));
+    insertAlbum.addBindValue(identityKey);
     insertAlbum.addBindValue(albumName);
+    insertAlbum.addBindValue(externalId);
+    insertAlbum.addBindValue(sourcePlugin);
     if (!insertAlbum.exec()) {
         m_lastError = insertAlbum.lastError().text();
         return false;
@@ -488,8 +593,8 @@ bool LibraryRepository::syncTrackRelations(qint64 trackId,
 
     QSqlQuery albumId(m_database);
     albumId.prepare(QStringLiteral(
-        "SELECT id FROM albums WHERE name = ? COLLATE NOCASE"));
-    albumId.addBindValue(albumName);
+        "SELECT id FROM albums WHERE identity_key = ?"));
+    albumId.addBindValue(identityKey);
     if (!albumId.exec() || !albumId.next()) {
         m_lastError = albumId.lastError().text();
         return false;
@@ -518,9 +623,15 @@ TrackInfo LibraryRepository::readTrackRow(const QSqlQuery& query)
     track.title = query.value(QStringLiteral("title")).toString();
     track.artist = query.value(QStringLiteral("artist")).toString();
     track.album = query.value(QStringLiteral("album")).toString();
+    track.albumExternalId =
+        query.value(QStringLiteral("album_external_id")).toString();
     track.durationSeconds = query.value(QStringLiteral("duration_seconds")).toInt();
     track.trackNumber = query.value(QStringLiteral("track_number")).toInt();
     track.discNumber = query.value(QStringLiteral("disc_number")).toInt();
+    track.albumHasMultipleDiscs =
+        query.value(QStringLiteral("album_disc_count")).toInt() > 1;
+    track.formatMetadataRevision =
+        query.value(QStringLiteral("format_metadata_revision")).toInt();
     track.year = query.value(QStringLiteral("year")).toInt();
     track.fileSize = query.value(QStringLiteral("file_size")).toLongLong();
     track.modifiedAt = QDateTime::fromString(
@@ -751,7 +862,8 @@ std::vector<LibraryGroup> LibraryRepository::queryAlbums(
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
         "WITH album_page AS ("
-        "SELECT al.id, al.name, COUNT(DISTINCT tal.track_id) AS track_count "
+        "SELECT al.id, al.name, al.external_id, "
+        "COUNT(DISTINCT tal.track_id) AS track_count "
         "FROM albums AS al "
         "JOIN track_albums AS tal ON tal.album_id = al.id "
         "WHERE (? = '' OR al.name LIKE ? ESCAPE '\\' COLLATE NOCASE "
@@ -762,8 +874,8 @@ std::vector<LibraryGroup> LibraryRepository::queryAlbums(
         "JOIN artists AS search_a ON search_a.id = search_ta.artist_id "
         "WHERE search_tal.album_id = al.id "
         "AND search_a.name LIKE ? ESCAPE '\\' COLLATE NOCASE)) "
-        "GROUP BY al.id, al.name "
-        "ORDER BY al.name COLLATE NOCASE %1 "
+        "GROUP BY al.id, al.name, al.external_id "
+        "ORDER BY al.name COLLATE NOCASE %1, al.id ASC "
         "LIMIT ? OFFSET ?) "
         "SELECT page.id, page.name, page.track_count, "
         "COALESCE(("
@@ -778,7 +890,7 @@ std::vector<LibraryGroup> LibraryRepository::queryAlbums(
         ") AS ordered_artists"
         "), ''), "
         "cover_track.path, cover_track.playback_path, "
-        "cover_track.cover_path, cover_track.title "
+        "cover_track.cover_path, cover_track.title, page.external_id "
         "FROM album_page AS page "
         "LEFT JOIN tracks AS cover_track ON cover_track.id = ("
         "SELECT cover_tal.track_id "
@@ -786,9 +898,10 @@ std::vector<LibraryGroup> LibraryRepository::queryAlbums(
         "JOIN tracks AS candidate ON candidate.id = cover_tal.track_id "
         "WHERE cover_tal.album_id = page.id "
         "ORDER BY CASE WHEN candidate.track_number > 0 THEN 0 ELSE 1 END, "
+        "CASE WHEN candidate.disc_number > 0 THEN candidate.disc_number ELSE 1 END, "
         "candidate.track_number ASC, candidate.title COLLATE NOCASE ASC, "
         "candidate.id ASC LIMIT 1) "
-        "ORDER BY page.name COLLATE NOCASE %1").arg(direction));
+        "ORDER BY page.name COLLATE NOCASE %1, page.id ASC").arg(direction));
     const QString pattern = escapedSearchPattern(searchText);
     query.addBindValue(searchText);
     query.addBindValue(pattern);
@@ -801,6 +914,7 @@ std::vector<LibraryGroup> LibraryRepository::queryAlbums(
     }
     while (query.next()) {
         LibraryGroup group;
+        group.id = query.value(0).toLongLong();
         group.name = query.value(1).toString();
         group.artist = query.value(3).toString();
         group.trackCount = query.value(2).toLongLong();
@@ -808,6 +922,7 @@ std::vector<LibraryGroup> LibraryRepository::queryAlbums(
         group.coverTrack.playbackPath = query.value(5).toString();
         group.coverTrack.coverPath = query.value(6).toString();
         group.coverTrack.title = query.value(7).toString();
+        group.externalId = query.value(8).toString();
         groups.push_back(std::move(group));
     }
     return groups;
@@ -938,23 +1053,30 @@ qint64 LibraryRepository::artistTrackCount(
 }
 
 std::vector<TrackInfo> LibraryRepository::queryAlbumTracks(
-    const QString& album, const QString& searchText,
+    qint64 albumId, const QString& searchText,
     TrackSort sort, bool ascending, int limit, int offset) const
 {
     std::vector<TrackInfo> tracks;
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
-        "SELECT t.* FROM tracks AS t "
+        "SELECT t.*, ("
+        "SELECT COUNT(DISTINCT CASE "
+        "WHEN disc_track.disc_number > 0 THEN disc_track.disc_number END) "
+        "FROM tracks AS disc_track "
+        "JOIN track_albums AS disc_albums "
+        "ON disc_albums.track_id = disc_track.id "
+        "WHERE disc_albums.album_id = al.id"
+        ") AS album_disc_count FROM tracks AS t "
         "JOIN track_albums AS ta ON ta.track_id = t.id "
         "JOIN albums AS al ON al.id = ta.album_id "
-        "WHERE al.name = ? COLLATE NOCASE "
+        "WHERE al.id = ? "
         "AND (? = '' OR t.title LIKE ? ESCAPE '\\' COLLATE NOCASE "
         "OR t.artist LIKE ? ESCAPE '\\' COLLATE NOCASE "
         "OR t.album LIKE ? ESCAPE '\\' COLLATE NOCASE) "
         "ORDER BY %1 LIMIT ? OFFSET ?")
                       .arg(albumOrderClause(sort, ascending)));
     const QString pattern = escapedSearchPattern(searchText);
-    query.addBindValue(album);
+    query.addBindValue(albumId);
     query.addBindValue(searchText);
     query.addBindValue(pattern);
     query.addBindValue(pattern);
@@ -981,7 +1103,7 @@ std::vector<TrackInfo> LibraryRepository::queryAlbumTracks(
 }
 
 std::vector<qint64> LibraryRepository::queryAlbumTrackIds(
-    const QString& album, const QString& searchText,
+    qint64 albumId, const QString& searchText,
     TrackSort sort, bool ascending, int limit, int offset) const
 {
     std::vector<qint64> ids;
@@ -990,14 +1112,14 @@ std::vector<qint64> LibraryRepository::queryAlbumTrackIds(
         "SELECT t.id FROM tracks AS t "
         "JOIN track_albums AS ta ON ta.track_id = t.id "
         "JOIN albums AS al ON al.id = ta.album_id "
-        "WHERE al.name = ? COLLATE NOCASE "
+        "WHERE al.id = ? "
         "AND (? = '' OR t.title LIKE ? ESCAPE '\\' COLLATE NOCASE "
         "OR t.artist LIKE ? ESCAPE '\\' COLLATE NOCASE "
         "OR t.album LIKE ? ESCAPE '\\' COLLATE NOCASE) "
         "ORDER BY %1 LIMIT ? OFFSET ?")
                       .arg(albumOrderClause(sort, ascending)));
     const QString pattern = escapedSearchPattern(searchText);
-    query.addBindValue(album);
+    query.addBindValue(albumId);
     query.addBindValue(searchText);
     query.addBindValue(pattern);
     query.addBindValue(pattern);
@@ -1015,19 +1137,19 @@ std::vector<qint64> LibraryRepository::queryAlbumTrackIds(
 }
 
 qint64 LibraryRepository::albumTrackCount(
-    const QString& album, const QString& searchText) const
+    qint64 albumId, const QString& searchText) const
 {
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
         "SELECT COUNT(DISTINCT t.id) FROM tracks AS t "
         "JOIN track_albums AS ta ON ta.track_id = t.id "
         "JOIN albums AS al ON al.id = ta.album_id "
-        "WHERE al.name = ? COLLATE NOCASE "
+        "WHERE al.id = ? "
         "AND (? = '' OR t.title LIKE ? ESCAPE '\\' COLLATE NOCASE "
         "OR t.artist LIKE ? ESCAPE '\\' COLLATE NOCASE "
         "OR t.album LIKE ? ESCAPE '\\' COLLATE NOCASE)"));
     const QString pattern = escapedSearchPattern(searchText);
-    query.addBindValue(album);
+    query.addBindValue(albumId);
     query.addBindValue(searchText);
     query.addBindValue(pattern);
     query.addBindValue(pattern);
@@ -1035,6 +1157,22 @@ qint64 LibraryRepository::albumTrackCount(
     if (!query.exec() || !query.next()) {
         m_lastError = query.lastError().text();
         return -1;
+    }
+    return query.value(0).toLongLong();
+}
+
+std::optional<qint64> LibraryRepository::albumIdForTrack(qint64 trackId) const
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT album_id FROM track_albums WHERE track_id = ?"));
+    query.addBindValue(trackId);
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return std::nullopt;
+    }
+    if (!query.next()) {
+        return std::nullopt;
     }
     return query.value(0).toLongLong();
 }

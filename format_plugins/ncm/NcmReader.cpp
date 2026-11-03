@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <limits>
 
 namespace isac::format::ncm {
 namespace {
@@ -117,6 +118,370 @@ int jsonInteger(const QJsonObject& object,
         }
     }
     return 0;
+}
+
+QByteArray decodePayloadRange(
+    QFile& file, const std::array<unsigned char, 256>& keyBox,
+    qint64 payloadStart, quint64 offset, quint32 length)
+{
+    if (length == 0 ||
+        length > static_cast<quint32>(std::numeric_limits<int>::max())) {
+        return {};
+    }
+
+    const qint64 payloadSize = file.size() - payloadStart;
+    if (payloadSize < 0 ||
+        offset > static_cast<quint64>(payloadSize) ||
+        length > static_cast<quint64>(payloadSize) - offset ||
+        !file.seek(payloadStart + static_cast<qint64>(offset))) {
+        return {};
+    }
+
+    QByteArray decoded = file.read(static_cast<qint64>(length));
+    if (decoded.size() != static_cast<int>(length)) {
+        return {};
+    }
+    for (int i = 0; i < decoded.size(); ++i) {
+        const quint64 streamOffset = offset + static_cast<quint64>(i);
+        const int j = static_cast<int>((streamOffset + 1) & 0xff);
+        const int index =
+            (keyBox[static_cast<std::size_t>(j)] +
+             keyBox[static_cast<std::size_t>(
+                 (keyBox[static_cast<std::size_t>(j)] + j) & 0xff)]) &
+            0xff;
+        decoded[i] = static_cast<char>(
+            static_cast<unsigned char>(decoded.at(i)) ^
+            keyBox[static_cast<std::size_t>(index)]);
+    }
+    return decoded;
+}
+
+bool readCommentUInt32(const QByteArray& data, int& position,
+                       quint32& value)
+{
+    if (position < 0 || position > data.size() - 4) {
+        return false;
+    }
+    quint32 littleEndian = 0;
+    std::memcpy(&littleEndian, data.constData() + position,
+                sizeof(littleEndian));
+    value = qFromLittleEndian(littleEndian);
+    position += 4;
+    return true;
+}
+
+int parsePositionNumber(QString value)
+{
+    value = value.trimmed();
+    const int slash = value.indexOf(QLatin1Char('/'));
+    if (slash >= 0) {
+        value.truncate(slash);
+    }
+    bool ok = false;
+    const int number = value.trimmed().toInt(&ok);
+    return ok && number > 0 ? number : 0;
+}
+
+void readVorbisPosition(const QByteArray& comment,
+                        int& trackNumber, int& discNumber)
+{
+    const int separator = comment.indexOf('=');
+    if (separator <= 0) {
+        return;
+    }
+    const QByteArray key = comment.left(separator).toUpper();
+    const QString value = QString::fromUtf8(
+        comment.constData() + separator + 1,
+        comment.size() - separator - 1);
+    if (key == QByteArrayLiteral("TRACKNUMBER") ||
+        key == QByteArrayLiteral("TRACK")) {
+        const int number = parsePositionNumber(value);
+        if (number > 0) {
+            trackNumber = number;
+        }
+    } else if (key == QByteArrayLiteral("DISCNUMBER") ||
+               key == QByteArrayLiteral("DISC")) {
+        const int number = parsePositionNumber(value);
+        if (number > 0) {
+            discNumber = number;
+        }
+    }
+}
+
+void parseVorbisComments(const QByteArray& block,
+                         int& trackNumber, int& discNumber)
+{
+    int position = 0;
+    quint32 vendorLength = 0;
+    if (!readCommentUInt32(block, position, vendorLength) ||
+        vendorLength > static_cast<quint32>(block.size() - position)) {
+        return;
+    }
+    position += static_cast<int>(vendorLength);
+
+    quint32 commentCount = 0;
+    if (!readCommentUInt32(block, position, commentCount) ||
+        commentCount > 100000) {
+        return;
+    }
+    for (quint32 i = 0; i < commentCount; ++i) {
+        quint32 commentLength = 0;
+        if (!readCommentUInt32(block, position, commentLength) ||
+            commentLength > static_cast<quint32>(block.size() - position)) {
+            return;
+        }
+        readVorbisPosition(
+            block.mid(position, static_cast<int>(commentLength)),
+            trackNumber, discNumber);
+        position += static_cast<int>(commentLength);
+    }
+}
+
+bool readFlacPositionTags(QFile& file,
+                          const std::array<unsigned char, 256>& keyBox,
+                          qint64 payloadStart,
+                          int& trackNumber, int& discNumber)
+{
+    if (decodePayloadRange(file, keyBox, payloadStart, 0, 4) !=
+        QByteArrayLiteral("fLaC")) {
+        return false;
+    }
+
+    const qint64 payloadSize = file.size() - payloadStart;
+    quint64 offset = 4;
+    for (int blockIndex = 0; blockIndex < 1024; ++blockIndex) {
+        const QByteArray header =
+            decodePayloadRange(file, keyBox, payloadStart, offset, 4);
+        if (header.size() != 4) {
+            return false;
+        }
+
+        const unsigned char first =
+            static_cast<unsigned char>(header.at(0));
+        const bool isLast = (first & 0x80) != 0;
+        const int blockType = first & 0x7f;
+        const quint32 blockLength =
+            (static_cast<quint32>(
+                 static_cast<unsigned char>(header.at(1))) << 16) |
+            (static_cast<quint32>(
+                 static_cast<unsigned char>(header.at(2))) << 8) |
+            static_cast<quint32>(
+                static_cast<unsigned char>(header.at(3)));
+        offset += 4;
+        if (payloadSize < 0 ||
+            offset > static_cast<quint64>(payloadSize) ||
+            blockLength > static_cast<quint64>(payloadSize) - offset) {
+            return false;
+        }
+
+        if (blockType == 4) {
+            const QByteArray comments = decodePayloadRange(
+                file, keyBox, payloadStart, offset, blockLength);
+            if (comments.size() != static_cast<int>(blockLength)) {
+                return false;
+            }
+            parseVorbisComments(comments, trackNumber, discNumber);
+            if (trackNumber > 0 && discNumber > 0) {
+                return true;
+            }
+        }
+        offset += blockLength;
+        if (isLast) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool readSyncSafeUInt32(const QByteArray& bytes, int offset, quint32& value)
+{
+    if (offset < 0 || offset > bytes.size() - 4) {
+        return false;
+    }
+    value = 0;
+    for (int i = 0; i < 4; ++i) {
+        const unsigned char byte =
+            static_cast<unsigned char>(bytes.at(offset + i));
+        if ((byte & 0x80) != 0) {
+            return false;
+        }
+        value = (value << 7) | byte;
+    }
+    return true;
+}
+
+QString decodeId3Text(const QByteArray& payload)
+{
+    if (payload.isEmpty()) {
+        return {};
+    }
+    const unsigned char encoding =
+        static_cast<unsigned char>(payload.at(0));
+    QByteArray text = payload.mid(1);
+    QString result;
+    if (encoding == 0) {
+        result = QString::fromLatin1(text);
+    } else if (encoding == 3) {
+        result = QString::fromUtf8(text);
+    } else if (encoding == 1 || encoding == 2) {
+        bool littleEndian = false;
+        if (encoding == 1 && text.size() >= 2) {
+            const unsigned char first =
+                static_cast<unsigned char>(text.at(0));
+            const unsigned char second =
+                static_cast<unsigned char>(text.at(1));
+            if (first == 0xff && second == 0xfe) {
+                littleEndian = true;
+                text.remove(0, 2);
+            } else if (first == 0xfe && second == 0xff) {
+                text.remove(0, 2);
+            }
+        }
+        for (int i = 0; i + 1 < text.size(); i += 2) {
+            const auto* bytes = reinterpret_cast<const uchar*>(
+                text.constData() + i);
+            const quint16 code = littleEndian
+                ? qFromLittleEndian<quint16>(bytes)
+                : qFromBigEndian<quint16>(bytes);
+            if (code == 0) {
+                break;
+            }
+            result.append(QChar(code));
+        }
+    }
+    const int terminator = result.indexOf(QChar::Null);
+    if (terminator >= 0) {
+        result.truncate(terminator);
+    }
+    return result.trimmed();
+}
+
+bool readMp3PositionTags(QFile& file,
+                         const std::array<unsigned char, 256>& keyBox,
+                         qint64 payloadStart,
+                         int& trackNumber, int& discNumber)
+{
+    const QByteArray header =
+        decodePayloadRange(file, keyBox, payloadStart, 0, 10);
+    if (header.size() != 10 || header.left(3) != QByteArrayLiteral("ID3")) {
+        return false;
+    }
+
+    const int majorVersion =
+        static_cast<unsigned char>(header.at(3));
+    if (majorVersion < 2 || majorVersion > 4) {
+        return false;
+    }
+    quint32 tagLength = 0;
+    if (!readSyncSafeUInt32(header, 6, tagLength) ||
+        tagLength > 64 * 1024 * 1024) {
+        return false;
+    }
+
+    const qint64 payloadSize = file.size() - payloadStart;
+    if (payloadSize < 10 ||
+        tagLength > static_cast<quint64>(payloadSize - 10)) {
+        return false;
+    }
+    const quint64 tagEnd = 10 + static_cast<quint64>(tagLength);
+    quint64 offset = 10;
+    const unsigned char tagFlags =
+        static_cast<unsigned char>(header.at(5));
+
+    if (majorVersion >= 3 && (tagFlags & 0x40) != 0) {
+        const QByteArray extendedSize =
+            decodePayloadRange(file, keyBox, payloadStart, offset, 4);
+        if (extendedSize.size() != 4) {
+            return false;
+        }
+        quint32 size = 0;
+        if (majorVersion == 4) {
+            if (!readSyncSafeUInt32(extendedSize, 0, size)) {
+                return false;
+            }
+            offset += size;
+        } else {
+            size =
+                (static_cast<quint32>(
+                     static_cast<unsigned char>(extendedSize.at(0))) << 24) |
+                (static_cast<quint32>(
+                     static_cast<unsigned char>(extendedSize.at(1))) << 16) |
+                (static_cast<quint32>(
+                     static_cast<unsigned char>(extendedSize.at(2))) << 8) |
+                static_cast<quint32>(
+                    static_cast<unsigned char>(extendedSize.at(3)));
+            offset += 4 + size;
+        }
+        if (offset > tagEnd) {
+            return false;
+        }
+    }
+
+    const int frameHeaderSize = majorVersion == 2 ? 6 : 10;
+    for (int frameIndex = 0;
+         frameIndex < 1024 && offset + frameHeaderSize <= tagEnd;
+         ++frameIndex) {
+        const QByteArray frameHeader = decodePayloadRange(
+            file, keyBox, payloadStart, offset,
+            static_cast<quint32>(frameHeaderSize));
+        if (frameHeader.size() != frameHeaderSize ||
+            frameHeader.at(0) == '\0') {
+            break;
+        }
+
+        const QByteArray frameId = frameHeader.left(
+            majorVersion == 2 ? 3 : 4);
+        quint32 frameLength = 0;
+        if (majorVersion == 2) {
+            frameLength =
+                (static_cast<quint32>(
+                     static_cast<unsigned char>(frameHeader.at(3))) << 16) |
+                (static_cast<quint32>(
+                     static_cast<unsigned char>(frameHeader.at(4))) << 8) |
+                static_cast<quint32>(
+                    static_cast<unsigned char>(frameHeader.at(5)));
+        } else if (majorVersion == 4) {
+            if (!readSyncSafeUInt32(frameHeader, 4, frameLength)) {
+                return false;
+            }
+        } else {
+            frameLength =
+                (static_cast<quint32>(
+                     static_cast<unsigned char>(frameHeader.at(4))) << 24) |
+                (static_cast<quint32>(
+                     static_cast<unsigned char>(frameHeader.at(5))) << 16) |
+                (static_cast<quint32>(
+                     static_cast<unsigned char>(frameHeader.at(6))) << 8) |
+                static_cast<quint32>(
+                    static_cast<unsigned char>(frameHeader.at(7)));
+        }
+        offset += static_cast<quint64>(frameHeaderSize);
+        if (frameLength > tagEnd - offset) {
+            return false;
+        }
+
+        const bool isTrackFrame =
+            frameId == QByteArrayLiteral("TRK") ||
+            frameId == QByteArrayLiteral("TRCK");
+        const bool isDiscFrame =
+            frameId == QByteArrayLiteral("TPA") ||
+            frameId == QByteArrayLiteral("TPOS");
+        if ((isTrackFrame || isDiscFrame) &&
+            frameLength > 0 && frameLength <= 4096) {
+            const QByteArray payload = decodePayloadRange(
+                file, keyBox, payloadStart, offset, frameLength);
+            const int number =
+                parsePositionNumber(decodeId3Text(payload));
+            if (number > 0) {
+                (isTrackFrame ? trackNumber : discNumber) = number;
+            }
+        }
+        offset += frameLength;
+        if (trackNumber > 0 && discNumber > 0) {
+            return true;
+        }
+    }
+    return true;
 }
 
 void inferTrackPosition(const QString& filePath, FormatMetadata& metadata)
@@ -223,6 +588,11 @@ bool parseHeader(QFile& file, std::array<unsigned char, 256>& keyBox,
                         object.value(QStringLiteral("musicName")).toString();
                     metadata->album =
                         object.value(QStringLiteral("album")).toString();
+                    const QJsonValue albumId =
+                        object.value(QStringLiteral("albumId"));
+                    metadata->albumId = albumId.isString()
+                        ? albumId.toString()
+                        : albumId.toVariant().toString();
                     const QJsonArray artists =
                         object.value(QStringLiteral("artist")).toArray();
                     QStringList artistNames;
@@ -374,6 +744,23 @@ FormatMetadata NcmReader::inspect(const QString& filePath, QString* error)
     if (!parseHeader(file, keyBox, &metadata, &coverData, error)) {
         return {};
     }
+    const qint64 payloadStart = file.pos();
+    int payloadTrackNumber = 0;
+    int payloadDiscNumber = 0;
+    if (metadata.decodedFormat == QStringLiteral("flac")) {
+        readFlacPositionTags(file, keyBox, payloadStart,
+                             payloadTrackNumber, payloadDiscNumber);
+    } else if (metadata.decodedFormat == QStringLiteral("mp3")) {
+        readMp3PositionTags(file, keyBox, payloadStart,
+                            payloadTrackNumber, payloadDiscNumber);
+    }
+    if (payloadTrackNumber > 0) {
+        metadata.trackNumber = payloadTrackNumber;
+    }
+    if (payloadDiscNumber > 0) {
+        metadata.discNumber = payloadDiscNumber;
+    }
+    metadata.metadataRevision = 1;
     metadata.valid = true;
     metadata.coverData = std::move(coverData);
     return metadata;

@@ -53,7 +53,7 @@ public:
     void setSort(library::TrackSort sort, bool ascending);
     void setShowTrackNumber(bool visible);
     void setPlaylistId(std::optional<qint64> playlistId);
-    void setCategoryFilter(const QString& artist, const QString& album);
+    void setCategoryFilter(const QString& artist, qint64 albumId);
     void setHistoryMode(bool enabled);
     std::optional<library::TrackInfo> trackAtRow(int row) const;
     int rowForTrackId(qint64 id) const;
@@ -78,7 +78,7 @@ private:
     bool m_playlistContext = false;
     bool m_historyContext = false;
     QString m_artistFilter;
-    QString m_albumFilter;
+    qint64 m_albumFilterId = 0;
     QString m_searchText;
     library::TrackSort m_sort = library::TrackSort::AddedAt;
     bool m_ascending = true;
@@ -135,7 +135,7 @@ public:
     void setScanStatus(const QString& status);
     void toggleSearchInput();
     void showArtist(const QString& artist);
-    void showAlbum(const QString& album);
+    void showAlbumForTrack(qint64 trackId);
     std::optional<library::TrackInfo> trackAtRow(int row) const;
     int trackCount() const;
     int rowForTrackId(qint64 id) const;

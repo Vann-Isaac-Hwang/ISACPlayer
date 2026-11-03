@@ -104,6 +104,7 @@ void LibraryScanner::startScan(QStringList paths, QString directoryPath)
                     ++visited;
                     const QFileInfo fileInfo(filePath);
                     const auto existing = repository.trackByPath(filePath);
+                    const auto pluginMetadata = formatPlugins.inspect(filePath);
                     const bool isNcm =
                         fileInfo.suffix().compare(
                             QStringLiteral("ncm"),
@@ -111,8 +112,10 @@ void LibraryScanner::startScan(QStringList paths, QString directoryPath)
                     if (existing &&
                         existing->fileSize == fileInfo.size() &&
                         existing->modifiedAt == fileInfo.lastModified() &&
-                        (!isNcm || (existing->trackNumber > 0 &&
-                                    !existing->coverPath.isEmpty()))) {
+                        (!isNcm ||
+                         (pluginMetadata.valid &&
+                          existing->formatMetadataRevision >=
+                              pluginMetadata.metadataRevision))) {
                         if ((visited % 64) == 0 && !guardedThis.isNull()) {
                             QMetaObject::invokeMethod(
                                 guardedThis,
@@ -127,7 +130,6 @@ void LibraryScanner::startScan(QStringList paths, QString directoryPath)
                     }
 
                     TrackInfo track;
-                    const auto pluginMetadata = formatPlugins.inspect(filePath);
                     if (pluginMetadata.valid) {
                         track.filePath = filePath;
                         track.title = pluginMetadata.title.isEmpty()
@@ -139,6 +141,7 @@ void LibraryScanner::startScan(QStringList paths, QString directoryPath)
                         track.album = pluginMetadata.album.isEmpty()
                             ? QStringLiteral("Unknown Album")
                             : pluginMetadata.album;
+                        track.albumExternalId = pluginMetadata.albumId;
                         track.formatPlugin =
                             formatPlugins.pluginIdForFile(filePath);
                         track.fileSize = fileInfo.size();
@@ -147,6 +150,8 @@ void LibraryScanner::startScan(QStringList paths, QString directoryPath)
                             std::max(0, pluginMetadata.durationMilliseconds / 1000);
                         track.trackNumber = std::max(0, pluginMetadata.trackNumber);
                         track.discNumber = std::max(0, pluginMetadata.discNumber);
+                        track.formatMetadataRevision =
+                            std::max(0, pluginMetadata.metadataRevision);
                         track.year = std::max(0, pluginMetadata.year);
                         const QString coverPath = media::FormatCache::coverPath(
                             filePath, track.formatPlugin,

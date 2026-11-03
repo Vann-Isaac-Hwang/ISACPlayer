@@ -29,6 +29,8 @@ struct LibraryGroup {
     QString artist;
     qint64 trackCount = 0;
     TrackInfo coverTrack;
+    qint64 id = 0;
+    QString externalId;
 };
 
 struct PersistedPlaybackQueue {
@@ -97,15 +99,16 @@ public:
     qint64 artistTrackCount(const QString& artist,
                             const QString& searchText = {}) const;
     std::vector<TrackInfo> queryAlbumTracks(
-        const QString& album,
+        qint64 albumId,
         const QString& searchText = {}, TrackSort sort = TrackSort::TrackNumber,
         bool ascending = true, int limit = 256, int offset = 0) const;
     std::vector<qint64> queryAlbumTrackIds(
-        const QString& album,
+        qint64 albumId,
         const QString& searchText = {}, TrackSort sort = TrackSort::TrackNumber,
         bool ascending = true, int limit = 10000, int offset = 0) const;
-    qint64 albumTrackCount(const QString& album,
+    qint64 albumTrackCount(qint64 albumId,
                            const QString& searchText = {}) const;
+    std::optional<qint64> albumIdForTrack(qint64 trackId) const;
 
     bool addDirectory(const QString& path);
     bool removeDirectory(qint64 directoryId);
@@ -147,7 +150,8 @@ public:
 private:
     bool initializeSchema();
     bool syncTrackRelations(qint64 trackId, const QString& artist,
-                            const QString& album);
+                            const QString& album, const QString& formatPlugin,
+                            const QString& albumExternalId);
     static TrackInfo readTrackRow(const QSqlQuery& query);
 
     QString m_connectionName;
